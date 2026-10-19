@@ -4,7 +4,7 @@ Rust製の、汎用2Dサンドボックスゲームエンジンです。
 
 Fabric APIのような機能へのアクセスと拡張性、Phaserのようなシーン・入力・資産・実行管理を、2Dサンドボックスのシミュレーションと統合します。クリエーターがRustでゲームのルール、素材、キャラクター、操作、進行を定義し、エンジンが制作と実行の基盤を提供します。
 
-**現在はv1.0.0へ向けて開発中です。** E05「セルと流体」はローカル実装・総合検査とPR #22の現head CIを完了し、PR上の独立レビュー確認待ちです。商用v1.0.0の完成や、Terraria・Noitaの完全クローン制作能力を実証済みという意味ではありません。
+**現在はv1.0.0へ向けて開発中です。** E05「セルと流体」はQ01〜Q04のローカル実装・総合検査・ローカルレビューを完了し、PR #22の現head CI 10件も成功しました。PRはopenのままで、マージしていません。商用v1.0.0の完成や、Terraria・Noitaの完全クローン制作能力を実証済みという意味ではありません。
 
 ## 目指すもの
 
@@ -23,7 +23,7 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 | E02：RuntimeとScene | 起動、plugin、Scene遷移、scope、入力、固定更新、System順序・明示独立worker、時計、headless | [実装・検証記録](new_docs/evidence/E02/README.md) |
 | E03：資産と基本表示 | VFSとpack、PNG・WAV/Ogg・fontのimport、共有cache、解放・世代差し替え、sprite、camera、描画adapter | [実装・検証記録](new_docs/evidence/E03/README.md) |
 | E04：世界と保存基盤 | 多layer・素材寸法・個体・部分生成・lease・独自channel・区域退避・世代保存 | [実装・検証記録](new_docs/evidence/E04/README.md) |
-| E05：セルと流体（PRレビュー指摘対応中） | 物質状態の一括輸送、局所移動、cell変更の理由付きreceipt、混合・分離、圧力・押出し、正規物質粒子、全表現監査、保存可能Job、保守的なsleep/wake、Runtime barrier、原子的Materials phase。Q04の全体テストとローカル総合レビューは完了。PR #22再レビューの粒子占有P1二件と保存particle Job planのP2一件は修正済み。最新再レビューで見つかった復元PressurePushSearchの粒子索引不一致P2も回帰と対象検証を追加し、push・CI・再レビューを待っている | [契約と残る制約](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
+| E05：セルと流体（ローカル完了、PR open・未マージ） | 物質状態の一括輸送、局所移動、cell変更の理由付きreceipt、混合・分離、圧力・押出し、正規物質粒子、全表現監査、保存可能Job、保守的なsleep/wake、Runtime barrier、原子的Materials phase。Q04の全体テスト、E05総合検査、ローカル総合レビューが完了。2件のP1と2件のP2を修正し、最新head `87edd16`のGitHub CI 10件が成功 | [契約と残る制約](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
 
 ### E05の現在地（2026-10-19）
 
@@ -33,7 +33,7 @@ Q04関連12 suiteの横断実行は296件成功しました。Arenaの候補複�
 
 最終ローカルゲートでは`cargo test --locked --jobs 1`、`cargo check --all-targets --locked --jobs 1`、`cargo clippy --all-targets --locked --jobs 1 -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`が成功しました。Cargoビルドは単一job・低メモリ設定です。保存可能な`MaterialParticleJob`とcell/scalar solverを同tickに共有予約へ合成するAPIは未提供で、[粒子Job契約](new_docs/35_MATERIAL_PARTICLES.md)に現状の制約を記録しています。
 
-PR #22の独立レビューでは、粒子占有P1二件と保存particle Job planがDDAと一致しないP2を修正しました。さらに最新head `62affac`への再レビューで、復元PressurePushSearchの粒子占有索引が現Worldと照合されないP2が見つかりました。この回帰は修正前の公開成功を再現し、修正後の単体6件・pressure_job 28件・対象Clippyで成功しています。新修正のpush後CIと再レビューが終わるまで、E05/Q04を工程完了扱いにしません。
+ローカルレビューで、保存済みPressurePushSearchの粒子索引がWorldと一致することを公開境界で検証しない欠陥を確認・修正しました。修正前の不正公開を再現する回帰と、修正後の単体6件・`pressure_job` 28件・対象Clippyが成功しています。E05/Q01〜Q04のローカル出口判定は完了しました。PR #22はopen・未マージで、レビュー依頼の有無は工程完了条件にしません。
 ## 動かす
 
 CIではRust **1.98.1**を使用しています。開発ブランチはPRで検査し、mainへのpushと手動実行も検査します。同じ開発コミットでpushとPRの検査を重複させません。初回ビルドには依存crateを取得するネットワーク接続が必要です。ウィンドウ表示にはOSの表示環境と対応GPUが必要ですが、headlessの作例はウィンドウなしで動作します。
