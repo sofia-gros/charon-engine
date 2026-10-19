@@ -33,7 +33,7 @@ Q04関連12 suiteの横断実行は296件成功しました。Arenaの候補複�
 
 最終ローカルゲートでは`cargo test --locked --jobs 1`、`cargo check --all-targets --locked --jobs 1`、`cargo clippy --all-targets --locked --jobs 1 -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`が成功しました。Cargoビルドは単一job・低メモリ設定です。保存可能な`MaterialParticleJob`とcell/scalar solverを同tickに共有予約へ合成するAPIは未提供で、[粒子Job契約](new_docs/35_MATERIAL_PARTICLES.md)に現状の制約を記録しています。
 
-PR #22では、旧headに対するGitHub CI成功後の独立レビューで粒子占有のP1指摘が二件見つかりました。修正後の対象テストとClippyはローカルで成功し、修正を含む最新headのCIとレビュー再確認は未実施です。E05/Q04は外部確認を含む全出口条件が揃うまで工程完了扱いにしません。
+PR #22では、旧headに対する独立レビューで粒子占有のP1指摘が二件見つかりました。修正commit `d8582af`はローカル対象テスト・Clippyを通過し、Rust CI、E03、E04、E05 workflowも全てsuccessです。MaterialMotionJobのinline threadをresolveし、PressurePushSearch指摘へ返信、修正版の再レビューを依頼しました。再レビュー結果を確認するまではE05/Q04を工程完了扱いにしません。
 ## 動かす
 
 CIではRust **1.98.1**を使用しています。開発ブランチはPRで検査し、mainへのpushと手動実行も検査します。同じ開発コミットでpushとPRの検査を重複させません。初回ビルドには依存crateを取得するネットワーク接続が必要です。ウィンドウ表示にはOSの表示環境と対応GPUが必要ですが、headlessの作例はウィンドウなしで動作します。

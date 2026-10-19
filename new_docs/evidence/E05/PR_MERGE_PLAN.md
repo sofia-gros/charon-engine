@@ -82,11 +82,11 @@ Q04工程出口が未達の現時点では候補を「絶対に壊れない」�
 | #8 | `codex/e05-wide-pressure` / `25e486db8e13396a40ec1cba5527d3f04b7b46e4` | `codex/e05-mixtures` / `6533710d977715970fa970651c3ba11f6e68b7a8` | open・mergeable |
 | #9 | `codex/e05-mixtures` / `6533710d977715970fa970651c3ba11f6e68b7a8` | `codex/e05-push-resume` / `a9d7a4490b9976cc8962a4fb9b25de0fa23e1ccf` | open・mergeable |
 | #10 | `codex/e05-push-resume` / `a9d7a4490b9976cc8962a4fb9b25de0fa23e1ccf` | `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214` | open・mergeable |
-| #22 | `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214` | `codex/e05-q04-review-fixes` / `2330b7759a375eebd7535dde5a9b446924dab44d` | open・mergeable・レビュー可能 |
+| #22 | `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214` | `codex/e05-q04-review-fixes` / `d8582af45a5216eb55d40a01f0826d44639da5e4` | open・mergeable・CI success・再レビュー依頼中 |
 
 PR #11〜#13の個別マージは除外する。固有のresident/archive・混合内訳診断と旧一様力ProviderをPR #22へ移植したためである。PR #14〜#21も#22の集約差分へ含め、重複適用を避けるため個別マージ対象から除外する。PR #15の過去の`merged=true`はbranch base変更時にGitHubが付けた判定であり、mainへのマージではない。
 
-ローカル出口検査と上記headのCIは成功済みだが、PR #22の独立レビューは未実施である。レビュー確認・必要な指摘対応を終えるまではE05完了としない。最終PR本文のマージ順・除外理由は現時点で上記候補と一致することを確認した。mainへのpushやPRマージは行っていない。
+ローカル出口検査と上記headのCIは成功済み。独立レビューでは正規粒子を無視するPressurePushSearchとMaterialMotionJobの二件のP1指摘があり、修正commit `d8582af`で解消した。MaterialMotionJobのinline threadはresolveし、PressurePushSearchのreview commentへ修正・検証結果を返信した。再レビューを依頼しており、その確認・必要な指摘対応を終えるまではE05完了としない。最終PR本文のマージ順・除外理由は現時点で上記候補と一致することを確認した。mainへのpushやPRマージは行っていない。
 
 ### 積み上げPRをmainへ順次取り込むときのbase更新
 

@@ -796,4 +796,6 @@ Windows/MSVCでE05全体の最終ローカルゲートを実行した。`cargo t
 
 PR reviewは二つのP1欠陥を指摘した。PressurePushSearchが同layer正規粒子のいるAIR cellを経路・出口に選べる点と、MaterialMotionJobの広域DDAが同じ粒子占有を無視する点である。どちらもcell tokenとparticle tokenが同じcellを所有し得るため、指摘を妥当と判定して修正した。圧力探索では開始時の粒子索引とnode再検査を追加し、広域DDAではsource、各交差先、斜め角検査点を粒子占有に含め、保存経路と公開入口でも再確認する。MaterialMotionJob全20件（粒子経路・斜めguard回帰2件を含む）、PressureJob全28件、PressurePushSearch単体5件が成功した。Clippyは対象2 suiteと`--lib`で`-D warnings`成功し、`cargo fmt --all -- --check`と`git diff --check`も成功した。
 
-粒子索引を持つJobの今回変更について関連benchmarkは未実施である。広域DDA索引は対象layerの活動粒子P件に対して構築・公開前再確認がO(P log P)、交差ごとの照合がO(log P)、保持領域がJobごとにO(P)となる。PressurePushSearchの粒子索引・codec追加も別の高頻度経路比較は未実施であり、性能改善は主張しない。PR #22の最新head CIとCodex reviewの再確認、各指摘への返信・解決状態確認は残る。現時点でE05完了とは判定しない。
+粒子索引を持つJobの今回変更について関連benchmarkは未実施である。広域DDA索引は対象layerの活動粒子P件に対して構築・公開前再確認がO(P log P)、交差ごとの照合がO(log P)、保持領域がJobごとにO(P)となる。PressurePushSearchの粒子索引・codec追加も別の高頻度経路比較は未実施であり、性能改善は主張しない。
+
+commit `d8582af45a5216eb55d40a01f0826d44639da5e4`をPR #22へpushした。GitHubのRust CI、E03、E04、E05 workflowは全てsuccess。MaterialMotionJobのinline P1 threadは修正・対象検査後にresolveし、PressurePushSearchのP1 review commentには同じcommitと試験結果で返信した。PR #22はopen・mergeable、head `d8582af`、base `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214`のままで、再レビュー結果を待つ。PR本文には採用順と除外PRを更新した。再レビューの問題なし確認と最新headの最終ゲートを得るまではE05完了と判定しない。
