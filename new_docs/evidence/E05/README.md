@@ -791,3 +791,9 @@ Q04の受け入れ条件を`new_docs/18_VALIDATION_AND_RELEASE.md`、`42_Q04_CRO
 監査時に`MaterialParticleJob`の説明と実APIの差を修正した。通常のMaterialPhaseにおける粒子DDAはcell/scalarと共有予約を使う一方、保存可能な粒子Jobを同じ共有予約へ合成するAPIはない。Q04設計出口にあるPressureJob/MaterialMotionJob/PressurePushSearchと通常Materials phaseの連携・参照一致は対象試験で確認済みであり、粒子Jobとの同tick合成はその受け入れを満たすものとして扱わない。`35_MATERIAL_PARTICLES.md`に現状の境界と誤用禁止を記載した。将来その組合せを要求する場合は別の統合API実装が必要であり、性能・正しさを今回の証拠から主張しない。
 
 Windows/MSVCでE05全体の最終ローカルゲートを実行した。`cargo test --locked --jobs 1`は成功し、通常のunit/integration/doc testに失敗はない（手動benchmark testは通常実行から除外される）。`cargo check --all-targets --locked --jobs 1`、`cargo clippy --all-targets --locked --jobs 1 -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`も成功した。Cargoには`CARGO_BUILD_JOBS=1`、`CARGO_PROFILE_TEST_DEBUG=0`、`CARGO_PROFILE_TEST_CODEGEN_UNITS=1024`、`CARGO_INCREMENTAL=0`を設定した。GitHubの最終headに対するCIとPR上のレビューは、更新push後に別途確認する。
+
+#### PR #22 独立レビュー指摘への対応（2026-10-19）
+
+PR reviewは二つのP1欠陥を指摘した。PressurePushSearchが同layer正規粒子のいるAIR cellを経路・出口に選べる点と、MaterialMotionJobの広域DDAが同じ粒子占有を無視する点である。どちらもcell tokenとparticle tokenが同じcellを所有し得るため、指摘を妥当と判定して修正した。圧力探索では開始時の粒子索引とnode再検査を追加し、広域DDAではsource、各交差先、斜め角検査点を粒子占有に含め、保存経路と公開入口でも再確認する。MaterialMotionJob全20件（粒子経路・斜めguard回帰2件を含む）、PressureJob全28件、PressurePushSearch単体5件が成功した。Clippyは対象2 suiteと`--lib`で`-D warnings`成功し、`cargo fmt --all -- --check`と`git diff --check`も成功した。
+
+粒子索引を持つJobの今回変更について関連benchmarkは未実施である。広域DDA索引は対象layerの活動粒子P件に対して構築・公開前再確認がO(P log P)、交差ごとの照合がO(log P)、保持領域がJobごとにO(P)となる。PressurePushSearchの粒子索引・codec追加も別の高頻度経路比較は未実施であり、性能改善は主張しない。PR #22の最新head CIとCodex reviewの再確認、各指摘への返信・解決状態確認は残る。現時点でE05完了とは判定しない。

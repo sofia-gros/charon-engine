@@ -1246,3 +1246,59 @@ fn pending_push_search_uses_new_pressure_and_resumes_from_world_state() {
             .unwrap()
     );
 }
+
+#[test]
+fn pressure_push_skips_cells_occupied_by_same_layer_particles() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let stone = cell(&world, "test:stone");
+    let water = cell(&world, "test:water");
+    let source = p(10, 10);
+    let occupied_outlet = p(11, 10);
+    let alternate_source = p(10, 11);
+    let alternate_outlet = p(10, 12);
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, source, water)?;
+            edit.set_cell(layer, p(10, 9), stone)?;
+            edit.set_cell(layer, p(9, 10), stone)?;
+            edit.set_cell(layer, occupied_outlet, water)?;
+            edit.set_cell(layer, alternate_source, water)?;
+            edit.set_cell(layer, p(9, 11), stone)?;
+            edit.set_cell(layer, p(11, 11), stone)?;
+            edit.set_cell(layer, alternate_outlet, CellCore::AIR)?;
+            edit.set_channel(key("test:pressure"), p(source.x + 3, source.y - 2), 1000i64)?;
+            edit.emit_material_particle(layer, occupied_outlet, [0, 0])?;
+            Ok(())
+        })
+        .unwrap();
+
+    let mut search = PressurePushSearch::new(
+        &world,
+        layer,
+        source,
+        PressurePushConfig {
+            channel: key("test:pressure"),
+            gravity_q16: 0,
+            threshold_q16: 0,
+            nodes: 4096,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        search.step(&world, 4096).unwrap(),
+        PressurePushStatus::Ready
+    );
+    world
+        .edit(|edit| edit.publish_pressure_push(&search))
+        .unwrap();
+
+    let (handle, particle) = world.material_particles().next().unwrap();
+    assert_eq!(
+        world.material_particle(handle).unwrap().cell(),
+        occupied_outlet
+    );
+    assert_eq!(material_at(&world, layer, occupied_outlet), MaterialId::AIR);
+    assert_eq!(material_at(&world, layer, alternate_outlet), water.material);
+    assert_eq!(particle.cell(), occupied_outlet);
+}

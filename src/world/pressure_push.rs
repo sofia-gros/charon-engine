@@ -55,6 +55,10 @@ pub struct PressurePushSearch {
     source_pressure: i64,
     mass: u32,
     chunks: Vec<(ChunkCoord, u64)>,
+    // 活動中の同layer正規粒子が占有するcellを、探索開始時に一度だけ整列して保持します。
+    // 各nodeで粒子arena全体を走査せず二分探索し、chunk revisionで失効を検出します。
+    // 旧codecから復元したJobだけは次のstepで索引を作り、全nodeをbudget付きで再検査します。
+    occupied_particles: Option<Vec<CellPoint>>,
     nodes: Vec<(CellPoint, u32)>,
     cursor: usize,
     goal: Option<u32>,
@@ -63,6 +67,50 @@ pub struct PressurePushSearch {
     // 復元直後の実地形検査もstep予算に含めます。新規追加nodeは発見時に検査済みです。
     validated_nodes: usize,
 }
+
+/// 探索対象の活動chunkにいる同layer粒子位置を一度だけ収集・整列します。
+/// 粒子位置はWorldのarena順に依存しないよう座標順へ正規化し、探索nodeごとは二分探索します。
+fn active_particle_cells(world: &World, layer: LayerId) -> EngineResult<Vec<CellPoint>> {
+    let mut points = Vec::new();
+    for (_, particle) in world.particles.iter() {
+        if particle.is_archived() || particle.layer != layer {
+            continue;
+        }
+        let point = particle.cell();
+        if !world
+            .chunks
+            .get(&ChunkCoord::at(point))
+            .is_some_and(|chunk| chunk.active)
+        {
+            continue;
+        }
+        points.try_reserve(1).map_err(allocation)?;
+        points.push(point);
+    }
+    points.sort_unstable_by_key(|point| (point.x, point.y));
+    points.dedup();
+    Ok(points)
+}
+
+/// 保存済みnodeを地形と粒子の両方から占有されていないか再検査します。
+fn validate_node(
+    world: &World,
+    layer: LayerId,
+    point: CellPoint,
+    expected: MaterialId,
+    occupied_particles: &[CellPoint],
+) -> EngineResult<()> {
+    if occupied_particles
+        .binary_search_by_key(&(point.x, point.y), |candidate| (candidate.x, candidate.y))
+        .is_ok()
+        || !matches!(world.cell(layer, point)?, CellQuery::Loaded(cell)
+            if cell.block.is_none() && cell.core.material == expected)
+    {
+        return Err(conflict("圧力探索nodeの占有が不一致"));
+    }
+    Ok(())
+}
+
 impl PressurePushSearch {
     pub(super) fn node_count(&self) -> usize {
         self.nodes.len()
@@ -121,6 +169,13 @@ impl PressurePushSearch {
         {
             return Err(invalid("圧力探索の始点が活動外"));
         }
+        let occupied_particles = active_particle_cells(world, layer)?;
+        if occupied_particles
+            .binary_search_by_key(&(source.x, source.y), |point| (point.x, point.y))
+            .is_ok()
+        {
+            return Err(conflict("圧力探索の始点に正規粒子が存在"));
+        }
         let mut nodes = Vec::new();
         nodes.try_reserve_exact(1).map_err(allocation)?;
         nodes.push((source, 0));
@@ -136,6 +191,7 @@ impl PressurePushSearch {
             source_pressure,
             mass: material.mass_per_cell(),
             chunks,
+            occupied_particles: Some(occupied_particles),
             nodes,
             cursor: 0,
             goal: None,
@@ -188,6 +244,16 @@ impl PressurePushSearch {
     pub fn step(&mut self, world: &World, budget: usize) -> EngineResult<PressurePushStatus> {
         self.validate_context(world)?;
         let layer = world.content.layer_id(self.layer)?;
+        if self.occupied_particles.is_none() {
+            self.occupied_particles = Some(active_particle_cells(world, layer)?);
+            // CHPUSH01/02には粒子占有のsnapshotがありません。既存nodeを新契約で
+            // 検査し直すまでは探索を再開・公開できない状態へ戻します。
+            self.validated_nodes = 0;
+        }
+        let occupied_particles = self
+            .occupied_particles
+            .take()
+            .ok_or_else(|| invalid("圧力探索の粒子索引"))?;
         let previous_len = self.nodes.len();
         let previous_cursor = self.cursor;
         let previous_goal = self.goal;
@@ -197,7 +263,14 @@ impl PressurePushSearch {
         let result = (|| {
             for _ in 0..budget {
                 if self.validated_nodes < self.nodes.len() {
-                    self.validate_node(world, layer, self.validated_nodes)?;
+                    let index = self.validated_nodes;
+                    let point = self.nodes[index].0;
+                    let expected = if self.goal == Some(index as u32) {
+                        MaterialId::AIR
+                    } else {
+                        self.material
+                    };
+                    validate_node(world, layer, point, expected, &occupied_particles)?;
                     self.validated_nodes += 1;
                     continue;
                 }
@@ -219,6 +292,12 @@ impl PressurePushSearch {
                         .chunks
                         .get(&ChunkCoord::at(next))
                         .is_some_and(|chunk| chunk.active)
+                    {
+                        continue;
+                    }
+                    if occupied_particles
+                        .binary_search_by_key(&(next.x, next.y), |point| (point.x, point.y))
+                        .is_ok()
                     {
                         continue;
                     }
@@ -270,6 +349,7 @@ impl PressurePushSearch {
             self.goal = previous_goal;
             self.validated_nodes = previous_validated;
         }
+        self.occupied_particles = Some(occupied_particles);
         result
     }
     fn validate_context(&self, world: &World) -> EngineResult<()> {
@@ -324,26 +404,28 @@ impl PressurePushSearch {
         }
         Ok(())
     }
-    fn validate_node(&self, world: &World, layer: LayerId, index: usize) -> EngineResult<()> {
-        let point = self.nodes[index].0;
-        let expected = if self.goal == Some(index as u32) {
-            MaterialId::AIR
-        } else {
-            self.material
-        };
-        if !matches!(world.cell(layer, point)?, CellQuery::Loaded(cell)
-            if cell.block.is_none() && cell.core.material == expected)
-        {
-            return Err(conflict("圧力探索nodeの占有が不一致"));
-        }
-        Ok(())
-    }
     fn validate_inputs(&self, world: &World) -> EngineResult<()> {
         self.validate_context(world)?;
         let layer = world.content.layer_id(self.layer)?;
+        let computed_particles = if self.occupied_particles.is_none() {
+            Some(active_particle_cells(world, layer)?)
+        } else {
+            None
+        };
+        let occupied_particles = self
+            .occupied_particles
+            .as_deref()
+            .or(computed_particles.as_deref())
+            .ok_or_else(|| invalid("圧力探索の粒子索引"))?;
         // 公開時は全経路を実地形と照合します。step予算とは別の一括取引です。
         for index in 0..self.nodes.len() {
-            self.validate_node(world, layer, index)?;
+            let point = self.nodes[index].0;
+            let expected = if self.goal == Some(index as u32) {
+                MaterialId::AIR
+            } else {
+                self.material
+            };
+            validate_node(world, layer, point, expected, occupied_particles)?;
         }
         Ok(())
     }
@@ -400,6 +482,11 @@ impl CandidateState for PressurePushSearch {
             source_pressure: self.source_pressure,
             mass: self.mass,
             chunks: super::terrain::copy_slice(&self.chunks)?,
+            occupied_particles: self
+                .occupied_particles
+                .as_ref()
+                .map(|points| super::terrain::copy_slice(points))
+                .transpose()?,
             nodes: super::terrain::copy_slice(&self.nodes)?,
             cursor: self.cursor,
             goal: self.goal,
@@ -418,6 +505,16 @@ impl CandidateState for PressurePushSearch {
             || self.nodes[0].1 != 0
             || self.chunks.is_empty()
             || self.chunks.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            || self.occupied_particles.as_ref().is_some_and(|occupied| {
+                occupied
+                    .windows(2)
+                    .any(|pair| (pair[0].x, pair[0].y) >= (pair[1].x, pair[1].y))
+                    || occupied.iter().any(|point| {
+                        self.chunks
+                            .binary_search_by_key(&ChunkCoord::at(*point), |(coord, _)| *coord)
+                            .is_err()
+                    })
+            })
             || self
                 .goal
                 .is_some_and(|index| index == 0 || index as usize != self.nodes.len() - 1)
@@ -464,7 +561,11 @@ impl CandidateState for PressurePushSearch {
 impl StateCodec for PressurePushSearch {
     fn encode(&self, out: &mut Encoder) -> EngineResult<()> {
         self.validate()?;
-        out.raw(b"CHPUSH02")?;
+        out.raw(if self.occupied_particles.is_some() {
+            b"CHPUSH03"
+        } else {
+            b"CHPUSH02"
+        })?;
         self.world.encode(out)?;
         out.raw(&self.content)?;
         out.u64(self.epoch)?;
@@ -476,6 +577,12 @@ impl StateCodec for PressurePushSearch {
         out.u32(self.config.nodes)?;
         out.i64(self.source_pressure)?;
         out.u32(self.mass)?;
+        if let Some(points) = &self.occupied_particles {
+            out.u32(u32::try_from(points.len()).map_err(|_| invalid("圧力探索粒子索引件数"))?)?;
+            for point in points {
+                point.encode(out)?;
+            }
+        }
         out.u32(self.chunks.len() as u32)?;
         for (coord, revision) in &self.chunks {
             coord.encode(out)?;
@@ -491,9 +598,10 @@ impl StateCodec for PressurePushSearch {
         out.u32(self.validated_nodes as u32)
     }
     fn decode(input: &mut Decoder<'_>) -> EngineResult<Self> {
-        let persisted_validation = match input.raw(8)? {
-            b"CHPUSH01" => false,
-            b"CHPUSH02" => true,
+        let version = match input.raw(8)? {
+            b"CHPUSH01" => 1,
+            b"CHPUSH02" => 2,
+            b"CHPUSH03" => 3,
             _ => return Err(invalid("圧力探索recordの形式")),
         };
         let world = WorldId::decode(input)?;
@@ -510,6 +618,20 @@ impl StateCodec for PressurePushSearch {
         };
         let source_pressure = input.i64()?;
         let mass = input.u32()?;
+        let occupied_particles = if version >= 3 {
+            let count = input.u32()? as usize;
+            if count > input.remaining() / 8 {
+                return Err(invalid("圧力探索粒子索引の切断"));
+            }
+            let mut points = Vec::new();
+            points.try_reserve_exact(count).map_err(allocation)?;
+            for _ in 0..count {
+                points.push(CellPoint::decode(input)?);
+            }
+            Some(points)
+        } else {
+            None
+        };
         let count = input.u32()? as usize;
         if count > input.remaining() / 16 {
             return Err(invalid("圧力探索chunk列の切断"));
@@ -532,7 +654,7 @@ impl StateCodec for PressurePushSearch {
         let goal = Option::<u32>::decode(input)?;
         // 旧recordは未照合から始め、新recordは照合進捗もphase間で引き継ぎます。
         // 再開時の入力revision検査と公開前の全node実地形照合は省略しません。
-        let validated_nodes = if persisted_validation {
+        let validated_nodes = if version >= 2 {
             input.u32()? as usize
         } else {
             0
@@ -551,6 +673,7 @@ impl StateCodec for PressurePushSearch {
             source_pressure,
             mass,
             chunks,
+            occupied_particles,
             nodes,
             cursor,
             goal,
@@ -706,7 +829,19 @@ mod tests {
         let mut out = Encoder::new(100_000);
         search.encode(&mut out).unwrap();
         let canonical = out.finish();
-        let mut bytes = canonical.clone();
+        let mut legacy_search = search.try_copy().unwrap();
+        legacy_search.occupied_particles = None;
+        let mut legacy = Encoder::new(100_000);
+        legacy_search.encode(&mut legacy).unwrap();
+        let version_two = legacy.finish();
+        let mut v2_decoder = Decoder::new(&version_two, 100_000).unwrap();
+        let mut restored_v2 = PressurePushSearch::decode(&mut v2_decoder).unwrap();
+        assert!(restored_v2.occupied_particles.is_none());
+        assert_eq!(restored_v2.validated_nodes, restored_v2.nodes.len());
+        restored_v2.step(&world, 1).unwrap();
+        assert_eq!(restored_v2.validated_nodes, 1);
+
+        let mut bytes = version_two;
         bytes[..8].copy_from_slice(b"CHPUSH01");
         bytes.truncate(bytes.len() - 4);
         let mut decoder = Decoder::new(&bytes, 100_000).unwrap();
@@ -742,6 +877,7 @@ mod tests {
             search.step(&world, 4096).unwrap(),
             PressurePushStatus::NoOutlet
         );
+        search.occupied_particles = None;
         let mut out = Encoder::new(100_000);
         search.encode(&mut out).unwrap();
         let mut bytes = out.finish();

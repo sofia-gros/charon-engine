@@ -99,10 +99,66 @@ pub struct MaterialMotionJob {
     progressed: [u64; 2],
     path_limit: usize,
     path: Vec<CellPoint>,
+    // 復元したJobは最初のstepで再構築する。保存せず、publish境界でもWorldから再確認する。
+    occupied_particles: Option<Vec<CellPoint>>,
     chunks: Vec<(ChunkCoord, u64)>,
     finished: bool,
     blocked: u8,
     checked_steps: u64,
+}
+
+/// 活動中の同layer正規粒子が占有するcellを座標順に収集します。
+fn active_particle_cells(world: &World, layer: LayerId) -> EngineResult<Vec<CellPoint>> {
+    let mut points = Vec::new();
+    for (_, particle) in world.material_particles() {
+        if particle.is_archived() || particle.layer != layer {
+            continue;
+        }
+        let point = particle.cell();
+        if !world
+            .chunks
+            .get(&ChunkCoord::at(point))
+            .is_some_and(|chunk| chunk.active)
+        {
+            continue;
+        }
+        points.try_reserve(1).map_err(allocation)?;
+        points.push(point);
+    }
+    points.sort_unstable_by_key(|point| (point.x, point.y));
+    points.dedup();
+    Ok(points)
+}
+
+fn particle_occupies(points: &[CellPoint], point: CellPoint) -> bool {
+    points
+        .binary_search_by_key(&(point.x, point.y), |candidate| (candidate.x, candidate.y))
+        .is_ok()
+}
+
+/// 保存経路が粒子を通らないことを、Worldの正規粒子集合で確認します。
+fn validate_particle_path(path: &[CellPoint], occupied: &[CellPoint]) -> EngineResult<()> {
+    if path
+        .first()
+        .is_some_and(|point| particle_occupies(occupied, *point))
+    {
+        return Err(conflict("広域DDAのsourceが正規粒子に占有"));
+    }
+    for pair in path.windows(2) {
+        let from = pair[0];
+        let to = pair[1];
+        if from.x != to.x && from.y != to.y {
+            let guard_x = CellPoint { x: to.x, y: from.y };
+            let guard_y = CellPoint { x: from.x, y: to.y };
+            if particle_occupies(occupied, guard_x) || particle_occupies(occupied, guard_y) {
+                return Err(conflict("広域DDAの角検査cellが正規粒子に占有"));
+            }
+        }
+        if particle_occupies(occupied, to) {
+            return Err(conflict("広域DDAの経路が正規粒子に占有"));
+        }
+    }
+    Ok(())
 }
 
 impl MaterialMotionJob {
@@ -184,6 +240,10 @@ impl MaterialMotionJob {
         let mut path = Vec::new();
         path.try_reserve(1).map_err(allocation)?;
         path.push(source);
+        let occupied_particles = active_particle_cells(world, layer)?;
+        if particle_occupies(&occupied_particles, source) {
+            return Err(conflict("広域移動のsourceが正規粒子に占有"));
+        }
         let value = Self {
             world: world.id,
             content: world.content.fingerprint(),
@@ -199,6 +259,7 @@ impl MaterialMotionJob {
             progressed: [0; 2],
             path_limit: max_path_cells,
             path,
+            occupied_particles: Some(occupied_particles),
             chunks,
             finished: counts == [0, 0],
             blocked: 0,
@@ -228,6 +289,12 @@ impl MaterialMotionJob {
     /// 一交差を一budgetとし、Worldを変更せずに整数DDAを進めます。
     pub fn step(&mut self, world: &World, budget: usize) -> EngineResult<MaterialMotionJobStatus> {
         self.validate_context(world)?;
+        if self.occupied_particles.is_none() {
+            let layer = world.content.layer_id(self.layer)?;
+            let occupied = active_particle_cells(world, layer)?;
+            validate_particle_path(&self.path, &occupied)?;
+            self.occupied_particles = Some(occupied);
+        }
         for _ in 0..budget {
             if self.finished {
                 break;
@@ -256,6 +323,17 @@ impl MaterialMotionJob {
         }
         points[2] = Some(target);
         for check in points.into_iter().flatten() {
+            if self
+                .occupied_particles
+                .as_ref()
+                .is_some_and(|occupied| particle_occupies(occupied, check))
+            {
+                self.blocked = 1;
+                self.after = MaterialMotion::default();
+                self.finished = true;
+                self.checked_steps += 1;
+                return Ok(());
+            }
             match world.cell(world.content.layer_id(self.layer)?, check)? {
                 CellQuery::WorldBoundary => {
                     self.blocked = 1;
@@ -316,6 +394,9 @@ impl MaterialMotionJob {
             if !self.finished {
                 return Err(conflict("広域移動Jobが未完成"));
             }
+            let layer = edit.world.content.layer_id(self.layer)?;
+            let occupied = active_particle_cells(edit.world, layer)?;
+            validate_particle_path(&self.path, &occupied)?;
             self.publish_validated(edit)
         })
     }
@@ -385,6 +466,11 @@ impl MaterialMotionJob {
             return Err(conflict("広域移動Jobの速度入力が変更"));
         }
         Ok(())
+    }
+    fn validate_particle_occupancy(&self, world: &World) -> EngineResult<()> {
+        let layer = world.content.layer_id(self.layer)?;
+        let occupied = active_particle_cells(world, layer)?;
+        validate_particle_path(&self.path, &occupied)
     }
     fn validate_progress(&self) -> EngineResult<()> {
         self.before.validate()?;
@@ -564,6 +650,7 @@ impl WorldEdit<'_> {
                 if !job.finished {
                     return Err(conflict("広域移動Job群に未完成Jobがある"));
                 }
+                job.validate_particle_occupancy(editor.world)?;
             }
             for search in pressure_pushes {
                 ordered.push(PreparedMaterialJob::PressurePush(search, None));
@@ -786,6 +873,7 @@ pub(super) fn reserve_material_job_paths(
         if !job.finished {
             return Err(conflict("MaterialPhaseに未完成の広域移動Jobがある"));
         }
+        job.validate_particle_occupancy(world)?;
         let path_work = job
             .path
             .len()
@@ -1071,6 +1159,7 @@ impl StateCodec for MaterialMotionJob {
             progressed,
             path_limit,
             path,
+            occupied_particles: None,
             chunks,
             finished,
             blocked,

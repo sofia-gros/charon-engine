@@ -1069,6 +1069,72 @@ fn wide_job_collision_returns_partial_path_and_never_jumps_wall() {
 }
 
 #[test]
+fn wide_job_treats_same_layer_particle_as_an_occupied_cell() {
+    let (mut world, layer) = create();
+    place(&mut world, layer, point(8, 8), "test:sand", [5 * 65536, 0]);
+    place(&mut world, layer, point(10, 8), "test:sand", [0, 0]);
+    let particle = world
+        .edit(|edit| edit.emit_material_particle(layer, point(10, 8), [0, 0]))
+        .unwrap();
+    let mut running = job(&world, layer, point(8, 8));
+
+    assert_eq!(
+        running.step(&world, 8).unwrap(),
+        MaterialMotionJobStatus::Ready
+    );
+    assert!(running.report().collision);
+    assert_eq!(running.report().crossed_cells, 1);
+    world.edit(|edit| running.publish(edit)).unwrap();
+
+    let sand = world
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    assert_eq!(material(&world, layer, point(9, 8)), sand);
+    assert_eq!(material(&world, layer, point(10, 8)), MaterialId::AIR);
+    assert_eq!(
+        world.material_particle(particle).unwrap().cell(),
+        point(10, 8)
+    );
+}
+
+#[test]
+fn wide_job_diagonal_guard_treats_same_layer_particle_as_occupied() {
+    let (mut world, layer) = create();
+    place(
+        &mut world,
+        layer,
+        point(8, 8),
+        "test:sand",
+        [2 * 65536, 2 * 65536],
+    );
+    place(&mut world, layer, point(9, 8), "test:sand", [0, 0]);
+    let particle = world
+        .edit(|edit| edit.emit_material_particle(layer, point(9, 8), [0, 0]))
+        .unwrap();
+    let mut running = job(&world, layer, point(8, 8));
+
+    assert_eq!(
+        running.step(&world, 1).unwrap(),
+        MaterialMotionJobStatus::Ready
+    );
+    assert!(running.report().collision);
+    assert_eq!(running.report().crossed_cells, 0);
+    world.edit(|edit| running.publish(edit)).unwrap();
+
+    let sand = world
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    assert_eq!(material(&world, layer, point(8, 8)), sand);
+    assert_eq!(material(&world, layer, point(9, 8)), MaterialId::AIR);
+    assert_eq!(
+        world.material_particle(particle).unwrap().cell(),
+        point(9, 8)
+    );
+}
+
+#[test]
 fn stale_input_unfinished_publish_and_capacity_fail_without_mutating_world() {
     let (mut world, layer) = create();
     place(&mut world, layer, point(8, 8), "test:sand", [5 * 65536, 0]);
