@@ -877,7 +877,7 @@ impl WorldEdit<'_> {
             Ok(())
         })
     }
-    fn loaded(&self, layer: LayerId, point: CellPoint) -> EngineResult<CellView> {
+    pub(super) fn loaded(&self, layer: LayerId, point: CellPoint) -> EngineResult<CellView> {
         match self.world.cell(layer, point)? {
             CellQuery::Loaded(value) => Ok(value),
             CellQuery::Unavailable(_) => Err(EngineError::new(
@@ -887,7 +887,7 @@ impl WorldEdit<'_> {
             CellQuery::WorldBoundary => Err(invalid("World境界外の編集")),
         }
     }
-    fn write(
+    pub(super) fn write(
         &mut self,
         layer: LayerId,
         point: CellPoint,

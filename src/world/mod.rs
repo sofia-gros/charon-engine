@@ -14,11 +14,15 @@ mod generation;
 mod jobs;
 mod observer;
 mod placement;
+mod pressure;
+mod pressure_push;
 mod remap;
+mod scalar_transport;
 mod snapshot;
 mod state;
 mod storage;
 mod terrain;
+mod transport;
 
 pub use activity::*;
 pub use archive::*;
@@ -30,7 +34,10 @@ pub use generation::*;
 pub use jobs::*;
 pub use observer::*;
 pub use placement::*;
+pub use pressure::*;
+pub use pressure_push::*;
 pub use remap::*;
+pub use scalar_transport::*;
 pub use storage::*;
 pub use terrain::*;
 

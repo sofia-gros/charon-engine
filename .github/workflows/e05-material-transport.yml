@@ -1,0 +1,35 @@
+name: E05 物質輸送と圧力
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e05-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  material-transport:
+    name: 物質輸送と圧力を検証 ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04, macos-latest]
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.1
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - name: ソースを取得
+        uses: actions/checkout@v6
+      - name: Linuxのwindow依存を用意
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev
+      - name: 固定toolchainを用意
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: 輸送・圧力・探索再開の公開APIを検証
+        run: cargo test --locked --test material_transport

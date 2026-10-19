@@ -221,6 +221,13 @@ impl<T: GridValue> GridChannel<T> {
         self.chunks.len()
     }
 
+    /// 輸送前の容量計算用に、配列を確保せず非既定値の件数を返します。
+    pub(crate) fn non_default_count(&self, coordinate: (i32, i32)) -> usize {
+        self.find(coordinate)
+            .map(|index| usize::from(self.chunks[index].non_default))
+            .unwrap_or(0)
+    }
+
     /// 値を読みます。chunk未確保は既定値を意味し、World未読込の意味ではありません。
     pub fn get(&self, point: CellPoint) -> T {
         let (coordinate, index) = point.chunk_local();

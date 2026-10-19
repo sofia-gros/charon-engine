@@ -43,6 +43,7 @@ Cargoはビルドへ含める実装と依存を選び、YAMLはエンジンの�
 | [26_FULL_CLONE_ACCEPTANCE.md](26_FULL_CLONE_ACCEPTANCE.md) | Terraria・Noitaの全内容・全挙動を再現する能力の照合と出荷判定 |
 | [28_ASSET_AND_BASIC_RENDERING.md](28_ASSET_AND_BASIC_RENDERING.md) | 実装したE03の資産、pack、scope、差し替え、sprite、camera、描画adapter |
 | [29_WORLD_AND_PERSISTENCE.md](29_WORLD_AND_PERSISTENCE.md) | 実装したE04の世界・生成・活動域・独自状態・退避・保存API |
+| [30_MATERIAL_TRANSPORT.md](30_MATERIAL_TRANSPORT.md) | 実装中のE05：物質状態の輸送、局所移動、圧力と押出し探索 |
 | [27_FULL_CLONE_DESIGN_REVIEW.md](27_FULL_CLONE_DESIGN_REVIEW.md) | 完全クローン基準のレビュー、18件の不足と修正、設計判断の根拠 |
 
 ## この文書群の位置付け
@@ -79,3 +80,4 @@ TerrariaとNoitaは完全クローンの制作可能性を判定する対象で�
 実装済みの範囲と検証は各記録を参照してください。v1の設計・完全クローンの要件は、これらの基盤工程だけで達成したと扱いません。
 
 - [E04：世界と保存基盤](evidence/E04/README.md)
+- [E05：セルと流体（実装中）](evidence/E05/README.md)
