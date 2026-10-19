@@ -26,9 +26,9 @@ prepare中は入力を変更しない。予約に失敗したらすべて解放�
 
 phase familyは、各相の温度区間、整数熱容量C、潜熱L、連続なenergy境界を持つ。TはmK、Hはengine energy。単相では`H = H0 + C × (T - T0)`、転移区間では温度を固定してphase fractionを`(H - Hstart) / L`から求める。逆変換は区分順と0方向丸めを固定する。
 
-辺(a,b)の平衡移動量は`Qeq = trunc((Ta - Tb) × Ca × Cb / (Ca + Cb))`。伝導率とdtから求めたQrawを、符号を保って`abs(Qeq)/8`以下へ制限する。Qはaから減らしbへ同量を加える。phase境界では有効熱容量と潜熱の対応を区分で評価し、energyを丸め直して発行しない。
+辺(a,b)の平衡移動量`Qeq`は、enthalpy family上で`T(a-q) >= T(b+q)`を保つ最大整数qとして求める。同じ厳密単調な顕熱区間では直接解き、区間横断・潜熱・温度段差は整数二分探索する。伝導率とdtから求めた`Qraw`を符号付きで辺固有の1/8単位creditへ累積し、creditが8に達した整数energyだけを移す。実際の`abs(Q)`は累積Qeq/8およびQrawの両方を超えず、Qはaから減らしbへ同量を加える。phase境界では潜熱区間の温度関数を直接評価し、energyを丸め直して発行しない。
 
-端数accumulatorは各正方向辺(+x,+y)に一つ持ち、保存する。異なるsidecarの再構築時にも所有する辺を安定座標から決める。計算中間値はi128、保存範囲はi64として検証する。
+伝導flux residualと平衡上限creditは各正方向辺(+x,+y)が保存し、物質移動後も格子位置に属する。異なるsidecarの再構築時にも所有する辺を安定座標から決める。計算中間値はi128、conductance residualは保存i64、1/8 creditは0..7として検証する。
 
 ## 圧力場の基準
 
