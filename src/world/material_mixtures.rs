@@ -72,6 +72,55 @@ impl MaterialQuantity {
             .ok_or_else(|| invalid("物質数量の分母上限"))?;
         Self::new(numerator, denominator)
     }
+    /// 非負の差を正確に求めます。負の結果と中間積の上限超過は拒否します。
+    pub fn checked_sub(self, other: Self) -> EngineResult<Self> {
+        if self == other {
+            return Ok(Self::ZERO);
+        }
+        let divisor = gcd(self.denominator, other.denominator);
+        let a = self.denominator / divisor;
+        let b = other.denominator / divisor;
+        let left = self
+            .numerator
+            .checked_mul(b)
+            .ok_or_else(|| invalid("物質数量の減算上限"))?;
+        let right = other
+            .numerator
+            .checked_mul(a)
+            .ok_or_else(|| invalid("物質数量の減算上限"))?;
+        let numerator = left
+            .checked_sub(right)
+            .ok_or_else(|| invalid("物質数量の負の差"))?;
+        let denominator = a
+            .checked_mul(other.denominator)
+            .ok_or_else(|| invalid("物質数量の分母上限"))?;
+        Self::new(numerator, denominator)
+    }
+
+    /// 除算の商と剰余を交互に比べ、交差積のoverflowなしで大小を比較します。
+    pub fn compare(self, other: Self) -> std::cmp::Ordering {
+        let (mut a, mut b, mut c, mut d) = (
+            self.numerator,
+            self.denominator,
+            other.numerator,
+            other.denominator,
+        );
+        let mut reversed = false;
+        loop {
+            let order = (a / b).cmp(&(c / d));
+            if order != std::cmp::Ordering::Equal {
+                return if reversed { order.reverse() } else { order };
+            }
+            let (left, right) = (a % b, c % d);
+            if left == 0 || right == 0 {
+                let order = left.cmp(&right);
+                return if reversed { order.reverse() } else { order };
+            }
+            (a, b, c, d) = (b, left, d, right);
+            reversed = !reversed;
+        }
+    }
+
     /// 質量換算等の整数倍。先に分母と約分します。
     pub fn checked_mul(self, value: u128) -> EngineResult<Self> {
         let divisor = gcd(value, self.denominator);
@@ -237,6 +286,9 @@ pub struct MixtureRef {
     index: u32,
 }
 impl MixtureRef {
+    pub(super) fn inventory_key(self) -> (Option<WorldId>, u32) {
+        (self.world, self.index)
+    }
     /// 組成を持たない純物質。空cellにもこの値だけを使います。
     pub const NONE: Self = Self {
         world: None,

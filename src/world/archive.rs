@@ -159,13 +159,13 @@ pub struct RegionLoadTask {
 }
 /// 復号済み候補。restore_regionまではresidentにもactiveにもなりません。
 pub struct LoadedRegion {
-    world: WorldId,
-    region: ChunkRegion,
-    hash: [u8; 32],
-    chunks: BTreeMap<ChunkCoord, Chunk>,
-    blocks: Vec<(super::BlockId, BlockInstance)>,
-    channels: Vec<Vec<u8>>,
-    particles: Vec<(
+    pub(super) world: WorldId,
+    pub(super) region: ChunkRegion,
+    pub(super) hash: [u8; 32],
+    pub(super) chunks: BTreeMap<ChunkCoord, Chunk>,
+    pub(super) blocks: Vec<(super::BlockId, BlockInstance)>,
+    pub(super) channels: Vec<Vec<u8>>,
+    pub(super) particles: Vec<(
         crate::foundation::id::Id<super::MaterialParticleKind>,
         super::MaterialParticle,
     )>,
@@ -252,7 +252,13 @@ impl RegionLoadTask {
             if crate::foundation::StableKey::decode(&mut input)? != factory.key() {
                 return Err(invalid("archive channel辞書"));
             }
-            channels.push(super::terrain::copy_slice(input.bytes(self.byte_limit)?)?);
+            let bytes = super::terrain::copy_slice(input.bytes(self.byte_limit)?)?;
+            // checksumが正しくても、別regionの値を持つchannelを受理しません。
+            // 復帰時のmergeが隣接したresident領域を上書きする前に拒否します。
+            factory
+                .restore(&bytes)?
+                .validate_archive_region(self.region)?;
+            channels.push(bytes);
         }
         let mut particles = Vec::new();
         if with_particles {

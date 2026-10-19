@@ -127,6 +127,20 @@ impl World {
     }
     pub(crate) fn validate_state(&self) -> EngineResult<()> {
         self.state.validate()?;
+        for record in self.state.records() {
+            if self
+                .content
+                .schemas
+                .get(record.schema)?
+                .is::<super::MaterialBalanceLog>()
+            {
+                let log = self.state::<super::MaterialBalanceLog>(record.key)?;
+                if log.key() != record.key {
+                    return Err(super::conflict("全表現収支の保存キー"));
+                }
+                log.validate_world(self)?;
+            }
+        }
         for (_, block) in self.blocks.iter() {
             block.validate_state()?;
         }
@@ -185,6 +199,12 @@ impl WorldEdit<'_> {
                 input.finish()?;
                 value.validate_replacement(editor.world, key)?;
             }
+            if definition.is::<super::MaterialBalanceLog>() {
+                let mut input = Decoder::new(&payload, definition.max_bytes())?;
+                let value = super::MaterialBalanceLog::decode(&mut input)?;
+                input.finish()?;
+                value.validate_replacement(editor.world, key)?;
+            }
             let mut transaction = editor.world.state.transaction()?;
             transaction.put_encoded(key, schema, payload)?;
             transaction.commit()?;
@@ -227,8 +247,41 @@ impl WorldEdit<'_> {
             {
                 log.validate_replacement(editor.world, key)?;
             }
+            if let Some(log) =
+                (value as &dyn std::any::Any).downcast_ref::<super::MaterialBalanceLog>()
+            {
+                log.validate_replacement(editor.world, key)?;
+            }
             let mut transaction = editor.world.state.transaction()?;
             transaction.put(key, schema, value)?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+    /// World作者状態を削除します。物質所有権・receipt・監査台帳のrecordは削除できません。
+    ///
+    /// 進行中Jobを完了・取消した時に、その正規進捗だけを地形と同じ候補から除去します。
+    /// state容量の解放とJob消費を同じWorldEditで確定でき、後段の失敗では両方をrollbackします。
+    pub fn remove_state(&mut self, key: StableKey) -> EngineResult<()> {
+        self.run(|editor| {
+            let record = editor
+                .world
+                .state
+                .records()
+                .find(|record| record.key == key)
+                .ok_or_else(|| EngineError::new(ErrorCode::MissingKey, "World作者状態"))?;
+            let schema = editor.world.content.schemas.get(record.schema)?;
+            if schema.is::<super::MixtureStore>()
+                || schema.is::<super::MaterialReceiptLog>()
+                || schema.is::<super::MaterialBalanceLog>()
+            {
+                return Err(EngineError::new(
+                    ErrorCode::InvalidState,
+                    "物質store・receipt・収支台帳は一般削除できません",
+                ));
+            }
+            let mut transaction = editor.world.state.transaction()?;
+            transaction.remove(key)?;
             transaction.commit()?;
             Ok(())
         })

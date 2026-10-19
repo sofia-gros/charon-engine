@@ -4,7 +4,7 @@
 
 `WorldEdit::apply_material_changes`は、cellの発行・消費・変換と、その理由・量の記録を同じWorld取引で確定する。E05全体・Q04の完了を示さない。
 
-この単位はcell表現の変更に対するreceiptである。rawな`set_cell`、生成器、全providerの変更を自動監視しない。世界cell・粒子・剛体local cell・退避領域・reservoirを集計済みの全World台帳ではない。混合・粒子などの表現間bridgeと全体収支の検査は後続で接続する。
+この単位はcell表現の変更に対するreceiptである。rawな`set_cell`、生成器、全providerの変更を自動監視しない。世界cell・粒子・剛体local cell・退避領域・reservoirを集計済みの全World台帳ではない。混合・粒子・archiveと作者providerを含む全体収支は[36](36_MATERIAL_ACCOUNTING.md)の明示的な監査付き取引へ接続する。このcell API単体を自動監視付きの全World台帳とは呼ばない。
 
 ## journalの所属と保存
 
@@ -65,3 +65,7 @@ cargo test --locked --test material_receipts
 ## 汎用状態書戻しからの履歴保護
 
 `WorldEdit::set_state`とruntimeのencoded書込みでMaterialReceiptLogを保存する場合、初回は空履歴だけを認め、既存recordは現在のreceipt列と完全一致する容量変更だけを認める。古いsnapshotによる短縮・変更と、同じcheckpointから分岐したWorldの履歴の追記を拒否する。cell取引の専用内部経路だけがreceiptを追記するため、混合witnessの参照先を後から巻き戻せない。これは作者の汎用state全般をappend-onlyにする制限ではなく、標準の物質receipt型の契約である。完全checkpointの復元は世界全体を同時に復元する。
+
+## 全表現の収支との接続
+
+[36の全表現収支](36_MATERIAL_ACCOUNTING.md)は実所有量を集計し、基準と理由付き増減へ照合する。cell・混合・粒子の個別記録を総量へ二重計上しない。標準body physics、物性統合、広域移動、dirty/sleep、RuntimeのQ04完成を示すものではない。

@@ -53,12 +53,16 @@ pub(crate) trait ChannelState: Send + Sync {
     fn bytes(&self) -> usize;
     fn validate(&self, world: &World) -> EngineResult<()>;
     fn extract(&self, region: ChunkRegion) -> EngineResult<Vec<u8>>;
+    /// 外部regionへ保存されたchannelが範囲外のcellを所有しないことを検査します。
+    /// 読込側が境界外の値を無視してしまうと、復帰時に他regionへ書き込む危険があります。
+    fn validate_archive_region(&self, region: ChunkRegion) -> EngineResult<()>;
     fn clear(&mut self, region: ChunkRegion) -> EngineResult<()>;
     fn merge(&mut self, bytes: &[u8]) -> EngineResult<()>;
     fn reset_material(&mut self, layer: StableKey, points: &[CellPoint]) -> EngineResult<()>;
     fn transport_bytes(&self, layer: StableKey, path: &[CellPoint]) -> EngineResult<usize>;
     fn transport(&mut self, layer: StableKey, path: &[CellPoint]) -> EngineResult<()>;
     fn material_payload(&self, point: CellPoint, limit: usize) -> EngineResult<Vec<u8>>;
+    fn mixture_reference(&self, point: CellPoint) -> EngineResult<super::MixtureRef>;
     fn validate_payload(&self, bytes: &[u8]) -> EngineResult<()>;
     fn payload_is_default(&self, point: CellPoint) -> EngineResult<bool>;
     fn payload_bytes(&self, point: CellPoint, bytes: &[u8]) -> EngineResult<usize>;
@@ -265,6 +269,19 @@ impl<T: GridValue + Send + Sync + 'static> Storage<T> {
     }
 }
 impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
+    fn mixture_reference(&self, point: CellPoint) -> EngineResult<super::MixtureRef> {
+        let value = self.grid.get(self.transport_coordinate(point)?);
+        (&value as &dyn Any)
+            .downcast_ref::<super::MixtureRef>()
+            .copied()
+            .ok_or_else(|| {
+                crate::foundation::EngineError::new(
+                    crate::foundation::ErrorCode::SchemaMismatch,
+                    "収支の混合channel型",
+                )
+            })
+    }
+
     fn material_payload(&self, point: CellPoint, limit: usize) -> EngineResult<Vec<u8>> {
         let value = self.grid.get(self.transport_coordinate(point)?);
         value.validate()?;
@@ -341,6 +358,22 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
             grid.set(point, value)?;
         }
         grid.checkpoint()
+    }
+    fn validate_archive_region(&self, region: ChunkRegion) -> EngineResult<()> {
+        for (point, value) in self.non_default() {
+            value.validate()?;
+            let coverage = coverage(self.grid.layout(), point, 1)?;
+            if !region.contains(coverage.min())
+                || coverage.max()[0] > region.max()[0]
+                || coverage.max()[1] > region.max()[1]
+            {
+                return Err(EngineError::new(
+                    ErrorCode::Conflict,
+                    "archive channel値が所属regionの境界外",
+                ));
+            }
+        }
+        Ok(())
     }
     fn clear(&mut self, region: ChunkRegion) -> EngineResult<()> {
         for (point, _) in self.selected(region)? {
@@ -774,4 +807,65 @@ fn coverage(layout: GridLayout, point: CellPoint, side: i64) -> EngineResult<Chu
         (max[0] + 63).div_euclid(64),
         (max[1] + 63).div_euclid(64),
     )
+}
+
+#[cfg(test)]
+mod archive_region_tests {
+    use super::*;
+    use crate::foundation::grid::{GridLimits, GridScale};
+
+    fn key(name: &str) -> StableKey {
+        StableKey::parse(name).unwrap()
+    }
+
+    fn storage(scale: u32) -> Storage<u64> {
+        let definition = Arc::new(Factory(
+            ChannelDefinition {
+                key: key("test:archive-channel"),
+                version: 1,
+                value_schema: key("test:channel-schema"),
+                layout: GridLayout {
+                    origin: CellPoint { x: 0, y: 0 },
+                    x_scale: GridScale::new(scale, 1).unwrap(),
+                    y_scale: GridScale::new(1, 1).unwrap(),
+                },
+                default: 0,
+                limits: GridLimits {
+                    chunks: 8,
+                    checkpoint_bytes: 1_000_000,
+                },
+            },
+            None,
+        ));
+        let grid = definition.empty().unwrap();
+        Storage { definition, grid }
+    }
+
+    #[test]
+    fn archive_rejects_non_default_values_from_neighbor_region() {
+        let region = ChunkRegion::single(ChunkCoord::new(0, 0).unwrap()).unwrap();
+        let mut channel = storage(1);
+        channel.grid.set(CellPoint { x: 1, y: 1 }, 7).unwrap();
+        assert!(channel.validate_archive_region(region).is_ok());
+        channel.grid.set(CellPoint { x: 65, y: 1 }, 9).unwrap();
+        assert!(channel.validate_archive_region(region).is_err());
+        let encoded = channel.checkpoint().unwrap();
+        let restored = channel.definition.decode(&encoded).unwrap();
+        let restored = Storage {
+            definition: Arc::clone(&channel.definition),
+            grid: restored,
+        };
+        assert!(restored.validate_archive_region(region).is_err());
+    }
+
+    #[test]
+    fn archive_rejects_coarse_grid_coverage_crossing_region_boundary() {
+        let region = ChunkRegion::single(ChunkCoord::new(0, 0).unwrap()).unwrap();
+        let mut channel = storage(3);
+        channel.grid.set(CellPoint { x: 20, y: 0 }, 5).unwrap();
+        assert!(channel.validate_archive_region(region).is_ok());
+        // 21番目のchannel値はcell座標63～65を覆い、chunk境界を跨ぎます。
+        channel.grid.set(CellPoint { x: 21, y: 0 }, 6).unwrap();
+        assert!(channel.validate_archive_region(region).is_err());
+    }
 }

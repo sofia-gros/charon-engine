@@ -12,8 +12,8 @@ mod scene;
 pub mod schedule;
 
 pub use engine::{
-    AppBuilder, Engine, EngineBuilder, HeadlessRuntime, Plugin, RenderCapabilities,
-    ServiceRegistry, StepResult, WorldAccess, WorldView,
+    AppBuilder, Engine, EngineBuilder, HeadlessRuntime, MaterialAccountingSubmission, Plugin,
+    RenderCapabilities, ServiceRegistry, StepResult, WorldAccess, WorldView,
 };
 pub use host::{DesktopGpu, DesktopWindow};
 pub use scene::{FrameContext, LoadContext, Scene, SceneContext, SceneState, StopContext};

@@ -56,6 +56,16 @@ impl WorldEdit<'_> {
         layer: LayerId,
         config: PressureRelaxation,
     ) -> EngineResult<PressureRelaxationReport> {
+        self.relax_pressure_with_change_count(layer, config)
+            .map(|(report, _)| report)
+    }
+
+    /// Sleep証明用に、参照圧力反復が入力fieldを変更したか返します。
+    pub(super) fn relax_pressure_with_change_count(
+        &mut self,
+        layer: LayerId,
+        config: PressureRelaxation,
+    ) -> EngineResult<(PressureRelaxationReport, usize)> {
         self.run(|editor| {
             if config.iterations == 0 || !editor.world.content.layer(layer)?.simulated {
                 return Err(invalid("圧力の反復数または対象layer"));
@@ -218,12 +228,17 @@ impl WorldEdit<'_> {
                 }
                 std::mem::swap(&mut old, &mut next);
             }
+            let changed = samples
+                .iter()
+                .zip(&old)
+                .filter(|(sample, pressure)| sample.pressure != **pressure)
+                .count();
             let mut updates = Vec::new();
-            updates
-                .try_reserve_exact(samples.len())
-                .map_err(allocation)?;
+            updates.try_reserve_exact(changed).map_err(allocation)?;
             for (sample, pressure) in samples.into_iter().zip(old) {
-                updates.push((channel_point(sample.point, layout.origin)?, pressure));
+                if sample.pressure != pressure {
+                    updates.push((channel_point(sample.point, layout.origin)?, pressure));
+                }
             }
             let default = editor
                 .world
@@ -237,7 +252,7 @@ impl WorldEdit<'_> {
                     }
                 }
             }
-            Ok(report)
+            Ok((report, changed))
         })
     }
 }

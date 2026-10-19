@@ -63,10 +63,14 @@ KeepChannelsは各点の物質payloadを保持し、ResetChannelsは各定義の
 
 通常操作はStateStoreのrecord復元・候補複製と組成検査、全入出力の成分列挙と安定整列、journal追記と既存履歴の再保存を含む参照実装である。固定キーへの書戻しでは現recordの再decodeと定義・witnessの完全比較も行う。組成数・履歴数・変更cell数・成分種類数とcodec byte容量に依存し、定義を登録する処理をcell毎のhot kernelとして呼ばない。cell上の参照自体は固定長で、各cellへHashMapやBoxを置かない。
 
-`MixtureStore::validate_world`はjournalを種類ごとに一度読み、過去のcell変更とwitness、成分保存方針を監査する全履歴処理である。現在の全cell・粒子・剛体・reservoir・archiveの総量を集計するAPIではない。raw編集・生成器・独自providerの自動監視も行わない。全表現収支とprovider認定はE05の残作業として続ける。
+`MixtureStore::validate_world`はjournalを種類ごとに一度読み、過去のcell変更とwitness、成分保存方針を監査する全履歴処理である。現在の全cell・粒子・剛体・reservoir・archiveの総量を集計するAPIではない。raw編集・生成器・独自providerの自動監視も行わない。全表現の総量と履歴照合は[36](36_MATERIAL_ACCOUNTING.md)で接続する。物性providerの統合・認定とRuntimeのQ04はE05の残作業として続ける。
 
 ## 検証と作例
 
 `tests/material_mixtures.rs`で正規化・共有参照、密度が異なる素材の端数、混合と分離、詰めたcarrier、意図した変換差、Source/Sink、scope・Content・schemaとchannel所有権、期待値・block・未読込・重複、各容量のrollback、輸送・保存・区域退避、codec切断と有理数演算を検査する。
 
 `cargo run --locked --example material_mixtures`はmass5・3の二cellをmass4の二cellへ混合し、一cellずつに水・油token各1/2を持たせる。混合後の保存から分離を再開し、連続実行とcheckpointが一致すること、witness2件と参照配列の回収をassertする。
+
+## 全表現の収支との接続
+
+[36の全表現収支](36_MATERIAL_ACCOUNTING.md)は実所有量を集計し、基準と理由付き増減へ照合する。cell・混合・粒子の個別記録を総量へ二重計上しない。標準body physics、物性統合、広域移動、dirty/sleep、RuntimeのQ04完成を示すものではない。

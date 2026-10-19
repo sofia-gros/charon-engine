@@ -50,13 +50,15 @@ channelの旧値を退避してから対象点を既定値へ戻し、再配置�
 
 ## 満杯経路の押出し
 
-`PressurePushSearch::new`で流体始点と圧力条件、node容量を指定する。`step(world, budget)`で最大budget nodeの四近傍を上・左・右・下の固定順に調べる。同じ素材の活動cellを通過し、空き先との圧力差と重力項が閾値を超えた経路をReadyとする。活動中の空cellは相対圧0として扱い、位置固定channelに残った旧圧力値を使わない。保存から復元したReady経路の再検査・公開にも同じ境界条件を適用する。
+`PressurePushSearch::new`で流体始点と圧力条件、node容量を指定する。`step(world, budget)`で最大budget nodeの四近傍を上・左・右・下の固定順に調べる。同じ素材の活動cellを通過し、空き先との圧力差と重力項が閾値を超えた経路をReadyとする。同layerの活動域にいる正規粒子のcellは探索時・保存node再検査時とも占有済みとして扱い、出口にも経路にも選ばない。活動中の空cellは相対圧0として扱い、位置固定channelに残った旧圧力値を使わない。保存から復元したReady経路の再検査・公開にも同じ境界条件を適用する。
 
 Searching、Ready、NoOutletを区別する。容量不足はエラーであり、NoOutletへ丸めない。step失敗時はcursorとfrontierも変更しない。`set_node_capacity`で上限を増やして同じfrontierから再開できるが、StateStoreのrecord byte上限は独立して残る。World ID、Content、material epoch、入力した全活動chunkのrevisionと活動集合を照合する。失効時は古い経路を使わず再探索する。復元recordは親node・隣接・重複・所属領域だけでなく、再開・公開時に実際の物質・空き先・driveも再確認する。
 
-訪問済みbitsetは探索ごとに活動chunk当たり4096bitを保持し、各stepでfrontier全体を複製・再構築しない。追記したnodeとその訪問bitだけを失敗時に巻き戻す。復元時にnode列から索引を一度再構築する。`CHPUSH02`は照合済みnode数も保存し、毎phaseのStateStore読込・保存で同じprefixの照合を繰り返さない。旧`CHPUSH01`は未照合から始め、実地形とのnode照合がstepのbudgetを一件ずつ消費する。その途中を新形式へ保存しても照合カーソルを保持する。照合中はSearchingを返し、探索cursorを進めず、全照合後に探索を再開する。新形式で照合済みのReady・NoOutletは復元直後も同じ状態を保つが、stepと公開は入力contextを照合し、公開前は形式にかかわらず全nodeを実地形と照合する。
+訪問済みbitsetは探索ごとに活動chunk当たり4096bitを保持し、各stepでfrontier全体を複製・再構築しない。追記したnodeとその訪問bitだけを失敗時に巻き戻す。さらに同layer・活動域内のresident粒子cellを一度収集・座標順に索引化し、候補ごとに二分探索する。構築は粒子数Pに対してO(P log P)、一候補の照合はO(log P)、索引と保存byteは8P byte（加えて個数4byte）で、Pは活動域内の同layer粒子数である。chunk revisionが変化した場合はjob全体を失効させるため、占有索引だけ古く残らない。毎phaseにJobをStateStoreから保存し直す経路ではこの索引もrecordへ含め、全粒子の再走査と再整列を繰り返さない。
 
-一stepの仕事は最大budget件のnode照合・展開と、活動chunk集合・revisionの検査である。後者は読込済みchunkの走査と、記録した活動chunkのrevision照合に依存する。node Vecの拡張は償却費用で、常に一定時間を保証するものではない。全recordの保存・復元・明示的な候補複製と公開取引は別途node数に比例する費用を持ち、毎stepで全状態を保存する呼出側の費用までbudgetへ含むとは説明しない。保存は`CHPUSH02`を出力し、末尾にu32の照合カーソルを追加する。旧`CHPUSH01`も読める。byte上限は独立して残り、旧payloadより4byte増える。bitsetは保存nodeから再構築する。保存カーソルは構造的な範囲を検証する進捗値であり、実地形の監査証明ではない。
+`CHPUSH03`は粒子占有索引と照合済みnode数を保存し、毎phaseのStateStore読込・保存で同じprefixのnode照合や粒子の再整列を繰り返さない。旧`CHPUSH02`・`CHPUSH01`も読める。旧形式は最初のstepで索引を作り、既存nodeの実地形・粒子占有照合をbudget一件ずつ最初からやり直す。照合中はSearchingを返し、探索cursorを進めず、全照合後に探索を再開する。新形式で照合済みのReady・NoOutletは復元直後も同じ状態を保つが、stepと公開は入力contextを照合する。保存record内の粒子索引は形式検査だけではWorldとの一致を証明しないため、公開前に現Worldから索引を再構築して保存値との一致を検査し、その実索引で全nodeを再確認する。
+
+一stepの仕事は最大budget件のnode照合・展開と、活動chunk集合・revisionの検査である。旧recordからの索引再構築は一回O(P log P)を追加する。公開境界でも現在の索引を一度再構築するためO(P log P)を要し、保存索引との差があれば輸送候補を公開しない。後者の活動chunk検査は読込済みchunk走査と、記録した活動chunkのrevision照合に依存する。node Vecの拡張は償却費用で、常に一定時間を保証するものではない。全recordの保存・復元・明示的な候補複製と公開取引はnode数・粒子索引サイズに比例する費用を持ち、毎stepで全状態を保存する呼出側の費用までbudgetへ含むとは説明しない。旧形式と新形式のbyte上限はStateStore schemaの別上限に従い、新形式では粒子索引分として8P+4byteが増える。bitsetは保存nodeから再構築する。保存カーソルは構造的な範囲を検証する進捗値であり、実地形の監査証明ではない。
 
 探索はStateCodecを実装し、作者がschemaを登録してWorld StateStoreへ保存できる。これは物質payloadをglobal stateへ移す処理ではなく、検索frontierと入力revisionの保存である。
 
@@ -73,4 +75,8 @@ world.edit(|edit| edit.publish_pressure_push(&search))?;
 
 ## E05の残作業
 
-[31](31_MATERIAL_MOTION.md)の整数格子の速度・端数・経路検査を物性とproviderへ統合し、広域移動の継続Jobを実装する。[35](35_MATERIAL_PARTICLES.md)では正規粒子のpool・全payload所有権・DDA・着地と所属regionとの退避・復帰を追加したが、これだけでE05を完了とはしない。[34](34_MATERIAL_MIXTURES.md)の混合・分離と粒子を含む物性・provider統合、[32](32_MATERIAL_RECEIPTS.md)のcell receiptを全表現のsource/sink/変換収支へ接続すること、[33](33_WIDE_PRESSURE.md)の広域圧力を含むdirty/sleepの参照比較、Runtime作例とQ04全体を完了してから工程を通過させる。
+[31](31_MATERIAL_MOTION.md)の整数格子の速度・端数・経路検査を物性とproviderへ統合し、広域移動の継続Jobを実装する。[35](35_MATERIAL_PARTICLES.md)では正規粒子のpool・全payload所有権・DDA・着地と所属regionとの退避・復帰を追加したが、これだけでE05を完了とはしない。[34](34_MATERIAL_MIXTURES.md)の混合・分離と粒子を含む物性・provider統合、[36](36_MATERIAL_ACCOUNTING.md)で接続した全表現の収支・保存監査をRuntimeへ統合すること、[33](33_WIDE_PRESSURE.md)の広域圧力を含むdirty/sleepの参照比較、Runtime作例とQ04全体を完了してから工程を通過させる。
+
+## 全表現の収支との接続
+
+[36の全表現収支](36_MATERIAL_ACCOUNTING.md)は実所有量を集計し、基準と理由付き増減へ照合する。cell・混合・粒子の個別記録を総量へ二重計上しない。標準body physics、物性統合、広域移動、dirty/sleep、RuntimeのQ04完成を示すものではない。

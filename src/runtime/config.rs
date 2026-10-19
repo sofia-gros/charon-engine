@@ -91,6 +91,8 @@ group!(
     SimulationPatch {
         /// 1秒あたりの固定更新数。整数時間累積から発行し、表示回数へ依存させません。
         step_hz: u16 = 60,
+        /// `.parallel()`を許可した独立作者Systemを同時実行する最大worker数。1〜64またはautoで、1なら逐次実行です。
+        system_workers: WorkerCount = WorkerCount::Count(1),
         /// 新規Worldや物理providerへ渡す既定重力。ゲーム個体の構成は含みません。
         gravity: Gravity = Gravity::default()
     }
@@ -326,6 +328,11 @@ impl EngineSettings {
             || !self.simulation.gravity.y.is_finite()
         {
             return Err(invalid("固定更新または重力"));
+        }
+        match &self.simulation.system_workers {
+            WorkerCount::Auto(value) if value == "auto" => {}
+            WorkerCount::Count(value) if (1..=64).contains(value) => {}
+            _ => return Err(invalid("simulation.system_workers (1〜64 またはauto)")),
         }
         if self.assets.root.as_os_str().is_empty()
             || self.storage.root.as_os_str().is_empty()

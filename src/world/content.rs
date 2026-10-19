@@ -138,6 +138,48 @@ pub struct GasPressureProperties {
     /// 広域の気体profileが公開できる非負Q16圧力の上限。超過は丸めずエラーです。
     pub maximum_q16: i64,
 }
+/// 標準の速度・力積分に使う素材別の無次元Q16係数です。
+///
+/// 重力scaleと浮力scaleは元の加速度へ掛ける値です。抗力と摩擦は1tick
+/// 当たりの速度減衰率で、0～65536のみを許します。これはエンジン内の
+/// ゲーム単位であり、現実のSI物理や独自providerへ適用を強制しません。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaterialMotionProperties {
+    /// 外部重力の倍率。65536が等倍、0が重力無効です。
+    pub gravity_scale_q16: u32,
+    /// 各tickの抗力による速度減衰割合。65536で全速度を除去します。
+    pub drag_q16: u32,
+    /// 接触する密度の高い液体・気体からの浮力加速度の倍率。
+    pub buoyancy_scale_q16: u32,
+    /// 重力方向に接触する固体での接線速度の減衰割合。
+    pub friction_q16: u32,
+}
+impl MaterialMotionProperties {
+    /// 分類別の参照初期値。独自providerはこの分類と式を上書きできます。
+    pub fn for_base(base: MaterialBase) -> Self {
+        Self {
+            gravity_scale_q16: if base == MaterialBase::Solid {
+                0
+            } else {
+                65536
+            },
+            drag_q16: 0,
+            buoyancy_scale_q16: if matches!(base, MaterialBase::Liquid | MaterialBase::Gas) {
+                65536
+            } else {
+                0
+            },
+            friction_q16: 0,
+        }
+    }
+    /// エンジンの標準物性範囲を検査します。
+    pub fn validate(self) -> EngineResult<()> {
+        if self.drag_q16 > 65536 || self.friction_q16 > 65536 {
+            return Err(invalid("物質の抗力・摩擦Q16上限"));
+        }
+        Ok(())
+    }
+}
 impl Default for GasPressureProperties {
     fn default() -> Self {
         Self {
@@ -158,6 +200,7 @@ pub struct MaterialDef {
     break_mode: BreakMode,
     mass: u32,
     gas_pressure: Option<GasPressureProperties>,
+    motion: Option<MaterialMotionProperties>,
     texture: Option<StableKey>,
     anchor: super::AnchorRule,
 }
@@ -194,6 +237,11 @@ impl MaterialDef {
     pub fn gas_pressure(&self) -> Option<GasPressureProperties> {
         (self.base == MaterialBase::Gas).then(|| self.gas_pressure.unwrap_or_default())
     }
+    /// 素材ごとの標準加速度と減衰係数。未設定では分類別の既定値を返します。
+    pub fn motion_properties(&self) -> MaterialMotionProperties {
+        self.motion
+            .unwrap_or_else(|| MaterialMotionProperties::for_base(self.base))
+    }
     /// 描画側で解決するtexture参照。物理形状とは独立しています。
     pub fn texture(&self) -> Option<StableKey> {
         self.texture
@@ -218,6 +266,7 @@ impl MaterialBuilder {
             break_mode: BreakMode::Cell,
             mass: 1,
             gas_pressure: None,
+            motion: None,
             texture: None,
             anchor: super::AnchorRule::Free,
         }))
@@ -245,6 +294,11 @@ impl MaterialBuilder {
     /// 気体の係数・lambda・圧力上限を明示します。気体以外や負の上限はregisterで拒否します。
     pub fn gas_pressure(mut self, properties: GasPressureProperties) -> Self {
         self.0.gas_pressure = Some(properties);
+        self
+    }
+    /// 標準力積分の物性を明示します。範囲違反はregister時に拒否します。
+    pub fn motion_properties(mut self, properties: MaterialMotionProperties) -> Self {
+        self.0.motion = Some(properties);
         self
     }
     /// 資産キーを結びます。未読込でも物理地形は独立して扱えます。
@@ -391,6 +445,9 @@ impl ContentRegistry {
             && (value.base != MaterialBase::Gas || properties.maximum_q16 < 0)
         {
             return Err(invalid("気体圧力係数の対象分類または上限"));
+        }
+        if let Some(properties) = value.motion {
+            properties.validate()?;
         }
         value.shape.validate(value.size, self.limits)?;
         if !matches!(value.anchor, super::AnchorRule::Below { .. }) {
@@ -642,6 +699,26 @@ impl Content {
                     out.u32(properties.coefficient_q16)?;
                     out.u32(properties.relaxation_weight)?;
                     out.i64(properties.maximum_q16)?;
+                }
+            }
+        }
+        // 物理係数だけを変更した別Contentを同じ保存定義と誤認しません。
+        // 未設定の旧manifestは変更せず、追加定義は型付きで可視化します。
+        let configured = self
+            .materials
+            .iter()
+            .filter(|material| material.motion.is_some())
+            .count();
+        if configured != 0 {
+            out.raw(b"MOTNPX01")?;
+            out.u32(configured as u32)?;
+            for material in &self.materials {
+                if let Some(properties) = material.motion {
+                    material.key.encode(&mut out)?;
+                    out.u32(properties.gravity_scale_q16)?;
+                    out.u32(properties.drag_q16)?;
+                    out.u32(properties.buoyancy_scale_q16)?;
+                    out.u32(properties.friction_q16)?;
                 }
             }
         }

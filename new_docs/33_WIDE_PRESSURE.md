@@ -57,6 +57,10 @@ World ID・Content fingerprint・material epoch・活動chunk集合とそのrevi
 
 保存には入力と計算中の配列・queue・cursor・反復数を含め、復元後もその続きから進める。完成済みrecordはReadyを維持するが、公開前にWorldの実入力全体を再採取して照合する。切断・不正件数・負値・数値上限・不正index・隣接関係・不正段階もdecodeで拒否する。連結成分を一度構築し、stage・cursor・rootから訪問集合、BFS順のqueueと発見prefix、反映済みsource・anchor、部分集計と診断件数を導いて保存値と照合する。未処理の別成分を訪問済みとして飛ばすrecord、別rootのqueueや順序の入替えは受理しない。Jacobiでは処理済みprefixのnextを現在のoldから検算し、未処理suffixの保持値とcursorを照合する。buffer切替ではコピー済みprefixのoldとnextの一致、初回の未コピーsuffixの初期値を検査する。完成時もoldとnextの一致を要求する。
 
+`WorldEdit::publish_pressure_job_then_search_push`は圧力出力を同じ候補へ適用した後、その新しいpressure channelからPressurePushSearchを作る。探索budget内でReadyとなれば押出し経路も一取引で公開する。budget不足なら圧力fieldと進捗中searchを成功値として返すため、呼出側は同じ外側WorldEdit内でsearchをStateStoreへ保存できる。新pressure公開後のsearch構築・step・経路輸送が失敗した場合、候補全体をrollbackする。探索scratchはjob_bytes、活動cell採取とsearch budgetはjob_cellsに収める。別入口`publish_material_motion_pressure_jobs_and_pushes`は、完成済みPressurePushSearchを保存時のsnapshotのままPressureJob/DDAと共通候補へ載せる。
+
+正規粒子と空き出口が重ならないよう、PressurePushSearchは開始時に同layer・活動域内のresident粒子cellを一度集め、座標順の索引を保持する。各候補・復元nodeの占有検査は二分探索で、同一layer粒子を経路・出口から除外する。索引構築はO(P log P)、各候補検査はO(log P)、record追加量は8P+4byteであり、Pは対象layerの活動域内resident粒子数。`CHPUSH03`が索引を保存するため、budget=1の毎phase復元でも粒子arena全体の再走査と再整列を繰り返さない。既存`CHPUSH01/02`を読み込んだ場合は最初のstepで索引を作り、node占有を予算付きで再検査する。旧形式を新形式へ再保存したrecordはStateStore schemaのbyte上限に従う。
+
 old/nextの配列は保存する正規数値状態であり、過去の反復履歴を全再実行して検査しない。保存bufferのchecksumは既存の保存層が担う。jobを毎phaseでStateStoreから取得し、一件進めて再保存しても有限の仕事量で完了する。復元のたびに検査cursorを最初へ戻す方式は採用しない。
 
 通常のstepはfrontier全体を複製しない。計算中の数値エラーは現在のcell処理直前で止まり、先に終えた仕事はjobに残る。Worldは変更されない。値域を超えた入力を直して同じjobを使うことはできず、変更後のWorldから新しいjobを作る。
@@ -73,4 +77,6 @@ old/nextの配列は保存する正規数値状態であり、過去の反復履
 
 ## 検証
 
-`tests/pressure_job.rs`で従来profileとの保存byte一致、予算1を含む分割、各計算段階のcodec復元、Worldとjobの同時保存、温度・容積・連結・chunk境界・非活動域・有限境界、ポンプ、lambdaの0・1・3と空cell隣接の参照式、入力失効、負値と数値上限、容量不足・無視されたエラーのrollback、素材別の係数・lambda・上限とContent fingerprint、毎phaseのStateStore復元、切断・不可能な診断件数・queue外の不正訪問bit・BFS順の不整合を検査する。`cargo run --locked --example pressure_job`はmass2・温度3・容積3でtarget Q16=131072、lambda1と空境界0からの緩和結果Q16=65536を検査し、途中保存と連続実行のcheckpoint一致をassertする。
+`tests/pressure_job.rs`で従来profileとの保存byte一致、予算1を含む分割、各計算段階のcodec復元、Worldとjobの同時保存、温度・容積・連結・chunk境界・非活動域・有限境界、ポンプ、lambdaの0・1・3と空cell隣接の参照式、入力失効、負値と数値上限、容量不足・無視されたエラーのrollback、素材別の係数・lambda・上限とContent fingerprint、毎phaseのStateStore復元、切断・不可能な診断件数・queue外の不正訪問bit・BFS順の不整合を検査する。さらに新pressureからの押出し探索・公開と、探索失敗時のpressure出力rollbackを確認する。`cargo run --locked --example pressure_job`はmass2・温度3・容積3でtarget Q16=131072、lambda1と空境界0からの緩和結果Q16=65536を検査し、途中保存と連続実行のcheckpoint一致をassertする。
+
+同期型`WorldEdit::relax_pressure`には、Jacobi反復の出力fieldが入力と完全一致した後の反復を省略する`World::relax_pressure_sleeping`を追加した。証明はWorld枝・Content/remap・設定・活動chunkとchunk revisionに結びつける。値の変わらないpressure channelは参照solverでも書き直さず、不要なchunk dirty更新を避ける。詳細なwake・復元契約と固定点benchmarkは[39](39_MATERIAL_SLEEP.md)および[E05検証記録](evidence/E05/README.md)に記録する。分割実行する`PressureJob`へのsleep適用ではなく、粒子やprovider pressure sourceの自動sleepも含まない。

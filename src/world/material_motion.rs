@@ -122,6 +122,20 @@ impl WorldEdit<'_> {
         config: MaterialMotionConfig,
     ) -> EngineResult<MaterialMotionReport> {
         self.run(|editor| {
+            let mut reservations = super::transport::CellReservations::new(editor.world)?;
+            editor.transport_material_motion_reserved(layer, config, &mut reservations)
+        })
+    }
+
+    /// Materials内で局所scalarと同じ予約を共有する経路。単独の公開APIは
+    /// 従来どおりこの処理に新しい空の予約を渡すため、独立phaseの意味は維持します。
+    pub(super) fn transport_material_motion_reserved(
+        &mut self,
+        layer: LayerId,
+        config: MaterialMotionConfig,
+        reserved: &mut super::transport::CellReservations,
+    ) -> EngineResult<MaterialMotionReport> {
+        self.run(|editor| {
             let layer_key = editor.world.content.layer(layer)?.key;
             if editor
                 .world
@@ -138,11 +152,19 @@ impl WorldEdit<'_> {
                 .channel_layout::<MaterialMotion>(config.channel)?
                 .origin;
             let points = editor.material_candidates(layer, config.candidate_limit)?;
+            let mut particle_cells = Vec::new();
+            for (_, particle) in editor.world.particles.iter() {
+                if !particle.is_archived() && particle.layer == layer {
+                    let point = particle.cell();
+                    particle_cells.try_reserve(1).map_err(allocation)?;
+                    particle_cells.push((point.x, point.y));
+                }
+            }
+            particle_cells.sort_unstable();
             let mut report = MaterialMotionReport {
                 candidates: points.len(),
                 ..Default::default()
             };
-            let mut reserved = super::transport::CellReservations::new(editor.world)?;
             for source in points {
                 if reserved.contains(source) {
                     report.reservation_conflicts += 1;
@@ -208,14 +230,16 @@ impl WorldEdit<'_> {
                     let mut passage = Passage::Free;
                     if move_x && move_y {
                         for point in [offset(current, dx, 0), offset(current, 0, dy)] {
-                            passage = editor.motion_passage(layer, point, &reserved)?;
+                            passage =
+                                editor.motion_passage(layer, point, reserved, &particle_cells)?;
                             if passage != Passage::Free {
                                 break;
                             }
                         }
                     }
                     if passage == Passage::Free {
-                        passage = editor.motion_passage(layer, destination, &reserved)?;
+                        passage =
+                            editor.motion_passage(layer, destination, reserved, &particle_cells)?;
                     }
                     if passage != Passage::Free {
                         match passage {
@@ -267,6 +291,7 @@ impl WorldEdit<'_> {
         layer: LayerId,
         point: Option<CellPoint>,
         reserved: &super::transport::CellReservations,
+        particle_cells: &[(i32, i32)],
     ) -> EngineResult<Passage> {
         let Some(point) = point else {
             return Ok(Passage::Collision);
@@ -286,6 +311,11 @@ impl WorldEdit<'_> {
             .is_some_and(|chunk| chunk.active)
         {
             return Ok(Passage::Waiting);
+        }
+        // Unavailableの判定を優先します。活動外の粒子が存在しても
+        // そこを「確定した物理衝突」とみなして速度を消してはいけません。
+        if particle_cells.binary_search(&(point.x, point.y)).is_ok() {
+            return Ok(Passage::Collision);
         }
         if cell.block.is_some() || cell.core.material != MaterialId::AIR {
             return Ok(Passage::Collision);

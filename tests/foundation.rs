@@ -132,6 +132,30 @@ fn arena_roundtrip_preserves_generation_and_reuse_order() {
 }
 
 #[test]
+fn arena_candidate_copy_preserves_logical_capacity_with_live_slots_only() {
+    let mut arena: Arena<u64, EntityKind> = Arena::new(8).unwrap();
+    let first = arena.insert(10).unwrap();
+    let second = arena.insert(20).unwrap();
+    let mut candidate = arena.try_copy().unwrap();
+
+    assert_eq!(*candidate.get(first).unwrap(), 10);
+    assert_eq!(*candidate.get(second).unwrap(), 20);
+    candidate.remove(first).unwrap();
+    let reused = candidate.insert(30).unwrap();
+    assert_eq!(reused.index(), first.index());
+    assert_ne!(reused.generation(), first.generation());
+    for value in 40..46 {
+        candidate.insert(value).unwrap();
+    }
+    assert_eq!(candidate.len(), 8);
+    assert!(matches!(
+        candidate.insert(99).unwrap_err().code,
+        ErrorCode::CapacityExceeded
+    ));
+    assert_eq!(arena.len(), 2, "候補内の追加・削除は元arenaを変更しない");
+}
+
+#[test]
 fn arena_retires_generation_maximum_without_wrapping() {
     // 上限世代まで何十億回も回さず、明示形式でその直前の正規状態を作ります。
     let mut out = Encoder::new(64);

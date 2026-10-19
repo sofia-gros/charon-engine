@@ -4,7 +4,7 @@ Rust製の、汎用2Dサンドボックスゲームエンジンです。
 
 Fabric APIのような機能へのアクセスと拡張性、Phaserのようなシーン・入力・資産・実行管理を、2Dサンドボックスのシミュレーションと統合します。クリエーターがRustでゲームのルール、素材、キャラクター、操作、進行を定義し、エンジンが制作と実行の基盤を提供します。
 
-**現在はv1.0.0へ向けて開発中です。** E04「世界と保存基盤」までの新基盤を実装・検証しています。商用v1.0.0の完成や、Terraria・Noitaの完全クローン制作能力を実証済みという意味ではありません。
+**現在はv1.0.0へ向けて開発中です。** E05「セルと流体」はQ01〜Q04のローカル実装・総合検査・ローカルレビューを完了し、PR #22の現head CI 10件も成功しました。PRはopenのままで、マージしていません。商用v1.0.0の完成や、Terraria・Noitaの完全クローン制作能力を実証済みという意味ではありません。
 
 ## 目指すもの
 
@@ -20,31 +20,20 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 | 工程 | 実装した範囲 | 根拠 |
 | --- | --- | --- |
 | E01：Coreとデータ | 型付きID、schema、component、独自状態、格子channel、codec、乱数、取引 | [実装・検証記録](new_docs/evidence/E01/README.md) |
-| E02：RuntimeとScene | 起動、plugin、Scene遷移、scope、入力、固定更新、System順序、時計、headless | [実装・検証記録](new_docs/evidence/E02/README.md) |
+| E02：RuntimeとScene | 起動、plugin、Scene遷移、scope、入力、固定更新、System順序・明示独立worker、時計、headless | [実装・検証記録](new_docs/evidence/E02/README.md) |
 | E03：資産と基本表示 | VFSとpack、PNG・WAV/Ogg・fontのimport、共有cache、解放・世代差し替え、sprite、camera、描画adapter | [実装・検証記録](new_docs/evidence/E03/README.md) |
 | E04：世界と保存基盤 | 多layer・素材寸法・個体・部分生成・lease・独自channel・区域退避・世代保存 | [実装・検証記録](new_docs/evidence/E04/README.md) |
-| E05：セルと流体（実装中） | 物質状態の一括輸送、局所移動、速度・端数と格子経路検査、cell変更の理由付きreceipt、混合・分離、圧力緩和、気体sourceと広域圧力job、保存可能な押出し探索、正規物質粒子の所有権移動・DDA・着地・区域退避。工程全体は未完了 | [契約と残作業](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
+| E05：セルと流体（ローカル完了、PR open・未マージ） | 物質状態の一括輸送、局所移動、cell変更の理由付きreceipt、混合・分離、圧力・押出し、正規物質粒子、全表現監査、保存可能Job、保守的なsleep/wake、Runtime barrier、原子的Materials phase。Q04の全体テスト、E05総合検査、ローカル総合レビューが完了。2件のP1と2件のP2を修正し、最新head `87edd16`のGitHub CI 10件が成功 | [契約と残る制約](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
 
-E03の初回実装は全168件のテスト、整形、全ターゲットのコンパイル、警告拒否Clippy、Rustdocを通過しました。同じ資産packの読込とCPU参照描画はWindows・Ubuntu・macOSで、実ウィンドウのGPU表示はWindowsのVulkan / GeForce RTX 4060で確認しています。検証対象のコミットとCIへのリンクはE03の記録にあります。
+### E05の現在地（2026-10-19）
 
-E2・E3とE4のPR指摘対応を取り込んだE04は、旧変更を含まないツリーの全224件のテスト、整形、全target check、警告拒否Clippy、Rustdoc、保存復帰の作例を通過しています。
+E05のQ01〜Q04実装をまとめ、Q04の物質収支、粉体・液体・気体、圧力押出し、混合、sidecar追従、保存・復元、Runtime統合、参照経路とのtick比較を検証しています。E06/Q05の熱・反応は含みません。公開API、契約、残る制約は[new_docs/README.md](new_docs/README.md)と[E05検証記録](new_docs/evidence/E05/README.md)を参照してください。
 
-E05の輸送・圧力部分は[PR #4](https://github.com/sofia-gros/charon-engine/pull/4)のレビューで、空cellの出口圧、channel確保前の容量検査と圧力出力の容量再利用、探索frontierのstepごとの全複製を修正しました。PR #4時点ではLinux・Rust 1.98.1で全252テスト、整形、全target check、警告拒否Clippy・Rustdocを通過しました。その後の押出し探索の保存・復元修正は、後述する最新の全322テストで検証しています。E05全体とQ04は未完了です。詳細は[E05の検証記録](new_docs/evidence/E05/README.md)を参照してください。
+Q04関連12 suiteの横断実行は296件成功しました。Arenaの候補複製で論理上限分の大きな予約を繰り返す問題を修正し、PressureJob・押出し探索・MaterialMotionJob・複数Provider・粒子を含む限定Runtime profileで、test profileの累積割当要求を約1.999GB/tickから約5.2〜6.0MB/tickへ減らしました。単一chunkのprofile測定であり、全World規模、動的multi-chunk、描画性能、144 FPS/60 Hz達成を示しません。
 
-次のE05単位として[速度・端数と格子経路検査](new_docs/31_MATERIAL_MOTION.md)を追加し、Linux・Rust 1.98.1で全264テストと品質チェック、headless作例を検証しました。一般形状の衝突、力の積分とprovider統合、混合・物質粒子などは残作業です。E05全体・Q04は引き続き未完了です。
+最終ローカルゲートでは`cargo test --locked --jobs 1`、`cargo check --all-targets --locked --jobs 1`、`cargo clippy --all-targets --locked --jobs 1 -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`が成功しました。Cargoビルドは単一job・低メモリ設定です。保存可能な`MaterialParticleJob`とcell/scalar solverを同tickに共有予約へ合成するAPIは未提供で、[粒子Job契約](new_docs/35_MATERIAL_PARTICLES.md)に現状の制約を記録しています。
 
-cellの発行・消費・変換と[理由付きreceipt](new_docs/32_MATERIAL_RECEIPTS.md)を同時に保存する経路も追加し、全279テストと品質チェック、保存復元の作例をLinuxで検証しました。この経路は全編集の監視や全表現の総量台帳ではなく、粒子・剛体・退避領域などとの収支統合は残っています。
-
-[気体sourceと広域圧力job](new_docs/33_WIDE_PRESSURE.md)も追加しました。温度・連結空間・素材別の係数とlambda・圧力上限・ポンプ境界を明示し、予算付きの計算後に全圧力を一括公開します。毎phaseの状態復元でも進捗を維持し、Linuxで全301テストと品質検査を通過しました。混合のprovider統合・粒子・全体収支・dirty/sleep・物性とprovider統合は残り、E05全体・Q04は未完了です。
-
-[混合・分離](new_docs/34_MATERIAL_MIXTURES.md)では、整数比率の共有組成と有理数の成分量を使い、cell・全payload・組成参照と理由付きreceiptを同時に保存します。汎用書き戻しによる共有storeとjournalの履歴変更を拒否し、参照indexの再利用や分岐Worldからの履歴持込みを防ぎます。Linuxで全320テストと品質検査、保存再開の作例を通過しました。全表現の収支、物質粒子、dirty/sleep、provider統合は引き続きE05の残作業です。
-
-**押出し探索修正時点の検証結果は全322テスト成功（失敗・無視なし）です。** [PR #9](https://github.com/sofia-gros/charon-engine/pull/9)の押出し探索修正（`5ba1c92c14757cee67e42dc5ae5145ebde31ca72`）では、毎phaseの保存・復元でも照合進捗を保持し、旧保存形式の読込みにも対応します。公開APIの回帰試験で有限回の完成と、連続実行・World保存再開との結果一致を確認しました。Linux / Rust 1.98.1 / `CARGO_BUILD_JOBS=2`で、`cargo fmt --all -- --check`、`cargo check --all-targets --locked`、`cargo clippy --all-targets --locked -- -D warnings`、`cargo test --locked`、`RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps`と`pressure_job`作例が成功しています。これは上記252〜320件の各段階を含む押出し修正の結果で、ローカルWindowsでの再実行結果ではありません。根拠は[E05の押出し探索保存・復元の検証記録](new_docs/evidence/E05/README.md#押出し探索の毎phase保存復元)を参照してください。E05全体とQ04は未完了です。
-
-**最新のローカル検証は、正規物質粒子とレビュー修正を含む全354テスト成功（失敗・無視なし）です。** Windows/MSVC・Rust 1.98.1で、整形・全target check・警告拒否Clippy・Rustdocと粒子の保存再開作例を通過しました。[粒子API](new_docs/35_MATERIAL_PARTICLES.md)ではcellの全物質payloadを放出・DDA・着地まで保持し、所属regionと一緒に退避・復帰します。未処理粒子の開始位置も予約し、対向・追従・高速交差で重ならず、待機中もpayloadと速度を保持します。退避区域を復帰不能にする空気向け粒子remapは登録時に拒否します。Runtime用の保存上限は現在の確定状態を共通codecで計数し、lease・生成要求・Job・作者状態を含めます。状態変更後は再計算します。WorldはCHWORLD2、区域はCHREGN02を出力し、旧CHWORLD1・CHREGN01も粒子ゼロとして読めます。全表現の素材別収支、物性とproviderの統合、広域移動の継続Job、dirty/sleepとQ04は残作業です。詳細は[E05の粒子実装記録](new_docs/evidence/E05/README.md#正規物質粒子の実装単位)を参照してください。
-
-E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
-
+ローカルレビューで、保存済みPressurePushSearchの粒子索引がWorldと一致することを公開境界で検証しない欠陥を確認・修正しました。修正前の不正公開を再現する回帰と、修正後の単体6件・`pressure_job` 28件・対象Clippyが成功しています。E05/Q01〜Q04のローカル出口判定は完了しました。PR #22はopen・未マージで、レビュー依頼の有無は工程完了条件にしません。
 ## 動かす
 
 CIではRust **1.98.1**を使用しています。開発ブランチはPRで検査し、mainへのpushと手動実行も検査します。同じ開発コミットでpushとPRの検査を重複させません。初回ビルドには依存crateを取得するネットワーク接続が必要です。ウィンドウ表示にはOSの表示環境と対応GPUが必要ですが、headlessの作例はウィンドウなしで動作します。
@@ -75,6 +64,8 @@ cargo +1.98.1 run --locked --example material_receipts
 cargo +1.98.1 run --locked --example pressure_job
 cargo +1.98.1 run --locked --example material_mixtures
 cargo +1.98.1 run --locked --example material_particles
+cargo +1.98.1 run --locked --example material_accounting
+cargo +1.98.1 run --locked --example material_forces
 ```
 
 | 作例 | 内容 |
@@ -88,6 +79,8 @@ cargo +1.98.1 run --locked --example material_particles
 | [material_mixtures.rs](examples/material_mixtures.rs) | 異なる密度の素材の成分を丸めず混合・分離し、途中保存から再開 |
 | [pressure_job.rs](examples/pressure_job.rs) | 気体の温度・連結容積から圧力を求め、分割計算の途中保存から再開 |
 | [material_receipts.rs](examples/material_receipts.rs) | 作者の発行・変換・消費をreceiptへ記録し、地形と同時に保存復元 |
+| [material_accounting.rs](examples/material_accounting.rs) | 混合・粒子・区域退避を含めた全表現の収支を理由付き台帳と照合し、世代保存と再開を検査 |
+| [material_forces.rs](examples/material_forces.rs) | 素材ごとの重力Q16・DDAを2tick実行し、連続/途中保存再開の一致を確認 |
 
 ## ゲームの作り方
 

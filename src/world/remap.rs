@@ -335,6 +335,7 @@ impl World {
                         page.cells[index].material = target;
                         if target == MaterialId::AIR {
                             page.cells[index] = super::CellCore::AIR;
+                            removed.insert((coord, layer as u32, index));
                         }
                         changed = true;
                     }
@@ -351,6 +352,32 @@ impl World {
                 .checked_add(1)
                 .ok_or_else(|| invalid("remapによるchunk revision上限"))?;
             chunk.edited = true;
+        }
+        // 素材が空へ変わると、そのcellが所有していた組成・作者の追従値も
+        // 所有者を失います。素材IDだけを空にすると旧MixtureRefが残り、
+        // 次の収支監査や区域の退避・復帰で幽霊の成分を数えてしまいます。
+        // 同じWorld編集候補で全追従channelを既定値へ戻します。
+        let mut by_layer = std::collections::BTreeMap::<
+            super::LayerId,
+            Vec<crate::foundation::grid::CellPoint>,
+        >::new();
+        for (coord, layer_index, index) in removed {
+            let origin = coord.origin()?;
+            let point = crate::foundation::grid::CellPoint {
+                x: origin.x + (index % 64) as i32,
+                y: origin.y + (index / 64) as i32,
+            };
+            let points = by_layer.entry(super::LayerId(layer_index)).or_default();
+            points
+                .try_reserve(1)
+                .map_err(crate::foundation::error::allocation)?;
+            points.push(point);
+        }
+        for (layer, points) in &by_layer {
+            let owner = self.content.layer(*layer)?.key;
+            for channel in &mut self.channels {
+                channel.reset_material(owner, points)?;
+            }
         }
         Ok(())
     }

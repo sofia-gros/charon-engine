@@ -46,6 +46,15 @@ Cargoはビルドへ含める実装と依存を選び、YAMLはエンジンの�
 | [30_MATERIAL_TRANSPORT.md](30_MATERIAL_TRANSPORT.md) | 実装中のE05：物質状態の輸送、局所移動、圧力と押出し探索 |
 | [31_MATERIAL_MOTION.md](31_MATERIAL_MOTION.md) | 実装中のE05：速度・端数の保存と整数格子の複数cell経路検査 |
 | [35_MATERIAL_PARTICLES.md](35_MATERIAL_PARTICLES.md) | 実装中のE05：全payloadの粒子への移行、DDAと着地、所属regionとの退避・復帰 |
+| [36_MATERIAL_ACCOUNTING.md](36_MATERIAL_ACCOUNTING.md) | 実装中のE05：全表現の物質収支・理由付き増減と監査付き保存 |
+| [37_MATERIAL_FORCES.md](37_MATERIAL_FORCES.md) | 実装中のE05：Q16物性・標準/独自Providerの力積分・速度DDA統合 |
+| [38_MATERIAL_MOTION_JOB.md](38_MATERIAL_MOTION_JOB.md) | 実装中のE05：広域単一tokenの保存再開できるDDA経路検索と原子的公開 |
+| [39_MATERIAL_SLEEP.md](39_MATERIAL_SLEEP.md) | 実装中のE05：標準力学の静止証明・wake・逐tick参照一致 |
+| [40_MATERIAL_RUNTIME.md](40_MATERIAL_RUNTIME.md) | 実装中のE05：Runtime Materials barrierと全表現収支監査付き編集 |
+| [41_SCALAR_MATERIAL_SLEEP.md](41_SCALAR_MATERIAL_SLEEP.md) | 実装中のE05：粉液気scalarの静止証明・Wake・逐tick参照一致 |
+| [42_Q04_CROSS_REPRESENTATION.md](42_Q04_CROSS_REPRESENTATION.md) | 実装中のQ04：混合有理量・粒子・archive・Runtimeの原子的な連鎖検証 |
+| [43_MATERIAL_PHASE_PIPELINE.md](43_MATERIAL_PHASE_PIPELINE.md) | 実装中のE05：圧力・Q16力学・scalar・正規粒子の単一Materials原子取引 |
+| [44_MATERIAL_LEGACY_DIAGNOSTICS.md](44_MATERIAL_LEGACY_DIAGNOSTICS.md) | 実装中のE05：PR #11〜#13の出所別診断APIと一様力Provider互換 |
 | [34_MATERIAL_MIXTURES.md](34_MATERIAL_MIXTURES.md) | 実装中のE05：整数比率の共有組成、正確な成分量、混合・分離とreceiptの取引 |
 | [33_WIDE_PRESSURE.md](33_WIDE_PRESSURE.md) | 実装中のE05：気体の温度・連結容積と保存可能な広域圧力job |
 | [32_MATERIAL_RECEIPTS.md](32_MATERIAL_RECEIPTS.md) | 実装中のE05：cell変更と理由付きreceiptの原子的保存 |

@@ -67,8 +67,12 @@ fn content_with_properties(
     registry
         .schema(Schema::of::<PressureJob>(key("test:job-schema"), 1, 2_000_000).unwrap())
         .unwrap();
+    registry
+        .schema(Schema::of::<PressurePushSearch>(key("test:push-schema"), 1, 2_000_000).unwrap())
+        .unwrap();
     for (name, origin, chunks) in [
         ("test:pressure", p(-3, 2), pressure_chunks),
+        ("test:pressure-two", p(-5, 4), pressure_chunks),
         ("test:temperature", p(0, 0), 8),
         ("test:pump", p(1, -1), 8),
     ] {
@@ -101,16 +105,33 @@ fn cell(world: &World, name: &str) -> CellCore {
         ..CellCore::AIR
     }
 }
+fn material_at(world: &World, layer: LayerId, point: CellPoint) -> MaterialId {
+    match world.cell(layer, point).unwrap() {
+        CellQuery::Loaded(cell) => cell.core.material,
+        _ => panic!("このテストではresidentである必要があります"),
+    }
+}
 fn fixture(pressure_chunks: u32) -> World {
     fixture_with_properties(pressure_chunks, GasPressureProperties::default())
 }
 fn fixture_with_properties(pressure_chunks: u32, properties: GasPressureProperties) -> World {
+    fixture_with_job_byte_limit(pressure_chunks, properties, 64 * 1024 * 1024)
+}
+fn fixture_with_job_byte_limit(
+    pressure_chunks: u32,
+    properties: GasPressureProperties,
+    job_bytes: usize,
+) -> World {
+    let limits = WorldLimits {
+        job_bytes,
+        ..WorldLimits::default()
+    };
     let mut world = World::new(
         WorldId::from_parts(1, 1).unwrap(),
         9,
         WorldBounds::expandable(),
         content_with_properties(pressure_chunks, properties),
-        WorldLimits::default(),
+        limits,
     )
     .unwrap();
     let layer = layer(&world);
@@ -147,6 +168,15 @@ fn config() -> PressureJobConfig {
         },
         gas: None,
         pump: None,
+    }
+}
+fn config_with_channel(channel: &str) -> PressureJobConfig {
+    PressureJobConfig {
+        relaxation: PressureRelaxation {
+            channel: key(channel),
+            ..config().relaxation
+        },
+        ..config()
     }
 }
 fn gas_config() -> PressureJobConfig {
@@ -238,10 +268,56 @@ fn legacy_profile_matches_scalar_for_every_budget_and_preserves_terrain() {
             .edit(|edit| edit.publish_pressure_job(&job))
             .unwrap();
         assert_eq!(report, expected);
+        let expected_checkpoint = scalar.checkpoint(4_000_000).unwrap();
+        let actual_checkpoint = restored.checkpoint(4_000_000).unwrap();
         assert_eq!(
-            scalar.checkpoint(4_000_000).unwrap(),
-            restored.checkpoint(4_000_000).unwrap()
+            expected_checkpoint.len(),
+            actual_checkpoint.len(),
+            "budget {budget}: checkpoint長"
         );
+        if let Some(index) = expected_checkpoint
+            .iter()
+            .zip(&actual_checkpoint)
+            .position(|(expected, actual)| expected != actual)
+        {
+            let pressure_points = [
+                p(13, 8),
+                p(13, 9),
+                p(13, 10),
+                p(14, 10),
+                p(23, 18),
+                p(23, 19),
+            ];
+            let pressure_values: Vec<_> = pressure_points
+                .into_iter()
+                .map(|point| {
+                    let scalar_value = scalar
+                        .channel_value::<i64>(key("test:pressure"), point)
+                        .unwrap();
+                    let restored_value = restored
+                        .channel_value::<i64>(key("test:pressure"), point)
+                        .unwrap();
+                    (
+                        point,
+                        match scalar_value {
+                            ChannelQuery::Loaded(value) => Some(value),
+                            _ => None,
+                        },
+                        match restored_value {
+                            ChannelQuery::Loaded(value) => Some(value),
+                            _ => None,
+                        },
+                    )
+                })
+                .collect();
+            panic!(
+                "budget {budget}: checkpoint byte {index}が異なる expected={} actual={} world_revision={}/{} pressure={pressure_values:?}",
+                expected_checkpoint[index],
+                actual_checkpoint[index],
+                scalar.revision(),
+                restored.revision()
+            );
+        }
         assert!(job.step(&restored, 1).is_err());
         assert!(
             restored
@@ -953,4 +1029,276 @@ fn saved_jacobi_and_copy_cursors_cannot_skip_numeric_work() {
         }
         assert!(reached);
     }
+}
+
+#[test]
+fn pressure_jobs_publish_from_one_snapshot_and_reject_overlapping_outputs() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let water = cell(&world, "test:water");
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, p(10, 10), water)?;
+            edit.set_cell(layer, p(20, 20), water)
+        })
+        .unwrap();
+
+    let mut first = PressureJob::new(&world, layer, config()).unwrap();
+    let mut second =
+        PressureJob::new(&world, layer, config_with_channel("test:pressure-two")).unwrap();
+    finish(&mut first, &world, 32);
+    finish(&mut second, &world, 32);
+    let reports = world
+        .edit(|edit| edit.publish_pressure_jobs(&[first, second]))
+        .unwrap();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].cells, 2);
+    assert_eq!(reports[1].cells, 2);
+
+    let mut duplicate_a = PressureJob::new(&world, layer, config()).unwrap();
+    let mut duplicate_b = PressureJob::new(&world, layer, config()).unwrap();
+    finish(&mut duplicate_a, &world, 32);
+    finish(&mut duplicate_b, &world, 32);
+    let before = world.checkpoint(2_000_000).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.publish_pressure_jobs(&[duplicate_a, duplicate_b]))
+            .is_err()
+    );
+    assert_eq!(world.checkpoint(2_000_000).unwrap(), before);
+}
+
+#[test]
+fn pressure_job_publication_scratch_obeys_job_byte_limit() {
+    let mut world = fixture_with_job_byte_limit(8, GasPressureProperties::default(), 1);
+    let layer = layer(&world);
+    let water = cell(&world, "test:water");
+    world
+        .edit(|edit| edit.set_cell(layer, p(10, 10), water))
+        .unwrap();
+    let mut job = PressureJob::new(&world, layer, config()).unwrap();
+    finish(&mut job, &world, 32);
+    let before = world.checkpoint(2_000_000).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.publish_pressure_jobs(&[job]))
+            .is_err()
+    );
+    assert_eq!(world.checkpoint(2_000_000).unwrap(), before);
+}
+
+#[test]
+fn pressure_output_starts_push_search_from_new_snapshot_and_publishes_atomically() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let water = cell(&world, "test:water");
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, p(10, 10), water)?;
+            edit.set_cell(layer, p(11, 10), CellCore::AIR)?;
+            edit.set_channel(key("test:pump"), p(9, 11), 1000i64)
+        })
+        .unwrap();
+    let mut job = PressureJob::new(
+        &world,
+        layer,
+        PressureJobConfig {
+            pump: Some(key("test:pump")),
+            ..config()
+        },
+    )
+    .unwrap();
+    finish(&mut job, &world, 32);
+
+    let result = world
+        .edit(|edit| {
+            edit.publish_pressure_job_then_search_push(
+                &job,
+                layer,
+                p(10, 10),
+                PressurePushConfig {
+                    channel: key("test:pressure"),
+                    gravity_q16: 0,
+                    threshold_q16: 0,
+                    nodes: 4096,
+                },
+                128,
+            )
+        })
+        .unwrap();
+    assert_eq!(result.search_status, PressurePushStatus::Ready);
+    assert!(result.published_push);
+    assert!(result.pending_search.is_none());
+    assert_eq!(
+        material_at(&world, layer, p(11, 10)),
+        world
+            .content()
+            .material_id(MaterialHandle(key("test:water")))
+            .unwrap()
+    );
+    assert_eq!(pressure(&world, p(10, 10)), 1000);
+}
+
+#[test]
+fn invalid_push_search_rolls_back_pressure_output() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let water = cell(&world, "test:water");
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, p(10, 10), water)?;
+            edit.set_channel(key("test:pump"), p(9, 11), 1000i64)
+        })
+        .unwrap();
+    let mut job = PressureJob::new(
+        &world,
+        layer,
+        PressureJobConfig {
+            pump: Some(key("test:pump")),
+            ..config()
+        },
+    )
+    .unwrap();
+    finish(&mut job, &world, 32);
+    let before = world.checkpoint(2_000_000).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.publish_pressure_job_then_search_push(
+                &job,
+                layer,
+                p(10, 10),
+                PressurePushConfig {
+                    channel: key("test:pressure"),
+                    gravity_q16: 0,
+                    threshold_q16: 0,
+                    nodes: 0,
+                },
+                1,
+            ))
+            .is_err()
+    );
+    assert_eq!(world.checkpoint(2_000_000).unwrap(), before);
+}
+
+#[test]
+fn pending_push_search_uses_new_pressure_and_resumes_from_world_state() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let water = cell(&world, "test:water");
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, p(10, 10), water)?;
+            edit.set_cell(layer, p(11, 10), water)?;
+            edit.set_cell(layer, p(12, 10), CellCore::AIR)?;
+            edit.set_channel(key("test:pump"), p(9, 11), 1000i64)
+        })
+        .unwrap();
+    let mut job = PressureJob::new(
+        &world,
+        layer,
+        PressureJobConfig {
+            pump: Some(key("test:pump")),
+            ..config()
+        },
+    )
+    .unwrap();
+    finish(&mut job, &world, 32);
+    world
+        .edit(|edit| {
+            let result = edit.publish_pressure_job_then_search_push(
+                &job,
+                layer,
+                p(10, 10),
+                PressurePushConfig {
+                    channel: key("test:pressure"),
+                    gravity_q16: 0,
+                    threshold_q16: 0,
+                    nodes: 4096,
+                },
+                1,
+            )?;
+            assert_eq!(result.search_status, PressurePushStatus::Searching);
+            let search = result.pending_search.as_ref().unwrap();
+            edit.set_state(key("test:push"), key("test:push-schema"), search)
+        })
+        .unwrap();
+
+    let content = Arc::clone(world.content());
+    let checkpoint = world.checkpoint(4_000_000).unwrap();
+    world = World::restore(&checkpoint, content, WorldLimits::default(), 4_000_000).unwrap();
+    let mut search: PressurePushSearch = world.state(key("test:push")).unwrap();
+    assert_eq!(search.status(), PressurePushStatus::Searching);
+    for _ in 0..16 {
+        if search.status() == PressurePushStatus::Ready {
+            break;
+        }
+        search.step(&world, 1).unwrap();
+    }
+    assert_eq!(search.status(), PressurePushStatus::Ready);
+    world
+        .edit(|edit| edit.publish_pressure_push(&search))
+        .unwrap();
+    assert_eq!(
+        material_at(&world, layer, p(12, 10)),
+        world
+            .content()
+            .material_id(MaterialHandle(key("test:water")))
+            .unwrap()
+    );
+}
+
+#[test]
+fn pressure_push_skips_cells_occupied_by_same_layer_particles() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let stone = cell(&world, "test:stone");
+    let water = cell(&world, "test:water");
+    let source = p(10, 10);
+    let occupied_outlet = p(11, 10);
+    let alternate_source = p(10, 11);
+    let alternate_outlet = p(10, 12);
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, source, water)?;
+            edit.set_cell(layer, p(10, 9), stone)?;
+            edit.set_cell(layer, p(9, 10), stone)?;
+            edit.set_cell(layer, occupied_outlet, water)?;
+            edit.set_cell(layer, alternate_source, water)?;
+            edit.set_cell(layer, p(9, 11), stone)?;
+            edit.set_cell(layer, p(11, 11), stone)?;
+            edit.set_cell(layer, alternate_outlet, CellCore::AIR)?;
+            edit.set_channel(key("test:pressure"), p(source.x + 3, source.y - 2), 1000i64)?;
+            edit.emit_material_particle(layer, occupied_outlet, [0, 0])?;
+            Ok(())
+        })
+        .unwrap();
+
+    let mut search = PressurePushSearch::new(
+        &world,
+        layer,
+        source,
+        PressurePushConfig {
+            channel: key("test:pressure"),
+            gravity_q16: 0,
+            threshold_q16: 0,
+            nodes: 4096,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        search.step(&world, 4096).unwrap(),
+        PressurePushStatus::Ready
+    );
+    world
+        .edit(|edit| edit.publish_pressure_push(&search))
+        .unwrap();
+
+    let (handle, particle) = world.material_particles().next().unwrap();
+    assert_eq!(
+        world.material_particle(handle).unwrap().cell(),
+        occupied_outlet
+    );
+    assert_eq!(material_at(&world, layer, occupied_outlet), MaterialId::AIR);
+    assert_eq!(material_at(&world, layer, alternate_outlet), water.material);
+    assert_eq!(particle.cell(), occupied_outlet);
 }

@@ -39,80 +39,176 @@ impl WorldEdit<'_> {
         candidate_limit: usize,
     ) -> EngineResult<MaterialTransportReport> {
         self.run(|editor| {
+            let mut reservations = super::transport::CellReservations::new(editor.world)?;
+            editor.transport_materials_reserved(layer, candidate_limit, &mut reservations)
+        })
+    }
+
+    /// 高速DDAと標準scalarを同tickへ連結するときの共有予約入口。
+    /// DDAで触った始点・着点・通過点をscalarが再利用しません。
+    pub(super) fn transport_materials_reserved(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        reserved: &mut super::transport::CellReservations,
+    ) -> EngineResult<MaterialTransportReport> {
+        self.run(|editor| {
             let points = editor.material_candidates(layer, candidate_limit)?;
-            let left_first = editor.world.tick().is_multiple_of(2);
-            let mut report = MaterialTransportReport {
-                candidates: points.len(),
-                exchanges: 0,
+            editor.transport_material_candidates_inner(
+                layer,
+                candidate_limit,
+                points.len(),
+                points,
+                reserved,
+            )
+        })
+    }
+
+    /// revision検証済みcacheが作った候補を標準solverへ渡します。
+    pub(super) fn transport_materials_from_candidates(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        candidate_count: usize,
+        points: Vec<CellPoint>,
+    ) -> EngineResult<MaterialTransportReport> {
+        let mut reservations = super::transport::CellReservations::new(self.world)?;
+        self.transport_material_candidates_from_candidates_reserved(
+            layer,
+            candidate_limit,
+            candidate_count,
+            points,
+            &mut reservations,
+        )
+    }
+
+    /// 同tickで他solverと共有する予約へ候補cacheのscalar輸送を適用します。
+    pub(super) fn transport_material_candidates_from_candidates_reserved(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        candidate_count: usize,
+        points: Vec<CellPoint>,
+        reservations: &mut super::transport::CellReservations,
+    ) -> EngineResult<MaterialTransportReport> {
+        self.run(|editor| {
+            editor.transport_material_candidates_inner(
+                layer,
+                candidate_limit,
+                candidate_count,
+                points,
+                reservations,
+            )
+        })
+    }
+
+    fn transport_material_candidates_inner(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        candidate_count: usize,
+        points: Vec<CellPoint>,
+        reserved: &mut super::transport::CellReservations,
+    ) -> EngineResult<MaterialTransportReport> {
+        if !self.world.content.layer(layer)?.simulated {
+            return Err(invalid("物質輸送の対象layerはsimulatedでなければならない"));
+        }
+        if candidate_count > candidate_limit {
+            return Err(EngineError::capacity(
+                "物質輸送の候補数",
+                candidate_count as u64,
+                candidate_limit as u64,
+            ));
+        }
+        let left_first = self.world.tick().is_multiple_of(2);
+        let mut report = MaterialTransportReport {
+            candidates: candidate_count,
+            exchanges: 0,
+        };
+        // 正規粒子も同一layerの物質所有者です。局所scalarが空気の
+        // 地形cellだけを見て粒子座標へ自動的に移動しないよう、phase開始
+        // 時点の粒子所有位置を確定順で索引化します。
+        let mut particle_cells = Vec::new();
+        for (_, particle) in self.world.particles.iter() {
+            if !particle.is_archived() && particle.layer == layer {
+                let point = particle.cell();
+                particle_cells.try_reserve(1).map_err(allocation)?;
+                particle_cells.push((point.x, point.y));
+            }
+        }
+        particle_cells.sort_unstable();
+        let side = if left_first { -1 } else { 1 };
+        for source in points {
+            if reserved.contains(source) {
+                continue;
+            }
+            let core = self.loaded(layer, source)?.core;
+            let material = self
+                .world
+                .content
+                .material(core.material)?
+                .ok_or_else(|| invalid("輸送元の素材が空"))?;
+            let base = material.base();
+            let mass = material.mass_per_cell();
+            let choices: &[(i32, i32)] = match base {
+                MaterialBase::Solid => &[],
+                MaterialBase::Powder => &[(0, 1), (side, 1), (-side, 1)],
+                MaterialBase::Liquid => &[(0, 1), (side, 0), (-side, 0)],
+                MaterialBase::Gas => &[(0, -1), (side, -1), (-side, -1), (side, 0), (-side, 0)],
             };
-            let mut reserved = super::transport::CellReservations::new(editor.world)?;
-            let side = if left_first { -1 } else { 1 };
-            for source in points {
-                if reserved.contains(source) {
+            for &(dx, dy) in choices {
+                let Some(destination) = offset(source, dx, dy) else {
+                    continue;
+                };
+                if particle_cells
+                    .binary_search(&(destination.x, destination.y))
+                    .is_ok()
+                    || reserved.contains(destination)
+                    || !self.active_transport_cell(layer, destination)?
+                {
                     continue;
                 }
-                let core = editor.loaded(layer, source)?.core;
-                let material = editor
-                    .world
-                    .content
-                    .material(core.material)?
-                    .ok_or_else(|| invalid("輸送元の素材が空"))?;
-                let base = material.base();
-                let mass = material.mass_per_cell();
-                let choices: &[(i32, i32)] = match base {
-                    MaterialBase::Solid => &[],
-                    MaterialBase::Powder => &[(0, 1), (side, 1), (-side, 1)],
-                    MaterialBase::Liquid => &[(0, 1), (side, 0), (-side, 0)],
-                    MaterialBase::Gas => &[(0, -1), (side, -1), (-side, -1), (side, 0), (-side, 0)],
+                let target = self.loaded(layer, destination)?.core;
+                let movable = if target.material == MaterialId::AIR {
+                    true
+                } else {
+                    let other = self
+                        .world
+                        .content
+                        .material(target.material)?
+                        .ok_or_else(|| invalid("交換先の素材が空"))?;
+                    matches!(other.base(), MaterialBase::Liquid | MaterialBase::Gas)
+                        && target.material != core.material
+                        && ((dy > 0 && mass > other.mass_per_cell())
+                            || (dy < 0 && mass < other.mass_per_cell()))
                 };
-                for &(dx, dy) in choices {
-                    let Some(destination) = offset(source, dx, dy) else {
-                        continue;
-                    };
-                    if reserved.contains(destination)
-                        || !editor.active_transport_cell(layer, destination)?
-                    {
-                        continue;
-                    }
-                    let target = editor.loaded(layer, destination)?.core;
-                    let movable = if target.material == MaterialId::AIR {
-                        true
-                    } else {
-                        let other = editor
-                            .world
-                            .content
-                            .material(target.material)?
-                            .ok_or_else(|| invalid("交換先の素材が空"))?;
-                        // 下降する重い物質と、上昇する軽い気体だけが異物質を押し退けます。
-                        // 固体・粉体を流体の密度交換で崩したり、横移動で同じ物質を交換しません。
-                        matches!(other.base(), MaterialBase::Liquid | MaterialBase::Gas)
-                            && target.material != core.material
-                            && ((dy > 0 && mass > other.mass_per_cell())
-                                || (dy < 0 && mass < other.mass_per_cell()))
-                    };
-                    if !movable {
-                        continue;
-                    }
-                    if dx != 0 && dy != 0 {
-                        // 二つの直交隣接点が共に塞がっている角は通り抜けません。
-                        let horizontal = offset(source, dx, 0);
-                        let vertical = offset(source, 0, dy);
-                        if !editor.empty_transport_cell(layer, horizontal)?
-                            && !editor.empty_transport_cell(layer, vertical)?
-                        {
-                            continue;
-                        }
-                    }
-                    editor.exchange_cells(layer, source, destination)?;
-                    for point in [source, destination] {
-                        reserved.insert(point)?;
-                    }
-                    report.exchanges += 1;
-                    break;
+                if !movable {
+                    continue;
                 }
+                if dx != 0 && dy != 0 {
+                    let horizontal = offset(source, dx, 0);
+                    let vertical = offset(source, 0, dy);
+                    let horizontal_free = horizontal.is_some_and(|point| {
+                        particle_cells.binary_search(&(point.x, point.y)).is_err()
+                            && !reserved.contains(point)
+                    }) && self.empty_transport_cell(layer, horizontal)?;
+                    let vertical_free = vertical.is_some_and(|point| {
+                        particle_cells.binary_search(&(point.x, point.y)).is_err()
+                            && !reserved.contains(point)
+                    }) && self.empty_transport_cell(layer, vertical)?;
+                    if !horizontal_free && !vertical_free {
+                        continue;
+                    }
+                }
+                self.exchange_cells(layer, source, destination)?;
+                for point in [source, destination] {
+                    reserved.insert(point)?;
+                }
+                report.exchanges += 1;
+                break;
             }
-            Ok(report)
-        })
+        }
+        Ok(report)
     }
     pub(super) fn material_candidates(
         &self,

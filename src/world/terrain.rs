@@ -438,6 +438,10 @@ impl Default for WorldLimits {
 /// 疎な格納を持つ汎用の地形World。画面の大きさから境界や活動域を決めません。
 pub struct World {
     pub(crate) id: WorldId,
+    /// 保存しない、実Worldの派生cache世代。try_copyでは参照を共有し、
+    /// 物質配置や活動領域が変化したcommitだけで別世代へ進めます。
+    /// これにより、同WorldId・同revisionの別分岐Worldとcacheを混同しません。
+    pub(crate) cache_generation: Arc<()>,
     pub(crate) seed: u64,
     pub(crate) tick: u64,
     pub(crate) revision: u64,
@@ -482,6 +486,7 @@ impl World {
         let state = super::state::empty(&content, limits, false)?;
         Ok(Self {
             id,
+            cache_generation: Arc::new(()),
             seed,
             tick: 0,
             revision: 0,
@@ -624,6 +629,9 @@ impl World {
             .ok_or_else(|| invalid("World revisionの上限"))?;
         candidate.validate()?;
         candidate.changes = super::WorldChanges::between(self, &candidate)?;
+        if !candidate.changes.chunks.is_empty() {
+            candidate.cache_generation = Arc::new(());
+        }
         *self = candidate;
         Ok(result)
     }
@@ -643,6 +651,7 @@ impl CandidateState for World {
         }
         Ok(Self {
             id: self.id,
+            cache_generation: Arc::clone(&self.cache_generation),
             seed: self.seed,
             tick: self.tick,
             revision: self.revision,

@@ -59,6 +59,18 @@ pub struct MaterialParticle {
     payload: Vec<(StableKey, Vec<u8>)>,
 }
 impl MaterialParticle {
+    pub(super) fn inventory_reference(&self, key: StableKey) -> EngineResult<super::MixtureRef> {
+        let bytes = self
+            .payload
+            .iter()
+            .find(|(name, _)| *name == key)
+            .ok_or_else(|| invalid("粒子の混合channelが欠落"))?;
+        let mut input = Decoder::new(&bytes.1, bytes.1.len())?;
+        let reference = super::MixtureRef::decode(&mut input)?;
+        input.finish()?;
+        Ok(reference)
+    }
+
     pub(crate) fn evict_payload(&mut self, hash: [u8; 32]) {
         self.payload = Vec::new();
         self.dormant = Some(hash);
@@ -263,7 +275,7 @@ impl World {
     pub(crate) fn validate_particle(&self, particle: &MaterialParticle) -> EngineResult<()> {
         particle.validate_shape()?;
         particle.core.validate(&self.content)?;
-        let layer = self.content.layer(particle.layer)?.key;
+        self.content.layer(particle.layer)?;
         if particle.epoch > self.remaps.epoch() || !self.bounds.contains(particle.cell()) {
             return Err(invalid("粒子のepoch・World境界"));
         }
@@ -283,6 +295,15 @@ impl World {
         if particle.epoch != self.remaps.epoch() {
             return Err(invalid("resident粒子に未適用のremap"));
         }
+        self.validate_particle_payload(particle)
+    }
+
+    /// archive監査でも全channelの型・値・キー列を検査し、混合参照だけの検査にしません。
+    pub(super) fn validate_particle_payload(
+        &self,
+        particle: &MaterialParticle,
+    ) -> EngineResult<()> {
+        let layer = self.content.layer(particle.layer)?.key;
         let mut payload = particle.payload.iter();
         for channel in self
             .channels
@@ -578,9 +599,58 @@ impl WorldEdit<'_> {
         candidate_limit: usize,
         step_limit: usize,
     ) -> EngineResult<MaterialParticleReport> {
+        self.step_material_particles_filtered(None, candidate_limit, step_limit, None)
+    }
+
+    /// 指定layerだけの活動正規粒子を整数DDAで進めます。未処理の他layerの
+    /// 粒子位置も予約として保持し、異layerの処理順に依存しない結果にします。
+    pub fn step_material_particles_in_layer(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        step_limit: usize,
+    ) -> EngineResult<MaterialParticleReport> {
+        self.step_material_particles_filtered(Some(layer), candidate_limit, step_limit, None)
+    }
+
+    /// Cell motion/scalarで先に使ったpath予約を粒子DDAも避ける統合入口です。
+    pub(super) fn step_material_particles_in_layer_reserved(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        step_limit: usize,
+        reserved_cells: &super::transport::CellReservations,
+    ) -> EngineResult<MaterialParticleReport> {
+        self.step_material_particles_filtered(
+            Some(layer),
+            candidate_limit,
+            step_limit,
+            Some(reserved_cells),
+        )
+    }
+
+    fn step_material_particles_filtered(
+        &mut self,
+        layer_filter: Option<LayerId>,
+        candidate_limit: usize,
+        step_limit: usize,
+        reserved_cells: Option<&super::transport::CellReservations>,
+    ) -> EngineResult<MaterialParticleReport> {
         self.run(|editor| {
+            if let Some(layer) = layer_filter
+                && !editor.world.content.layer(layer)?.simulated
+            {
+                return Err(invalid("正規粒子の輸送対象はsimulated layerのみ"));
+            }
             let mut ids = Vec::new();
             for (id, particle) in editor.world.particles.iter() {
+                if layer_filter.is_some_and(|layer| particle.layer != layer) {
+                    continue;
+                }
+                // 非参加layerは全域呼出でも動かさない。粒子の所有権は保持する。
+                if !editor.world.content.layer(particle.layer)?.simulated {
+                    continue;
+                }
                 if particle.dormant.is_none() && editor.world.chunks.get(&ChunkCoord::at(particle.cell())).is_some_and(|c| c.active) {
                     if ids.len() == candidate_limit { return Err(EngineError::capacity("活動粒子数", ids.len() as u64 + 1, candidate_limit as u64)); }
                     ids.try_reserve(1).map_err(allocation)?;
@@ -607,6 +677,10 @@ impl WorldEdit<'_> {
                 let layer = particle.layer;
                 let source = particle.cell();
                 report.processed += 1;
+                if reserved_cells.is_some_and(|cells| cells.contains(source)) {
+                    report.waiting += 1;
+                    continue;
+                }
                 if reserved.contains(&(layer.0, source.x, source.y)) { report.waiting += 1; continue; }
                 let mut end = [0i64; 2];
                 for axis in 0..2 {
@@ -638,7 +712,13 @@ impl WorldEdit<'_> {
                     if x && y { guards.push(CellPoint { x: next.x, y: current.y }); guards.push(CellPoint { x: current.x, y: next.y }); }
                     guards.push(next);
                     for point in &guards {
-                        if occupied.binary_search(&(layer.0, point.x, point.y)).is_ok() || reserved.contains(&(layer.0, point.x, point.y)) { waiting = true; break; }
+                        if reserved_cells.is_some_and(|cells| cells.contains(*point))
+                            || occupied.binary_search(&(layer.0, point.x, point.y)).is_ok()
+                            || reserved.contains(&(layer.0, point.x, point.y))
+                        {
+                            waiting = true;
+                            break;
+                        }
                         match editor.world.cell(layer, *point)? {
                             CellQuery::WorldBoundary => { stopped = true; break; }
                             CellQuery::Loaded(cell) => {
@@ -655,10 +735,20 @@ impl WorldEdit<'_> {
                 }
                 for point in path { reserved.insert((layer.0, point.x, point.y)); }
                 editor.reserve_writes(1)?;
+                // 有効な無変更tickはchunk revisionを汚さず、静止sleepの証明を維持します。
+                // 移動、停止による速度変更、または接触後の位置補正だけが空間変更です。
+                let next_position = if (stopped || waiting) && current == source {
+                    start
+                } else if stopped || waiting {
+                    [i64::from(current.x) * SCALE + SCALE / 2, i64::from(current.y) * SCALE + SCALE / 2]
+                } else {
+                    end
+                };
+                let state_changed = next_position != start || (stopped && velocity != [0, 0]);
                 let particle = editor.world.particles.get_mut(id)?;
                 // 接触で先のcellを越えないよう、最後の空cellの中心を正規停止位置とします。
                 // 未準備域でも未検査の整数距離を借金へ変えず、速度を保持して次phaseへ待機します。
-                particle.position = if (stopped || waiting) && current == source { start } else if stopped || waiting { [i64::from(current.x) * SCALE + SCALE / 2, i64::from(current.y) * SCALE + SCALE / 2] } else { end };
+                particle.position = next_position;
                 if current != source { report.moved += 1; }
                 if waiting { report.waiting += 1; }
                 if stopped {
@@ -677,9 +767,930 @@ impl WorldEdit<'_> {
                         report.landed += 1;
                     }
                 }
-                editor.touch_particle_chunks(source, current)?;
+                if state_changed {
+                    editor.touch_particle_chunks(source, current)?;
+                }
             }
             Ok(report)
         })
+    }
+}
+
+/// 正規粒子phaseを粒子件数単位で保存再開するJobの状態です。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialParticleJobStatus {
+    /// まだ全候補の経路検査を終えていません。
+    Computing,
+    /// 入力が失効していなければ一取引で公開できます。
+    Ready,
+}
+
+/// 保存可能な粒子Jobが計画したphaseの診断値です。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterialParticleJobReport {
+    /// 検査を終えた粒子数。
+    pub processed: usize,
+    /// cellを跨ぐ経路を持つ粒子数。
+    pub moved: usize,
+    /// 公開時にcellへ着地する粒子数。
+    pub landed: usize,
+    /// 非活動域または先行粒子の予約により延期する粒子数。
+    pub waiting: usize,
+    /// DDAで検査した境界数。
+    pub checked_steps: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MaterialParticleJobCandidate {
+    id: Id<MaterialParticleKind>,
+    layer: LayerId,
+    position: [i64; 2],
+    velocity: [i64; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MaterialParticleJobPlan {
+    position: [i64; 2],
+    cell: CellPoint,
+    stopped: bool,
+    waiting: bool,
+    landed: bool,
+}
+
+/// 正規粒子の移動を検査時点と公開時点に分ける、保存可能な件数分割Jobです。
+///
+/// `new`はslot順の候補、開始時占有、活動chunk revisionを一度だけ記録します。
+/// `step`は最大`budget`個の粒子について整数DDAとphase予約を更新しますが、Worldを
+/// 変更しません。全候補を処理した後の`publish`だけが候補位置を変更し、停止粒子の
+/// 着地まで同じWorldEdit内で実行します。入力chunkや粒子が変わった場合は公開を拒否します。
+#[derive(Clone, Debug)]
+pub struct MaterialParticleJob {
+    world: crate::foundation::id::WorldId,
+    content: [u8; 32],
+    epoch: u64,
+    candidates: Vec<MaterialParticleJobCandidate>,
+    occupied: Vec<(u32, i32, i32)>,
+    chunks: Vec<(ChunkCoord, u64)>,
+    reserved: std::collections::BTreeSet<(u32, i32, i32)>,
+    plans: Vec<MaterialParticleJobPlan>,
+    candidate_limit: usize,
+    step_limit: usize,
+    checked_steps: usize,
+    report: MaterialParticleJobReport,
+}
+
+impl MaterialParticleJob {
+    /// 現在活動中の全simulated particleを対象にJobを作ります。
+    ///
+    /// `candidate_limit`は一Jobが保持する活動粒子数、`step_limit`はJob全体で許すDDA境界数です。
+    /// 候補・予約・保存recordはWorldLimits.job_cells/job_bytesの両方で制限します。
+    pub fn new(world: &World, candidate_limit: usize, step_limit: usize) -> EngineResult<Self> {
+        if candidate_limit > world.limits.job_cells || step_limit > world.limits.job_cells {
+            return Err(EngineError::capacity(
+                "粒子Jobの候補・DDA上限",
+                candidate_limit.max(step_limit) as u64,
+                world.limits.job_cells as u64,
+            ));
+        }
+        let mut resident_count = 0usize;
+        let mut candidate_count = 0usize;
+        for (_, particle) in world.particles.iter() {
+            if particle.is_archived() {
+                continue;
+            }
+            resident_count = resident_count
+                .checked_add(1)
+                .ok_or_else(|| invalid("粒子Job占有件数overflow"))?;
+            let cell = particle.cell();
+            if !world.content.layer(particle.layer)?.simulated
+                || !world
+                    .chunks
+                    .get(&ChunkCoord::at(cell))
+                    .is_some_and(|chunk| chunk.active)
+            {
+                continue;
+            }
+            candidate_count = candidate_count
+                .checked_add(1)
+                .ok_or_else(|| invalid("粒子Job候補件数overflow"))?;
+        }
+        if candidate_count > candidate_limit {
+            return Err(EngineError::capacity(
+                "粒子Job候補数",
+                candidate_count as u64,
+                candidate_limit as u64,
+            ));
+        }
+        let active_count = world.chunks.values().filter(|chunk| chunk.active).count();
+        let base_cells = candidate_count
+            .checked_add(active_count)
+            .ok_or_else(|| invalid("粒子Job初期cell数overflow"))?;
+        if base_cells > world.limits.job_cells {
+            return Err(EngineError::capacity(
+                "粒子Job初期cell数",
+                base_cells as u64,
+                world.limits.job_cells as u64,
+            ));
+        }
+        let base_bytes = 160usize
+            .checked_add(
+                candidate_count
+                    .checked_mul(48)
+                    .ok_or_else(|| invalid("粒子Job候補byte数overflow"))?,
+            )
+            .and_then(|n| n.checked_add(resident_count.checked_mul(24)?))
+            .and_then(|n| n.checked_add(active_count.checked_mul(16)?))
+            .ok_or_else(|| invalid("粒子Job初期byte数overflow"))?;
+        if base_bytes > world.limits.job_bytes {
+            return Err(EngineError::capacity(
+                "粒子Job初期byte数",
+                base_bytes as u64,
+                world.limits.job_bytes as u64,
+            ));
+        }
+        let mut candidates = Vec::new();
+        let mut occupied = Vec::new();
+        candidates
+            .try_reserve_exact(candidate_count)
+            .map_err(allocation)?;
+        occupied
+            .try_reserve_exact(resident_count)
+            .map_err(allocation)?;
+        for (id, particle) in world.particles.iter() {
+            if particle.is_archived() {
+                continue;
+            }
+            let cell = particle.cell();
+            occupied.push((particle.layer.0, cell.x, cell.y));
+            if !world.content.layer(particle.layer)?.simulated
+                || !world
+                    .chunks
+                    .get(&ChunkCoord::at(cell))
+                    .is_some_and(|chunk| chunk.active)
+            {
+                continue;
+            }
+            candidates.push(MaterialParticleJobCandidate {
+                id,
+                layer: particle.layer,
+                position: particle.position,
+                velocity: particle.velocity,
+            });
+        }
+        occupied.sort_unstable();
+        let mut chunks = Vec::new();
+        chunks.try_reserve_exact(active_count).map_err(allocation)?;
+        for (coord, chunk) in &world.chunks {
+            if chunk.active {
+                chunks.push((*coord, chunk.revision));
+            }
+        }
+        let mut value = Self {
+            world: world.id,
+            content: world.content.fingerprint(),
+            epoch: world.remaps.epoch(),
+            candidates,
+            occupied,
+            chunks,
+            reserved: std::collections::BTreeSet::new(),
+            plans: Vec::new(),
+            candidate_limit,
+            step_limit,
+            checked_steps: 0,
+            report: MaterialParticleJobReport::default(),
+        };
+        value.check_byte_limit(world)?;
+        value
+            .plans
+            .try_reserve_exact(value.candidates.len())
+            .map_err(allocation)?;
+        Ok(value)
+    }
+
+    /// 検査状態です。全候補を処理したJobは公開可能です。
+    pub fn status(&self) -> MaterialParticleJobStatus {
+        if self.plans.len() == self.candidates.len() {
+            MaterialParticleJobStatus::Ready
+        } else {
+            MaterialParticleJobStatus::Computing
+        }
+    }
+
+    /// 処理済み件数とDDA診断を返します。
+    pub fn report(&self) -> MaterialParticleJobReport {
+        self.report
+    }
+
+    /// 最大`budget`個の候補を検査します。Worldには変更を公開しません。
+    pub fn step(
+        &mut self,
+        world: &World,
+        budget: usize,
+    ) -> EngineResult<MaterialParticleJobStatus> {
+        self.validate_context(world)?;
+        for _ in 0..budget {
+            if self.status() == MaterialParticleJobStatus::Ready {
+                break;
+            }
+            let candidate = self.candidates[self.plans.len()];
+            let base_cells = self
+                .candidates
+                .len()
+                .checked_add(self.chunks.len())
+                .and_then(|n| n.checked_add(self.reserved.len()))
+                .ok_or_else(|| invalid("粒子Job予約数overflow"))?;
+            let cells_left = world.limits.job_cells.saturating_sub(base_cells);
+            let bytes_left = world
+                .limits
+                .job_bytes
+                .saturating_sub(self.estimated_bytes()?)
+                / 64;
+            let path_limit = cells_left.min(bytes_left);
+            let step_budget = self.step_limit.saturating_sub(self.checked_steps);
+            let (plan, path, checked) =
+                self.plan_candidate(world, candidate, &self.reserved, path_limit, step_budget)?;
+            let next_steps = self
+                .checked_steps
+                .checked_add(checked)
+                .ok_or_else(|| invalid("粒子Job DDA件数overflow"))?;
+            if next_steps > self.step_limit {
+                return Err(EngineError::capacity(
+                    "粒子Job DDA検査数",
+                    next_steps as u64,
+                    self.step_limit as u64,
+                ));
+            }
+            let additional = path.len();
+            let next_cells = self
+                .candidates
+                .len()
+                .checked_add(self.chunks.len())
+                .and_then(|n| n.checked_add(self.reserved.len()))
+                .and_then(|n| n.checked_add(additional))
+                .ok_or_else(|| invalid("粒子Job予約数overflow"))?;
+            if next_cells > world.limits.job_cells {
+                return Err(EngineError::capacity(
+                    "粒子Job予約数",
+                    next_cells as u64,
+                    world.limits.job_cells as u64,
+                ));
+            }
+            let next_bytes = self
+                .estimated_bytes()?
+                .checked_add(
+                    additional
+                        .checked_mul(64)
+                        .ok_or_else(|| invalid("粒子Job予約byte数overflow"))?,
+                )
+                .ok_or_else(|| invalid("粒子Job byte数overflow"))?;
+            if next_bytes > world.limits.job_bytes {
+                return Err(EngineError::capacity(
+                    "粒子Job byte数",
+                    next_bytes as u64,
+                    world.limits.job_bytes as u64,
+                ));
+            }
+            for point in path {
+                self.reserved.insert((candidate.layer.0, point.x, point.y));
+            }
+            self.checked_steps = next_steps;
+            self.report.processed = self
+                .report
+                .processed
+                .checked_add(1)
+                .ok_or_else(|| invalid("粒子Job処理件数overflow"))?;
+            self.report.moved = self
+                .report
+                .moved
+                .checked_add(usize::from(plan.cell != candidate_cell(candidate)))
+                .ok_or_else(|| invalid("粒子Job移動件数overflow"))?;
+            self.report.waiting = self
+                .report
+                .waiting
+                .checked_add(usize::from(plan.waiting))
+                .ok_or_else(|| invalid("粒子Job待機件数overflow"))?;
+            self.report.landed = self
+                .report
+                .landed
+                .checked_add(usize::from(plan.landed))
+                .ok_or_else(|| invalid("粒子Job着地件数overflow"))?;
+            self.report.checked_steps = self.checked_steps;
+            self.plans.push(plan);
+            self.check_byte_limit(world)?;
+        }
+        Ok(self.status())
+    }
+
+    /// 準備済み粒子移動を一つのWorld取引で公開します。
+    pub fn publish(&self, editor: &mut WorldEdit<'_>) -> EngineResult<MaterialParticleJobReport> {
+        editor.run(|edit| {
+            self.validate_structure()?;
+            self.validate_publish_context(edit.world)?;
+            if self.status() != MaterialParticleJobStatus::Ready {
+                return Err(conflict("粒子Jobが未完成"));
+            }
+            self.validate_plans_against_world(edit.world)?;
+            for (candidate, plan) in self.candidates.iter().zip(&self.plans) {
+                if plan.position != candidate.position
+                    || (plan.stopped && candidate.velocity != [0, 0])
+                {
+                    edit.reserve_writes(1)?;
+                    let particle = edit.world.particles.get_mut(candidate.id)?;
+                    particle.position = plan.position;
+                    if plan.stopped {
+                        particle.velocity = [0, 0];
+                    }
+                    edit.touch_particle_chunks(candidate_cell(*candidate), plan.cell)?;
+                }
+            }
+            for (candidate, plan) in self.candidates.iter().zip(&self.plans) {
+                if plan.landed {
+                    edit.land_uncontested_particle(MaterialParticleHandle {
+                        world: self.world,
+                        id: candidate.id,
+                    })?;
+                }
+            }
+            Ok(self.report)
+        })
+    }
+
+    fn plan_candidate(
+        &self,
+        world: &World,
+        candidate: MaterialParticleJobCandidate,
+        reserved: &std::collections::BTreeSet<(u32, i32, i32)>,
+        path_limit: usize,
+        step_budget: usize,
+    ) -> EngineResult<(MaterialParticleJobPlan, Vec<CellPoint>, usize)> {
+        let start = candidate.position;
+        let velocity = candidate.velocity;
+        let source = candidate_cell(candidate);
+        let mut end = [0i64; 2];
+        for axis in 0..2 {
+            end[axis] = start[axis]
+                .checked_add(velocity[axis])
+                .ok_or_else(|| invalid("粒子Job変位overflow"))?;
+            if end[axis].div_euclid(SCALE) < i64::from(i32::MIN)
+                || end[axis].div_euclid(SCALE) > i64::from(i32::MAX)
+            {
+                return Err(invalid("粒子Job変位がcell座標範囲外"));
+            }
+        }
+        let target = CellPoint {
+            x: end[0].div_euclid(SCALE) as i32,
+            y: end[1].div_euclid(SCALE) as i32,
+        };
+        let mut current = source;
+        let sign = [velocity[0].signum() as i32, velocity[1].signum() as i32];
+        let speed = [
+            velocity[0].unsigned_abs() as u128,
+            velocity[1].unsigned_abs() as u128,
+        ];
+        let mut waiting = reserved.contains(&(candidate.layer.0, source.x, source.y));
+        let mut stopped = velocity == [0, 0] && !waiting;
+        let mut checked = 0usize;
+        let mut path = Vec::new();
+        if !waiting && path_limit == 0 {
+            return Err(EngineError::capacity("粒子Job経路byte数", 1, 0));
+        }
+        if !waiting {
+            path.try_reserve(1).map_err(allocation)?;
+            path.push(source);
+        }
+        while current != target && !waiting {
+            if checked == step_budget {
+                return Err(EngineError::capacity(
+                    "粒子Job DDA検査数",
+                    self.checked_steps.saturating_add(checked).saturating_add(1) as u64,
+                    self.step_limit as u64,
+                ));
+            }
+            checked = checked
+                .checked_add(1)
+                .ok_or_else(|| invalid("粒子Job DDA件数overflow"))?;
+            let coord = [current.x, current.y];
+            let distance: [u128; 2] = std::array::from_fn(|axis| {
+                let boundary = (i64::from(coord[axis]) + i64::from(sign[axis] > 0)) * SCALE;
+                (boundary - start[axis]).unsigned_abs() as u128
+            });
+            let x = current.x != target.x
+                && (current.y == target.y || distance[0] * speed[1] <= distance[1] * speed[0]);
+            let y = current.y != target.y
+                && (current.x == target.x || distance[1] * speed[0] <= distance[0] * speed[1]);
+            let next = CellPoint {
+                x: current
+                    .x
+                    .checked_add(if x { sign[0] } else { 0 })
+                    .ok_or_else(|| invalid("粒子Job DDA水平端"))?,
+                y: current
+                    .y
+                    .checked_add(if y { sign[1] } else { 0 })
+                    .ok_or_else(|| invalid("粒子Job DDA垂直端"))?,
+            };
+            let mut guards = Vec::new();
+            if x && y {
+                guards.try_reserve(3).map_err(allocation)?;
+                guards.push(CellPoint {
+                    x: next.x,
+                    y: current.y,
+                });
+                guards.push(CellPoint {
+                    x: current.x,
+                    y: next.y,
+                });
+            } else {
+                guards.try_reserve(1).map_err(allocation)?;
+            }
+            guards.push(next);
+            for point in &guards {
+                if self
+                    .occupied
+                    .binary_search(&(candidate.layer.0, point.x, point.y))
+                    .is_ok()
+                    || reserved.contains(&(candidate.layer.0, point.x, point.y))
+                {
+                    waiting = true;
+                    break;
+                }
+                match world.cell(candidate.layer, *point)? {
+                    CellQuery::WorldBoundary => {
+                        stopped = true;
+                        break;
+                    }
+                    CellQuery::Loaded(cell) => {
+                        if !world
+                            .chunks
+                            .get(&ChunkCoord::at(*point))
+                            .is_some_and(|chunk| chunk.active)
+                        {
+                            waiting = true;
+                            break;
+                        }
+                        if cell.block.is_some() || cell.core.material != MaterialId::AIR {
+                            stopped = true;
+                            break;
+                        }
+                    }
+                    _ => {
+                        waiting = true;
+                        break;
+                    }
+                }
+            }
+            if stopped || waiting {
+                break;
+            }
+            let next_path_len = path
+                .len()
+                .checked_add(guards.len())
+                .ok_or_else(|| invalid("粒子Job経路件数overflow"))?;
+            if next_path_len > path_limit {
+                return Err(EngineError::capacity(
+                    "粒子Job経路件数",
+                    next_path_len as u64,
+                    path_limit as u64,
+                ));
+            }
+            path.try_reserve(guards.len()).map_err(allocation)?;
+            path.extend(guards);
+            current = next;
+        }
+        let position = if (stopped || waiting) && current == source {
+            start
+        } else if stopped || waiting {
+            [
+                i64::from(current.x) * SCALE + SCALE / 2,
+                i64::from(current.y) * SCALE + SCALE / 2,
+            ]
+        } else {
+            end
+        };
+        let mut landed = false;
+        if stopped {
+            let layer_key = world.content.layer(candidate.layer)?.key;
+            let empty_payload = world
+                .channels
+                .iter()
+                .filter(|channel| channel.material_layer() == Some(layer_key))
+                .try_fold(true, |empty, channel| {
+                    Ok::<_, EngineError>(empty && channel.payload_is_default(current)?)
+                })?;
+            let source_key = (candidate.layer.0, source.x, source.y);
+            let shared_source = current == source
+                && self.occupied.partition_point(|key| *key <= source_key)
+                    - self.occupied.partition_point(|key| *key < source_key)
+                    > 1;
+            landed = !shared_source
+                && matches!(world.cell(candidate.layer, current)?, CellQuery::Loaded(cell) if cell.core == CellCore::AIR && cell.block.is_none())
+                && empty_payload;
+        }
+        let plan = MaterialParticleJobPlan {
+            position,
+            cell: current,
+            stopped,
+            waiting,
+            landed,
+        };
+        Ok((plan, path, checked))
+    }
+
+    fn validate_context(&self, world: &World) -> EngineResult<()> {
+        if world.id != self.world
+            || world.content.fingerprint() != self.content
+            || world.remaps.epoch() != self.epoch
+        {
+            return Err(conflict("粒子JobのWorld・Content・素材epoch"));
+        }
+        let cell_records = self
+            .candidates
+            .len()
+            .checked_add(self.chunks.len())
+            .and_then(|n| n.checked_add(self.reserved.len()))
+            .ok_or_else(|| invalid("粒子Job保存cell数overflow"))?;
+        if self.candidate_limit > world.limits.job_cells
+            || self.step_limit > world.limits.job_cells
+            || cell_records > world.limits.job_cells
+        {
+            return Err(EngineError::capacity(
+                "粒子Job保存cell数",
+                cell_records.max(self.candidate_limit).max(self.step_limit) as u64,
+                world.limits.job_cells as u64,
+            ));
+        }
+        self.check_byte_limit(world)?;
+        let active_count = world.chunks.values().filter(|chunk| chunk.active).count();
+        if active_count != self.chunks.len() {
+            return Err(conflict("粒子Jobの活動chunk集合が変化"));
+        }
+        for &(coord, revision) in &self.chunks {
+            if !world
+                .chunks
+                .get(&coord)
+                .is_some_and(|chunk| chunk.active && chunk.revision == revision)
+            {
+                return Err(conflict("粒子JobのWorld入力revisionが失効"));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_publish_context(&self, world: &World) -> EngineResult<()> {
+        self.validate_context(world)?;
+        for candidate in &self.candidates {
+            let particle = world.particles.get(candidate.id)?;
+            if particle.layer != candidate.layer
+                || particle.position != candidate.position
+                || particle.velocity != candidate.velocity
+                || particle.is_archived()
+            {
+                return Err(conflict("粒子Jobの候補状態が失効"));
+            }
+        }
+        let resident_count = world
+            .particles
+            .iter()
+            .filter(|(_, particle)| !particle.is_archived())
+            .count();
+        if resident_count != self.occupied.len() {
+            return Err(conflict("粒子Jobの占有snapshot件数が失効"));
+        }
+        let mut occupied = Vec::new();
+        occupied
+            .try_reserve_exact(resident_count)
+            .map_err(allocation)?;
+        for (_, particle) in world
+            .particles
+            .iter()
+            .filter(|(_, particle)| !particle.is_archived())
+        {
+            let cell = particle.cell();
+            occupied.push((particle.layer.0, cell.x, cell.y));
+        }
+        occupied.sort_unstable();
+        if occupied != self.occupied {
+            return Err(conflict("粒子Jobの占有snapshotが失効"));
+        }
+        Ok(())
+    }
+
+    /// 保存planが現Worldに対する候補順・DDA・予約結果と一致することを公開直前に再計算します。
+    fn validate_plans_against_world(&self, world: &World) -> EngineResult<()> {
+        let stored_reserved_bytes = self
+            .reserved
+            .len()
+            .checked_mul(64)
+            .ok_or_else(|| invalid("粒子Job予約byte数overflow"))?;
+        let fixed_bytes = self
+            .estimated_bytes()?
+            .checked_sub(stored_reserved_bytes)
+            .ok_or_else(|| invalid("粒子Job固定byte数不整合"))?;
+        let mut reserved = std::collections::BTreeSet::new();
+        let mut checked_steps = 0usize;
+        for (candidate, saved_plan) in self.candidates.iter().zip(&self.plans) {
+            let base_cells = self
+                .candidates
+                .len()
+                .checked_add(self.chunks.len())
+                .and_then(|count| count.checked_add(reserved.len()))
+                .ok_or_else(|| invalid("粒子Job再検査cell数overflow"))?;
+            let cells_left = world.limits.job_cells.saturating_sub(base_cells);
+            let current_reserved_bytes = reserved
+                .len()
+                .checked_mul(64)
+                .ok_or_else(|| invalid("粒子Job再検査byte数overflow"))?;
+            let bytes_used = fixed_bytes
+                .checked_add(current_reserved_bytes)
+                .ok_or_else(|| invalid("粒子Job再検査byte数overflow"))?;
+            let bytes_left = world.limits.job_bytes.saturating_sub(bytes_used) / 64;
+            let path_limit = cells_left.min(bytes_left);
+            let step_budget = self.step_limit.saturating_sub(checked_steps);
+            let (plan, path, checked) =
+                self.plan_candidate(world, *candidate, &reserved, path_limit, step_budget)?;
+            if plan != *saved_plan {
+                return Err(conflict("粒子Jobの保存計画がDDA再計算結果と不一致"));
+            }
+            checked_steps = checked_steps
+                .checked_add(checked)
+                .ok_or_else(|| invalid("粒子Job再検査DDA件数overflow"))?;
+            for point in path {
+                reserved.insert((candidate.layer.0, point.x, point.y));
+            }
+        }
+        if checked_steps != self.checked_steps || reserved != self.reserved {
+            return Err(conflict(
+                "粒子Jobの保存進捗・経路予約がDDA再計算結果と不一致",
+            ));
+        }
+        Ok(())
+    }
+
+    fn estimated_bytes(&self) -> EngineResult<usize> {
+        160usize
+            .checked_add(
+                self.candidates
+                    .len()
+                    .checked_mul(48)
+                    .ok_or_else(|| invalid("粒子Job候補byte数overflow"))?,
+            )
+            .and_then(|n| n.checked_add(self.occupied.len().checked_mul(24)?))
+            .and_then(|n| n.checked_add(self.chunks.len().checked_mul(16)?))
+            .and_then(|n| n.checked_add(self.reserved.len().checked_mul(64)?))
+            .and_then(|n| n.checked_add(self.candidates.len().checked_mul(32)?))
+            .ok_or_else(|| invalid("粒子Job byte数overflow"))
+    }
+
+    fn check_byte_limit(&self, world: &World) -> EngineResult<()> {
+        let bytes = self.estimated_bytes()?;
+        if bytes > world.limits.job_bytes {
+            return Err(EngineError::capacity(
+                "粒子Job byte数",
+                bytes as u64,
+                world.limits.job_bytes as u64,
+            ));
+        }
+        Ok(())
+    }
+
+    /// barrierごとのStateStore保存では全snapshotをcodec化するため、保存前検証は進捗の
+    /// O(1)不変条件に限定します。各要素の完全検証はdecode後と最終publish時に一度行います。
+    fn validate_progress(&self) -> EngineResult<()> {
+        if self.candidates.len() > self.candidate_limit
+            || self.plans.len() > self.candidates.len()
+            || self.report.processed != self.plans.len()
+            || self.report.checked_steps != self.checked_steps
+            || self.checked_steps > self.step_limit
+            || self.report.moved > self.report.processed
+            || self.report.landed > self.report.processed
+            || self.report.waiting > self.report.processed
+        {
+            return Err(invalid("粒子Job進捗"));
+        }
+        Ok(())
+    }
+
+    fn validate_structure(&self) -> EngineResult<()> {
+        self.validate_progress()?;
+        let mut moved = 0usize;
+        let mut landed = 0usize;
+        let mut waiting = 0usize;
+        for (plan, candidate) in self.plans.iter().zip(&self.candidates) {
+            moved += usize::from(plan.cell != candidate_cell(*candidate));
+            landed += usize::from(plan.landed);
+            waiting += usize::from(plan.waiting);
+        }
+        if self.occupied.windows(2).any(|pair| pair[0] > pair[1])
+            || self.chunks.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            || self
+                .candidates
+                .windows(2)
+                .any(|pair| pair[0].id >= pair[1].id)
+            || self.report.moved != moved
+            || self.report.landed != landed
+            || self.report.waiting != waiting
+            || self
+                .plans
+                .iter()
+                .zip(&self.candidates)
+                .any(|(plan, candidate)| {
+                    plan.cell.x != plan.position[0].div_euclid(SCALE) as i32
+                        || plan.cell.y != plan.position[1].div_euclid(SCALE) as i32
+                        || plan.landed && (!plan.stopped || plan.waiting)
+                        || !position_in_bounds(candidate.position)
+                        || !position_in_bounds(plan.position)
+                        || !self.reserved.contains(&(
+                            candidate.layer.0,
+                            candidate_cell(*candidate).x,
+                            candidate_cell(*candidate).y,
+                        ))
+                        || !self
+                            .reserved
+                            .contains(&(candidate.layer.0, plan.cell.x, plan.cell.y))
+                })
+        {
+            return Err(invalid("粒子Job進捗・snapshot"));
+        }
+        Ok(())
+    }
+}
+
+fn candidate_cell(candidate: MaterialParticleJobCandidate) -> CellPoint {
+    CellPoint {
+        x: candidate.position[0].div_euclid(SCALE) as i32,
+        y: candidate.position[1].div_euclid(SCALE) as i32,
+    }
+}
+
+fn position_in_bounds(position: [i64; 2]) -> bool {
+    position
+        .into_iter()
+        .all(|value| (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value.div_euclid(SCALE)))
+}
+
+impl StateCodec for MaterialParticleJob {
+    fn encode(&self, out: &mut Encoder) -> EngineResult<()> {
+        self.validate_progress()?;
+        out.raw(b"CHMPJOB1")?;
+        self.world.encode(out)?;
+        out.raw(&self.content)?;
+        out.u64(self.epoch)?;
+        out.u64(self.candidate_limit as u64)?;
+        out.u64(self.step_limit as u64)?;
+        out.u64(self.checked_steps as u64)?;
+        out.u64(self.report.processed as u64)?;
+        out.u64(self.report.moved as u64)?;
+        out.u64(self.report.landed as u64)?;
+        out.u64(self.report.waiting as u64)?;
+        out.u64(self.report.checked_steps as u64)?;
+        out.u32(u32::try_from(self.chunks.len()).map_err(|_| invalid("粒子Job chunk件数"))?)?;
+        for &(coord, revision) in &self.chunks {
+            coord.encode(out)?;
+            out.u64(revision)?;
+        }
+        out.u32(u32::try_from(self.candidates.len()).map_err(|_| invalid("粒子Job候補件数"))?)?;
+        for candidate in &self.candidates {
+            candidate.id.encode(out)?;
+            candidate.layer.encode(out)?;
+            for value in candidate.position.into_iter().chain(candidate.velocity) {
+                out.i64(value)?;
+            }
+        }
+        out.u32(u32::try_from(self.occupied.len()).map_err(|_| invalid("粒子Job占有件数"))?)?;
+        for &(layer, x, y) in &self.occupied {
+            out.u32(layer)?;
+            out.i32(x)?;
+            out.i32(y)?;
+        }
+        out.u32(u32::try_from(self.reserved.len()).map_err(|_| invalid("粒子Job予約件数"))?)?;
+        for &(layer, x, y) in &self.reserved {
+            out.u32(layer)?;
+            out.i32(x)?;
+            out.i32(y)?;
+        }
+        out.u32(u32::try_from(self.plans.len()).map_err(|_| invalid("粒子Job計画件数"))?)?;
+        for plan in &self.plans {
+            for value in plan.position {
+                out.i64(value)?;
+            }
+            plan.cell.encode(out)?;
+            out.u8(u8::from(plan.stopped)
+                | (u8::from(plan.waiting) << 1)
+                | (u8::from(plan.landed) << 2))?;
+        }
+        Ok(())
+    }
+
+    fn decode(input: &mut Decoder<'_>) -> EngineResult<Self> {
+        if input.raw(8)? != b"CHMPJOB1" {
+            return Err(invalid("粒子Job形式"));
+        }
+        let world = crate::foundation::id::WorldId::decode(input)?;
+        let content = input
+            .raw(32)?
+            .try_into()
+            .map_err(|_| invalid("粒子Job Content hash"))?;
+        let epoch = input.u64()?;
+        let candidate_limit =
+            usize::try_from(input.u64()?).map_err(|_| invalid("粒子Job候補上限"))?;
+        let step_limit = usize::try_from(input.u64()?).map_err(|_| invalid("粒子Job DDA上限"))?;
+        let checked_steps =
+            usize::try_from(input.u64()?).map_err(|_| invalid("粒子Job DDA進捗"))?;
+        let report = MaterialParticleJobReport {
+            processed: usize::try_from(input.u64()?).map_err(|_| invalid("粒子Job処理件数"))?,
+            moved: usize::try_from(input.u64()?).map_err(|_| invalid("粒子Job移動件数"))?,
+            landed: usize::try_from(input.u64()?).map_err(|_| invalid("粒子Job着地件数"))?,
+            waiting: usize::try_from(input.u64()?).map_err(|_| invalid("粒子Job待機件数"))?,
+            checked_steps: usize::try_from(input.u64()?).map_err(|_| invalid("粒子Job検査件数"))?,
+        };
+        let chunk_count = input.u32()? as usize;
+        if chunk_count > input.remaining() / 16 {
+            return Err(invalid("粒子Job chunk件数"));
+        }
+        let mut chunks = Vec::new();
+        chunks.try_reserve_exact(chunk_count).map_err(allocation)?;
+        for _ in 0..chunk_count {
+            chunks.push((ChunkCoord::decode(input)?, input.u64()?));
+        }
+        let candidate_count = input.u32()? as usize;
+        if candidate_count > candidate_limit || candidate_count > input.remaining() / 44 {
+            return Err(invalid("粒子Job候補件数"));
+        }
+        let mut candidates = Vec::new();
+        candidates
+            .try_reserve_exact(candidate_count)
+            .map_err(allocation)?;
+        for _ in 0..candidate_count {
+            let id = Id::decode(input)?;
+            let layer = LayerId::decode(input)?;
+            let values = [input.i64()?, input.i64()?, input.i64()?, input.i64()?];
+            candidates.push(MaterialParticleJobCandidate {
+                id,
+                layer,
+                position: [values[0], values[1]],
+                velocity: [values[2], values[3]],
+            });
+        }
+        let occupied_count = input.u32()? as usize;
+        if occupied_count > input.remaining() / 12 {
+            return Err(invalid("粒子Job占有件数"));
+        }
+        let mut occupied = Vec::new();
+        occupied
+            .try_reserve_exact(occupied_count)
+            .map_err(allocation)?;
+        for _ in 0..occupied_count {
+            occupied.push((input.u32()?, input.i32()?, input.i32()?));
+        }
+        let reserved_count = input.u32()? as usize;
+        if reserved_count > input.remaining() / 12 {
+            return Err(invalid("粒子Job予約件数"));
+        }
+        let mut reserved = std::collections::BTreeSet::new();
+        for _ in 0..reserved_count {
+            let point = (input.u32()?, input.i32()?, input.i32()?);
+            if !reserved.insert(point) {
+                return Err(invalid("粒子Job重複予約"));
+            }
+        }
+        let plan_count = input.u32()? as usize;
+        if plan_count != report.processed
+            || plan_count > candidate_count
+            || plan_count > input.remaining() / 25
+        {
+            return Err(invalid("粒子Job計画件数"));
+        }
+        let mut plans = Vec::new();
+        plans.try_reserve_exact(plan_count).map_err(allocation)?;
+        for _ in 0..plan_count {
+            let position = [input.i64()?, input.i64()?];
+            let cell = CellPoint::decode(input)?;
+            let flags = input.u8()?;
+            if flags & !7 != 0 {
+                return Err(invalid("粒子Job計画flag"));
+            }
+            plans.push(MaterialParticleJobPlan {
+                position,
+                cell,
+                stopped: flags & 1 != 0,
+                waiting: flags & 2 != 0,
+                landed: flags & 4 != 0,
+            });
+        }
+        let job = Self {
+            world,
+            content,
+            epoch,
+            candidates,
+            occupied,
+            chunks,
+            reserved,
+            plans,
+            candidate_limit,
+            step_limit,
+            checked_steps,
+            report,
+        };
+        job.validate_structure()?;
+        Ok(job)
     }
 }

@@ -6,7 +6,7 @@
 
 `WorldEdit::emit_material_particle(layer, point, velocity_q16)`が、非空・非blockのcell本体と、対象layerに所属する**全物質channel**を一つの粒子へ移す。flags・variation、energy、timer、混合参照、作者の個体参照も含む。位置固定channelは移動しない。block個体の暗黙の分解は拒否する。参照先の作者storeはWorldに残り、個体参照を失わず追従させる。
 
-一粒子は一cell分を所有する。複数cellの放出は同じWorld取引内で繰り返し、いずれかの容量拒否で全入力を保持する。発行・消費ではなく所有先の移動であり、この操作でSource/Sink receiptを捏造しない。全表現の収支監査は別のE05統合単位として接続する。
+一粒子は一cell分を所有する。複数cellの放出は同じWorld取引内で繰り返し、いずれかの容量拒否で全入力を保持する。発行・消費ではなく所有先の移動であり、この操作でSource/Sink receiptを捏造しない。全表現の収支は[36](36_MATERIAL_ACCOUNTING.md)の監査へ接続する。
 
 `MaterialParticleHandle`はWorld IDと世代付きIDを持ち、StateCodecで作者状態にも保存できる。復元後のWorldへ渡す際に生存と所属を照合する。着地したslotは解放して世代を更新し、古い参照と別Worldへの参照を拒否する。可変参照は公開しない。`material_particles`は退避粒子も列挙するが、退避中はmetadataだけを保持する。
 
@@ -18,7 +18,9 @@
 
 障害に達したら最後の空cellで停止し、速度を0にして着地を試みる。複数cell進んだ停止位置は最後の空cellの中心、元のcell内で停止する場合は元の連続位置を保持する。未読込・非活動域・予約競合は速度を保持して待機する。未検査の整数距離を借金として積まない。非活動regionとarchiveの粒子は更新しない。0速度でも着地を再試行し、着地不能でも寿命で消さない。
 
-これはpoint tokenの標準DDAであり、半径・mask・一般shapeのsweepや剛体接触の実装ではない。それらのgeometry/couplingはE07の契約に従って接続する。重力・摩擦をこの入口へ隠して適用しない。`set_particle_velocity`と型付き`set_particle_channel`を同じ取引で使い、作者が速度・timer・energy等を変更できる。元のMaterialMotion等のpayloadと粒子本体の速度を連動させる方針も明示的に選ぶ。物性・標準providerとの自動統合はE05の残作業である。
+`WorldEdit::step_material_phase`経由では、先行するcell motion/scalar処理の共有予約も粒子DDAの開始セル・通過セル・角の検査セルで照合する。重なる粒子は速度を保持して待機し、そのtickにcell所有権と粒子所有権を同じ経路へ重ねない。この追加scratchはcell motionまたはscalarを同じphaseで実行するときだけ確保済みで、粒子単独APIにはcell予約を新規確保しない。従って、cell solverと粒子の予約連携が必要なら統合Materials phaseを使う。
+
+これはpoint tokenの標準DDAであり、半径・mask・一般shapeのsweepや剛体接触の実装ではない。それらのgeometry/couplingはE07の契約に従って接続する。重力・摩擦をこの入口へ隠して適用しない。`set_particle_velocity`と型付き`set_particle_channel`を同じ取引で使い、作者が速度・timer・energy等を変更できる。元のMaterialMotion等のpayloadと粒子本体の速度を連動させる方針も明示的に選ぶ。標準・独自providerの粒子力積分は[37](37_MATERIAL_FORCES.md)と[43](43_MATERIAL_PHASE_PIPELINE.md)へ統合済みである。`step_material_particle_force_motion_sleeping`は、静止継続をProviderが保証し、粒子・対象chunkに変更がない場合だけforce/DDAを省く派生tracker APIである。初回参照後のtick一致、速度編集wake、tracker復元後の参照fallbackをQ04対象試験で確認する。単一active chunkの静止粒子4,096個をunoptimized test profileで比較した結果は[E05検証記録](evidence/E05/README.md)に記録する。この条件の測定をMaterials phase/Runtime全体や144/60 FPSへ一般化しない。統合Materials phaseには`step_material_phase_with_particle_sleep`で接続済みである。Runtime Systemはbarrier後に返るtrackerをsystem-local cacheで次tickへ渡せる。保存trackerをdecodeした場合は未認証として参照経路を一度実行する。Q04対象試験でRuntimeの3tick継続を確認した。保存可能な件数分割Jobは次節で定義する。
 
 ## 着地と容量
 
@@ -26,7 +28,17 @@
 
 `WorldLimits.particles`がslot上限で、[08の既定profile](08_DATA_MODEL_AND_FORMATS.md#容量の基準)に従い262,144とする。`particle_bytes`がresidentのchannelキー・長さheader・値のcodec byte合計上限である。退避中もIDのslotは確保し、payload配列はarchiveへ移して解放する。slotのmetadata、Vecの管理領域、World候補の複製とcodec scratchはこのpayload byte数とは別の費用である。channelの容量と粒子容量は独立し、どちらも自動拡大しない。
 
-pool・payload・着地先channel・編集予算・DDA予算の不足では外側のWorld取引を失敗させ、入力と先行変更を保持する。callbackがエラーを無視しても部分確定しない。phase全体のrollbackは継続Jobではない。広域移動を保存可能な件数分割Jobにすることは別のE05残作業である。
+pool・payload・着地先channel・編集予算・DDA予算の不足では外側のWorld取引を失敗させ、入力と先行変更を保持する。callbackがエラーを無視しても部分確定しない。通常phase全体のrollbackはJobの途中checkpointではない。保存可能Jobは全候補を計画した後、Ready時の一つのWorld取引で公開する。
+
+## 保存可能な件数分割Job
+
+`MaterialParticleJob::new(world, candidate_limit, step_limit)`は、活動中のsimulated layerに属するresident粒子をslot順に候補化し、全resident粒子の開始位置、全active chunkのrevision、World/Content/remap epochをsnapshotする。候補数は`candidate_limit`以下でなければならず、開始時のoccupancy索引と保存状態は`WorldLimits.job_cells`/`job_bytes`以内に収める。`step(world, budget)`は最大budget件の候補を整数DDAで計画し、最大`step_limit`交差をJob全体で検査する。通過cell・角guard・開始cellの予約は後続候補へ引き継ぐ。
+
+Jobは全候補がReadyになるまでWorldを変更しない。`StateCodec`でJobをWorld StateStoreへ保存し、Runtime Systemはbarrierごとに読み戻して`ContinueSameTick`を返せる。Ready後の`publish`は全粒子の位置・停止速度・着地を一つのWorldEdit候補へ適用する。publish前に活動chunk revision、候補粒子の位置/速度、resident占有snapshotを再検査し、保存planは候補順に現Worldから整数DDAを再計算して照合する。再計算では先行候補の通過・角guard予約も順に再構築し、plan、累積step数、最終予約集合がrecordと一致しなければ公開を拒否する。codecとして形式が正しいだけのrecordで壁を越えたりoccupied cellへ飛ぶことを防ぐ。失効時または後段容量失敗時は部分公開しない。進捗recordを消費するSystemはpublishと`remove_state`を同じRuntime取引へ含める。
+
+このJobは通常の`step_material_particles`の置換候補であり、同tickに両方を実行して二重に粒子を動かさない。`MaterialParticleJob`単独ではforce積分を行わない。通常の粒子forceとcell/scalar phaseを同tickに連携する場合は`step_material_phase`系APIを使い、同じphaseの予約を共有する。保存可能な`MaterialParticleJob`をcell/scalar solverと同tickに合成し、Job経路まで予約共有する公開APIは現在ない。したがって同じtickにJobをpublishした後で別のcell solverを実行してはならない。この組合せはこのJobの契約・Q04受け入れとして実装済みとは扱わず、必要になった場合は共有予約を伴う統合APIを別途設計する。
+
+費用はJob開始時に全particle arenaとactive chunkを走査し、resident occupancyを保存する。各pollはbudget件分のDDA境界・予約検索とactive revision照合、publish時は候補・resident occupancyの再照合に加えて、保存planのDDA境界を合計`checked_steps`以下で再実行する。経路・予約scratchは`job_cells`/`job_bytes`と累積`step_limit`で制限するため、不正な保存入力でも検証仕事を上限外へ広げない。今回の再検証追加に伴う専用性能比較は未実施であり、性能改善は主張しない。PressureJob・広域Job・複数Provider・正規粒子を含む複合Runtime profileはQ04出口計測でworker 1/2/4のtest/release test profileを比較した。一方、極小budgetでparticle job全recordを何度もStateStoreへ保存するcodec費用だけを分離した比較や、動的multi-chunk workloadは未計測である。jobの待機・容量失敗ではWorldは変わらないが、Ready時に一括publishするため一回の編集上限を超える候補は容量エラーになる。必要なら呼び出し側が対象World/活動域を分けてJobを構成する。
 
 ## 保存・退避・素材epoch
 
@@ -40,4 +52,8 @@ World形式は`CHWORLD2`。従来のWorld情報の後ろへ粒子容量とarena�
 
 Worldの候補作成は粒子arenaとresident payloadも複製するため、多数の変更は一つのeditへまとめる。放出・payload更新のbyte集計は生存粒子数、着地はchannel数、DDAは通過境界数に依存する。予約集合は通過点数に応じたscratchを使う。件数予算は候補複製・codec・最終validateまで一定時間に制限する保証ではない。正確なscalar経路を先に用意し、最適化はtick比較を通して行う。
 
-`tests/material_particles.rs`は全payloadと混合参照、正確な成分量、pool・byte・着地容量、無視されたエラー、全方向と負座標、端数、角・壁、予約、未準備域、寿命非消失、保存再開、区域所有の移動、退避・復帰、素材remap、旧World形式、切断codecとcapsを検査する。`cargo run --locked --example material_particles`は放出後に途中保存し、連続実行と同じcell・energy=900へ着地することを確認する。
+`tests/material_particles.rs`は全payloadと混合参照、正確な成分量、pool・byte・着地容量、無視されたエラー、全方向と負座標、端数、角・壁、予約、未準備域、寿命非消失、保存再開、保存planの壁越え改ざん拒否、区域所有の移動、退避・復帰、素材remap、旧World形式、切断codecとcapsを検査する。`cargo run --locked --example material_particles`は放出後に途中保存し、連続実行と同じcell・energy=900へ着地することを確認する。
+
+## 全表現の収支との接続
+
+[36の全表現収支](36_MATERIAL_ACCOUNTING.md)は実所有量を集計し、基準と理由付き増減へ照合する。cell・混合・粒子の個別記録を総量へ二重計上しない。標準body physics、物性統合、広域移動、dirty/sleep、RuntimeのQ04完成を示すものではない。
