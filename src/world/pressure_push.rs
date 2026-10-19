@@ -407,16 +407,17 @@ impl PressurePushSearch {
     fn validate_inputs(&self, world: &World) -> EngineResult<()> {
         self.validate_context(world)?;
         let layer = world.content.layer_id(self.layer)?;
-        let computed_particles = if self.occupied_particles.is_none() {
-            Some(active_particle_cells(world, layer)?)
-        } else {
-            None
-        };
-        let occupied_particles = self
+        // 保存形式上は妥当でも、record内の索引が意図的に欠落・改変されていることが
+        // あります。公開境界で実Worldから一度だけ再構築し、現物を占有判定に使います。
+        // stepごとに粒子arena全体を走査せず、境界の費用は活動粒子数Pに対してO(P log P)です。
+        let actual_particles = active_particle_cells(world, layer)?;
+        if self
             .occupied_particles
             .as_deref()
-            .or(computed_particles.as_deref())
-            .ok_or_else(|| invalid("圧力探索の粒子索引"))?;
+            .is_some_and(|saved| saved != actual_particles.as_slice())
+        {
+            return Err(conflict("圧力探索の保存済み粒子索引がWorldと不一致"));
+        }
         // 公開時は全経路を実地形と照合します。step予算とは別の一括取引です。
         for index in 0..self.nodes.len() {
             let point = self.nodes[index].0;
@@ -425,7 +426,7 @@ impl PressurePushSearch {
             } else {
                 self.material
             };
-            validate_node(world, layer, point, expected, occupied_particles)?;
+            validate_node(world, layer, point, expected, &actual_particles)?;
         }
         Ok(())
     }
@@ -895,6 +896,44 @@ mod tests {
             restored.step(&world, 4095).unwrap(),
             PressurePushStatus::NoOutlet
         );
+    }
+
+    #[test]
+    fn restored_particle_index_must_match_world_before_publish() {
+        let (mut world, layer) = filled_world();
+        let source = CellPoint { x: 32, y: 32 };
+        let occupied_outlet = CellPoint { x: 33, y: 32 };
+        world
+            .edit(|edit| {
+                edit.set_channel(config(4096).channel, source, 1000i64)?;
+                edit.emit_material_particle(layer, occupied_outlet, [0, 0])?;
+                Ok(())
+            })
+            .unwrap();
+
+        let mut search = PressurePushSearch::new(&world, layer, source, config(4096)).unwrap();
+        // codecとして整合する空の索引を保存recordへ仕込み、復元後に粒子のいる出口を
+        // 見落とす状況を再現します。World revisionは粒子生成後に取得しているため、
+        // 入力revisionだけでは改ざんされた索引を検出できません。
+        search.occupied_particles = Some(Vec::new());
+        assert_eq!(
+            search.step(&world, 4096).unwrap(),
+            PressurePushStatus::Ready
+        );
+        let mut encoded = Encoder::new(100_000);
+        search.encode(&mut encoded).unwrap();
+        let saved = encoded.finish();
+        let mut decoder = Decoder::new(&saved, 100_000).unwrap();
+        let restored = PressurePushSearch::decode(&mut decoder).unwrap();
+        decoder.finish().unwrap();
+
+        let before = world.checkpoint(2_000_000).unwrap();
+        assert!(
+            world
+                .edit(|edit| edit.publish_pressure_push(&restored))
+                .is_err()
+        );
+        assert_eq!(world.checkpoint(2_000_000).unwrap(), before);
     }
 
     #[test]

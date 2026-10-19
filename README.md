@@ -23,7 +23,7 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 | E02：RuntimeとScene | 起動、plugin、Scene遷移、scope、入力、固定更新、System順序・明示独立worker、時計、headless | [実装・検証記録](new_docs/evidence/E02/README.md) |
 | E03：資産と基本表示 | VFSとpack、PNG・WAV/Ogg・fontのimport、共有cache、解放・世代差し替え、sprite、camera、描画adapter | [実装・検証記録](new_docs/evidence/E03/README.md) |
 | E04：世界と保存基盤 | 多layer・素材寸法・個体・部分生成・lease・独自channel・区域退避・世代保存 | [実装・検証記録](new_docs/evidence/E04/README.md) |
-| E05：セルと流体（PRレビュー指摘対応中） | 物質状態の一括輸送、局所移動、cell変更の理由付きreceipt、混合・分離、圧力・押出し、正規物質粒子、全表現監査、保存可能Job、保守的なsleep/wake、Runtime barrier、原子的Materials phase。Q04の全体テストとローカル総合レビューは完了。PR #22再レビューで見つかった粒子占有P1二件と保存particle Job planのP2一件を修正し、対象検証済み。修正commitのpush・CI・再レビューを確認中 | [契約と残る制約](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
+| E05：セルと流体（PRレビュー指摘対応中） | 物質状態の一括輸送、局所移動、cell変更の理由付きreceipt、混合・分離、圧力・押出し、正規物質粒子、全表現監査、保存可能Job、保守的なsleep/wake、Runtime barrier、原子的Materials phase。Q04の全体テストとローカル総合レビューは完了。PR #22再レビューの粒子占有P1二件と保存particle Job planのP2一件は修正済み。最新再レビューで見つかった復元PressurePushSearchの粒子索引不一致P2も回帰と対象検証を追加し、push・CI・再レビューを待っている | [契約と残る制約](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
 
 ### E05の現在地（2026-10-19）
 
@@ -33,7 +33,7 @@ Q04関連12 suiteの横断実行は296件成功しました。Arenaの候補複�
 
 最終ローカルゲートでは`cargo test --locked --jobs 1`、`cargo check --all-targets --locked --jobs 1`、`cargo clippy --all-targets --locked --jobs 1 -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`が成功しました。Cargoビルドは単一job・低メモリ設定です。保存可能な`MaterialParticleJob`とcell/scalar solverを同tickに共有予約へ合成するAPIは未提供で、[粒子Job契約](new_docs/35_MATERIAL_PARTICLES.md)に現状の制約を記録しています。
 
-PR #22の独立レビューでは、粒子占有P1二件に加え、保存particle Job planがDDAと一致しないP2も見つかりました。三件すべて修正し、影響targetの回帰・Clippyをローカルで通過しました。P2修正後のcommit/CI/再レビューは確認中のため、E05/Q04を工程完了扱いにしません。
+PR #22の独立レビューでは、粒子占有P1二件と保存particle Job planがDDAと一致しないP2を修正しました。さらに最新head `62affac`への再レビューで、復元PressurePushSearchの粒子占有索引が現Worldと照合されないP2が見つかりました。この回帰は修正前の公開成功を再現し、修正後の単体6件・pressure_job 28件・対象Clippyで成功しています。新修正のpush後CIと再レビューが終わるまで、E05/Q04を工程完了扱いにしません。
 ## 動かす
 
 CIではRust **1.98.1**を使用しています。開発ブランチはPRで検査し、mainへのpushと手動実行も検査します。同じ開発コミットでpushとPRの検査を重複させません。初回ビルドには依存crateを取得するネットワーク接続が必要です。ウィンドウ表示にはOSの表示環境と対応GPUが必要ですが、headlessの作例はウィンドウなしで動作します。

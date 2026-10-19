@@ -801,3 +801,9 @@ PR reviewは二つのP1欠陥を指摘した。PressurePushSearchが同layer正�
 commit `d8582af45a5216eb55d40a01f0826d44639da5e4`をPR #22へpushした。GitHubのRust CI、E03、E04、E05 workflowは全てsuccess。MaterialMotionJobのinline P1 threadは修正・対象検査後にresolveし、PressurePushSearchのP1 review commentには同じcommitと試験結果で返信した。PR #22はopen・mergeable、head `d8582af`、base `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214`のままで、再レビュー結果を待つ。PR本文には採用順と除外PRを更新した。再レビューの問題なし確認と最新headの最終ゲートを得るまではE05完了と判定しない。
 
 再レビューは別のP2を検出した。`MaterialParticleJob`の構造検査はplanのposition/cellと両端の予約を確認するだけで、保存されたplanが元velocityのDDA・壁・占有・先行予約と一致するかを公開前に再構築しなかった。二つのparticleを使った再現では、壁の向こうの先行予約cellへplanを改ざんしても復元・publishできた。公開境界で現Worldから候補をslot順に再計画し、plan、DDA総数、経路予約集合を比較するよう修正した。違いがあればWorldEdit候補を変更する前に拒否する。回帰試験は修正前に不正公開を再現して失敗し、修正後は拒否・checkpoint不変を確認した。影響するmaterial_particles 36件、material_runtime 19件、対象Clippy、fmt、diff checkが成功した。再計画は保存済み累積`step_limit`と経路scratchの`job_cells`/`job_bytes`に制限する。今回の公開前再計算専用benchmarkは未実施。PR #22上のP2 thread返信・resolve、修正commit、CI、再レビューは残る。
+
+#### PR #22再レビュー：保存済みPressurePushSearch粒子索引の照合（2026-10-19）
+
+`62affac`を対象にした独立再レビューは、`CHPUSH03`として構造的に有効な保存recordでも、`occupied_particles`から実粒子座標だけを除去できることを指摘した。保存済み入力revisionをWorldに一致させれば、復元後の経路・出口検証が偽の索引を信頼し、粒子が存在するAIR cellへ流体を公開できる。単体回帰は空の索引を保存・復元し、粒子のいる出口をReadyにできることを修正前に確認した。修正後は公開境界で現在のWorldから同layer・活動粒子索引を再構築し、保存値との差を拒否するとともに、再構築した索引で全経路を検査する。拒否はWorldEdit候補変更前に起き、完全checkpoint不変を確認した。
+
+`pressure_push::tests`は6件、`tests/pressure_job.rs`は28件成功。`cargo clippy --locked --lib --test pressure_job -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`も成功した。追加の粒子索引再構築は公開境界一回あたりO(P log P)、node検査はO(N log P)。stepごとのparticle arena全走査は行わない。この追加公開検証の専用benchmarkは未実施で、性能改善は主張しない。PR #22上の新P2 thread返信・resolve、修正commit、CI、再レビューは未完了であり、E05/Q04を完了とはしない。
