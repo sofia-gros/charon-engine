@@ -4,7 +4,7 @@
 
 E06/Q05の実装、出口検証、単体・結合・統合ローカルレビューを完了。設計上の出口は、断熱energy保存、熱の上限、相変化往復、反応出力満容量、reaction競合、保存中断と再開の一致であり、下記fixtureと全target結果で確認した。[実装ロードマップ](../../19_IMPLEMENTATION_ROADMAP.md)と[熱・反応契約](../../10_MATERIALS_AND_CELL_PHYSICS.md)を参照。
 
-E05の差分から分離したローカルbranch `codex/e06-heat-reactions`で作業中。GitHubへのpush、PR提出、mergeはしていない。外部自動review jobを工程ゲートにしない。
+E05 PR #22をbaseとする `codex/e06-heat-reactions` をpushし、[PR #23](https://github.com/sofia-gros/charon-engine/pull/23)を提出済み。PRはopen・未マージで、E05 PR #22の先行マージが必要。GitHub Actionsは実行中。外部自動review jobを工程ゲートにしない。
 
 ## 現在の実装
 
