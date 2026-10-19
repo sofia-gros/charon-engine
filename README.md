@@ -4,7 +4,7 @@ Rust製の、汎用2Dサンドボックスゲームエンジンです。
 
 Fabric APIのような機能へのアクセスと拡張性、Phaserのようなシーン・入力・資産・実行管理を、2Dサンドボックスのシミュレーションと統合します。クリエーターがRustでゲームのルール、素材、キャラクター、操作、進行を定義し、エンジンが制作と実行の基盤を提供します。
 
-**現在はv1.0.0へ向けて開発中です。** E05「セルと流体」はローカル実装と総合検査を完了し、PR上の最終CI・レビュー確認中です。商用v1.0.0の完成や、Terraria・Noitaの完全クローン制作能力を実証済みという意味ではありません。
+**現在はv1.0.0へ向けて開発中です。** E05「セルと流体」はローカル実装・総合検査とPR #22の現head CIを完了し、PR上の独立レビュー確認待ちです。商用v1.0.0の完成や、Terraria・Noitaの完全クローン制作能力を実証済みという意味ではありません。
 
 ## 目指すもの
 
@@ -23,7 +23,7 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 | E02：RuntimeとScene | 起動、plugin、Scene遷移、scope、入力、固定更新、System順序・明示独立worker、時計、headless | [実装・検証記録](new_docs/evidence/E02/README.md) |
 | E03：資産と基本表示 | VFSとpack、PNG・WAV/Ogg・fontのimport、共有cache、解放・世代差し替え、sprite、camera、描画adapter | [実装・検証記録](new_docs/evidence/E03/README.md) |
 | E04：世界と保存基盤 | 多layer・素材寸法・個体・部分生成・lease・独自channel・区域退避・世代保存 | [実装・検証記録](new_docs/evidence/E04/README.md) |
-| E05：セルと流体（ローカル検査済み、PR確認中） | 物質状態の一括輸送、局所移動、cell変更の理由付きreceipt、混合・分離、圧力・押出し、正規物質粒子、全表現監査、保存可能Job、保守的なsleep/wake、Runtime barrier、原子的Materials phase。E05/Q04の全体テストとローカルレビューは成功。GitHub最終headのCI・PRレビュー確認待ち | [契約と残る制約](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
+| E05：セルと流体（CI済み、PRレビュー待ち） | 物質状態の一括輸送、局所移動、cell変更の理由付きreceipt、混合・分離、圧力・押出し、正規物質粒子、全表現監査、保存可能Job、保守的なsleep/wake、Runtime barrier、原子的Materials phase。Q04の全体テストとローカルレビュー、PR #22の現head CIは成功。独立レビュー確認待ち | [契約と残る制約](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
 
 ### E05の現在地（2026-10-19）
 
@@ -33,7 +33,7 @@ Q04関連12 suiteの横断実行は296件成功しました。Arenaの候補複�
 
 最終ローカルゲートでは`cargo test --locked --jobs 1`、`cargo check --all-targets --locked --jobs 1`、`cargo clippy --all-targets --locked --jobs 1 -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check`が成功しました。Cargoビルドは単一job・低メモリ設定です。保存可能な`MaterialParticleJob`とcell/scalar solverを同tickに共有予約へ合成するAPIは未提供で、[粒子Job契約](new_docs/35_MATERIAL_PARTICLES.md)に現状の制約を記録しています。
 
-作業中のPR #22は更新push後のGitHub CIとレビューを確認する段階です。外部確認前のためE05/Q04はまだ工程完了扱いにしません。
+PR #22のhead `7727c29` に対するGitHub CIは成功しました。PRはdraftで、独立レビュー記録はまだありません。外部レビュー確認前のためE05/Q04はまだ工程完了扱いにしません。
 ## 動かす
 
 CIではRust **1.98.1**を使用しています。開発ブランチはPRで検査し、mainへのpushと手動実行も検査します。同じ開発コミットでpushとPRの検査を重複させません。初回ビルドには依存crateを取得するネットワーク接続が必要です。ウィンドウ表示にはOSの表示環境と対応GPUが必要ですが、headlessの作例はウィンドウなしで動作します。

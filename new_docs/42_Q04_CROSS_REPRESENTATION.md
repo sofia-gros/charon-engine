@@ -52,4 +52,4 @@ Materials barrierでのreceipt.tickはWorldの編集前に確定しているtick
 
 `tests/material_transport.rs`で固定点3tickの各tick report/checkpoint一致、圧力channel編集後のwake、保存tracker/World復元後の参照fallbackを検査した。対象suiteはWindows/MSVC Rust 1.98.1で**29件成功、失敗0件**。対象Clippy（`material_transport`、`material_provider_sleep_benchmark`）も`-D warnings`で成功した。手動benchmarkは単一active chunk、静止liquid 4,096 cell、重力0、4反復、20tick warmup・200tick計測。参照は合計6.046秒（p50/p95/p99=30.129/31.021/33.370 ms）、sleepは0.168秒（0.838/0.874/0.895 ms）。200tickの割当回数は1,650,800/9,000、割当byteは25,889,476,800/25,724,836,800、peak live増分は64,872,944/64,311,912 byte。初回証明は参照29.588 ms、sleep29.597 msだった。静止単一chunk以外の性能を示さず、FPS性能へ一般化しない。
 
-このQ04作業単位の追加により同期圧力solverのsleepは完了した。当時残っていた複合profileの参照solver比較と正規粒子sleepは後続作業で実施済みである。Q04受入証拠の照合、ローカル総合レビュー、E05全体の総合検証は2026-10-19に完了した。PR上のCI・レビューは更新push後に確認する。複合Runtime性能は限定profileで測定済みだが、他の動的・複数chunk workloadへ一般化しない。
+このQ04作業単位の追加により同期圧力solverのsleepは完了した。当時残っていた複合profileの参照solver比較と正規粒子sleepは後続作業で実施済みである。Q04受入証拠の照合、ローカル総合レビュー、E05全体の総合検証は2026-10-19に完了した。PR #22 head `7727c29`のGitHub CIも成功した。PR上の独立レビュー記録はまだないため、レビュー確認・指摘対応を残す。複合Runtime性能は限定profileで測定済みだが、他の動的・複数chunk workloadへ一般化しない。

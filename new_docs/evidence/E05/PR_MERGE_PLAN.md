@@ -66,3 +66,24 @@ E05のQ04全受け入れ条件と独立レビュー、CIが通過するまでは
 4. 各マージ段階の検証ゲート。fmt、all-targets check、省メモリの対象テスト、GitHub Actionsなど。失敗したら後続マージを止める。
 
 Q04工程出口が未達の現時点では候補を「絶対に壊れない」と保証しない。
+
+## 2026-10-19：PR #22の実状態と検証済み依存順
+
+以下は上の当時の推奨案を、実際に作成済みの集約PR #22に合わせて更新する。GitHub上で各PRのbase/head SHA、state、mergeableを読み直した。#4〜#10はすべてopen・mergeableで、各PRが直前のPR branchをbaseにする直列だった。PR #22もopen・mergeableで、baseはPR #10のhead、headは`7727c29df5f23733f9a9215b999adac71ef9a4e9`。PR #22のheadに対するRust CI、E03、E04、E05 workflowはすべてsuccessとなった。PR #22はdraftのままで、独立したPR review submissionとinline threadはまだない。
+
+**PR本文に記載した採用候補順：#4 → #5 → #6 → #7 → #8 → #9 → #10 → #22。** これはGitHubの現在のbase/headを反映した候補列であり、実際のマージは行っていない。各PRのbase/headは次のとおり。
+
+| PR | base branch / SHA | head branch / SHA | 2026-10-19の状態 |
+| --- | --- | --- | --- |
+| #4 | `main` / `3ae60e20a34f7162f739988d25d332045bc52967` | `codex/e05-cell-and-fluid` / `f4c2b550f939d26a9f1c8eb4647037c5e4e8d56d` | open・mergeable |
+| #5 | `codex/e05-cell-and-fluid` / `f4c2b550f939d26a9f1c8eb4647037c5e4e8d56d` | `codex/e05-motion-and-sweep` / `25d522f13888073473d47797431184b51704ad1d` | open・mergeable |
+| #6 | `codex/e05-motion-and-sweep` / `25d522f13888073473d47797431184b51704ad1d` | `codex/e05-material-receipts` / `01ba6facf1bbe98cc7ce9cf5054e1c6db73ce4ce` | open・mergeable |
+| #7 | `codex/e05-material-receipts` / `01ba6facf1bbe98cc7ce9cf5054e1c6db73ce4ce` | `codex/e05-wide-pressure` / `25e486db8e13396a40ec1cba5527d3f04b7b46e4` | open・mergeable |
+| #8 | `codex/e05-wide-pressure` / `25e486db8e13396a40ec1cba5527d3f04b7b46e4` | `codex/e05-mixtures` / `6533710d977715970fa970651c3ba11f6e68b7a8` | open・mergeable |
+| #9 | `codex/e05-mixtures` / `6533710d977715970fa970651c3ba11f6e68b7a8` | `codex/e05-push-resume` / `a9d7a4490b9976cc8962a4fb9b25de0fa23e1ccf` | open・mergeable |
+| #10 | `codex/e05-push-resume` / `a9d7a4490b9976cc8962a4fb9b25de0fa23e1ccf` | `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214` | open・mergeable |
+| #22 | `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214` | `codex/e05-q04-review-fixes` / `7727c29df5f23733f9a9215b999adac71ef9a4e9` | open・mergeable・draft |
+
+PR #11〜#13の個別マージは除外する。固有のresident/archive・混合内訳診断と旧一様力ProviderをPR #22へ移植したためである。PR #14〜#21も#22の集約差分へ含め、重複適用を避けるため個別マージ対象から除外する。PR #15の過去の`merged=true`はbranch base変更時にGitHubが付けた判定であり、mainへのマージではない。
+
+ローカル出口検査と現headのCIは成功済みだが、PR #22の独立レビューは未実施である。レビュー確認・必要な指摘対応、PR #22の新headで再実行されるCI成功を確認するまではE05完了としない。最終PR本文のマージ順・除外理由は現時点で上記候補と一致することを確認した。mainへのpushやPRマージは行っていない。

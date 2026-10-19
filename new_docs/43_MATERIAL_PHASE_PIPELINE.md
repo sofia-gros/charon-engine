@@ -63,3 +63,7 @@ Runtimeの順序検証には、同じMaterials phase内で依存順とbarrierを
 生成結果のsubmit順を逆転した場合と、region archiveのload/restore順を逆転した場合に、後続の標準scalar輸送4tickを比較する回帰はそれぞれ`tests/world.rs`と`tests/material_transport.rs`にある。これらは順序反転での一致証拠で、遅延注入した実IO workerの同時完了順、simulation worker数別の一致、halo wakeの証明とは区別する。
 
 全体PRの整理とE05最終マージ順の確定手順は [evidence/E05/PR_MERGE_PLAN.md](evidence/E05/PR_MERGE_PLAN.md) に記録する。
+
+## 2026-10-19現在の出口状態
+
+上記の過去の作業記録にある「未達」「CI確認待ち」は、その記録時点の状態である。現在、E05/Q04の受け入れ証拠照合、ローカル総合レビュー、E05全体のローカルゲートは完了し、PR #22のhead `7727c29`に対するGitHub CIも成功している。PR上の独立レビューは未提出であり、指摘確認・対応が残る。したがってE05/Q04は実装・検証済みだが、外部レビュー工程は未完了として扱う。E06/Q05の熱・反応は対象外である。
