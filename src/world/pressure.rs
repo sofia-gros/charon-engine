@@ -29,7 +29,8 @@ pub struct PressureRelaxationReport {
     pub cells: usize,
     /// 連結領域のうち、活動中の空cellと接する領域の数。
     pub open_components: usize,
-    /// 空cellと接しない領域の数。前phaseの平均圧力を最小座標のanchorに保持します。
+    /// 閉領域の数。同期緩和・広域の液体profileでは前phaseの平均をanchorに保持し、
+    /// 広域の気体profileでは気体・空間の連結ごとにtarget sourceを計算します。
     pub closed_components: usize,
 }
 

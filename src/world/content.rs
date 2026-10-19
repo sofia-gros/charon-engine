@@ -127,6 +127,27 @@ impl BlockShape {
     }
 }
 
+/// 標準気体圧力の素材別係数。温度Q16と整数ゲーム質量を使います。
+/// 独自providerへこの式や数値形式を強制するものではありません。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GasPressureProperties {
+    /// targetのmass×温度に掛ける非負Q16係数。
+    pub coefficient_q16: u32,
+    /// 各cellのtarget緩和の重みlambda。0なら直接のsource項を加えません。
+    pub relaxation_weight: u32,
+    /// 広域の気体profileが公開できる非負Q16圧力の上限。超過は丸めずエラーです。
+    pub maximum_q16: i64,
+}
+impl Default for GasPressureProperties {
+    fn default() -> Self {
+        Self {
+            coefficient_q16: 65536,
+            relaxation_weight: 1,
+            maximum_q16: i64::MAX,
+        }
+    }
+}
+
 /// 素材の配置に必要な不変定義。変更は別Contentの構築と明示移行で行います。
 #[derive(Clone, Debug)]
 pub struct MaterialDef {
@@ -136,6 +157,7 @@ pub struct MaterialDef {
     shape: BlockShape,
     break_mode: BreakMode,
     mass: u32,
+    gas_pressure: Option<GasPressureProperties>,
     texture: Option<StableKey>,
     anchor: super::AnchorRule,
 }
@@ -168,6 +190,10 @@ impl MaterialDef {
     pub fn mass_per_cell(&self) -> u32 {
         self.mass
     }
+    /// 気体の標準圧力係数。気体は未指定時に標準値、他の分類はNoneを返します。
+    pub fn gas_pressure(&self) -> Option<GasPressureProperties> {
+        (self.base == MaterialBase::Gas).then(|| self.gas_pressure.unwrap_or_default())
+    }
     /// 描画側で解決するtexture参照。物理形状とは独立しています。
     pub fn texture(&self) -> Option<StableKey> {
         self.texture
@@ -191,6 +217,7 @@ impl MaterialBuilder {
             shape: BlockShape::Full,
             break_mode: BreakMode::Cell,
             mass: 1,
+            gas_pressure: None,
             texture: None,
             anchor: super::AnchorRule::Free,
         }))
@@ -213,6 +240,11 @@ impl MaterialBuilder {
     /// 各cellの質量。0はregister時に拒否します。
     pub fn mass_per_cell(mut self, mass: u32) -> Self {
         self.0.mass = mass;
+        self
+    }
+    /// 気体の係数・lambda・圧力上限を明示します。気体以外や負の上限はregisterで拒否します。
+    pub fn gas_pressure(mut self, properties: GasPressureProperties) -> Self {
+        self.0.gas_pressure = Some(properties);
         self
     }
     /// 資産キーを結びます。未読込でも物理地形は独立して扱えます。
@@ -354,6 +386,11 @@ impl ContentRegistry {
         let value = builder.0;
         if value.key.as_str().starts_with("engine:") || value.size.contains(&0) || value.mass == 0 {
             return Err(invalid("素材の予約名・寸法・質量"));
+        }
+        if let Some(properties) = value.gas_pressure
+            && (value.base != MaterialBase::Gas || properties.maximum_q16 < 0)
+        {
+            return Err(invalid("気体圧力係数の対象分類または上限"));
         }
         value.shape.validate(value.size, self.limits)?;
         if !matches!(value.anchor, super::AnchorRule::Below { .. }) {
@@ -587,6 +624,25 @@ impl Content {
             out.u32(self.compatible.len() as u32)?;
             for hash in &self.compatible {
                 out.raw(hash)?;
+            }
+        }
+        // 明示設定がない旧Contentのmanifestは維持します。物性を変更した場合だけ
+        // 物理manifestにも拡張表を含め、異なる係数を保存互換と誤認しません。
+        let configured = self
+            .materials
+            .iter()
+            .filter(|material| material.gas_pressure.is_some())
+            .count();
+        if configured != 0 {
+            out.raw(b"GASPRESS")?;
+            out.u32(configured as u32)?;
+            for material in &self.materials {
+                if let Some(properties) = material.gas_pressure {
+                    material.key.encode(&mut out)?;
+                    out.u32(properties.coefficient_q16)?;
+                    out.u32(properties.relaxation_weight)?;
+                    out.i64(properties.maximum_q16)?;
+                }
             }
         }
         Ok(out.finish())

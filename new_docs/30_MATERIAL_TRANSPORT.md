@@ -46,7 +46,7 @@ channelの旧値を退避してから対象点を既定値へ戻し、再配置�
 
 前反復の配列から次配列へJacobi更新し、自由表面を0、固体・block・活動外・未読込をno-flowにする。閉じた連結領域は最小座標のanchorに前回の平均を保持する。計算中間値はi128で、i64へ戻せなければ失敗する。全反復が完成してからchannelを一括公開する。全出力の非既定値数から最終的な必要chunk数・World全体のbyte数を事前検査し、channelの既定値へ戻る出力を先に反映して空chunkを解放する。既定値が0以外でも、座標の走査順で不要な同時確保を要求しない。圧力更新で物質やenergyを発行しない。
 
-気体の温度・体積によるsource、ポンプsourceの標準化、広域緩和の保存可能な継続処理は残作業。このAPIがそれらも実行済みという意味ではない。
+気体の温度・連結容積によるsource、ポンプ境界、保存可能な広域緩和は別APIの[33](33_WIDE_PRESSURE.md)で扱う。この同期APIがそれらを自動実行する意味ではない。
 
 ## 満杯経路の押出し
 
@@ -73,4 +73,4 @@ world.edit(|edit| edit.publish_pressure_push(&search))?;
 
 ## E05の残作業
 
-[31](31_MATERIAL_MOTION.md)の整数格子の速度・端数・経路検査を物性とproviderへ統合し、広域移動の継続Jobを実装する。混合の登録・分離と取引、物質粒子の正規所有権とpool、[32](32_MATERIAL_RECEIPTS.md)のcell receiptを全表現のsource/sink/変換収支へ接続すること、気体source、広域圧力更新、dirty/sleepの参照比較、providerの統合・作例とQ04全体を完了してから工程を通過させる。
+[31](31_MATERIAL_MOTION.md)の整数格子の速度・端数・経路検査を物性とproviderへ統合し、広域移動の継続Jobを実装する。混合の登録・分離と取引、物質粒子の正規所有権とpool、[32](32_MATERIAL_RECEIPTS.md)のcell receiptを全表現のsource/sink/変換収支へ接続すること、[33](33_WIDE_PRESSURE.md)の広域圧力を含むdirty/sleepの参照比較、providerの統合・作例とQ04全体を完了してから工程を通過させる。

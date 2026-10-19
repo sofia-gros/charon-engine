@@ -147,3 +147,77 @@ Linux / Rust 1.98.1、`CARGO_BUILD_JOBS=2`で次を実行した。
 これはcell表現のreceiptであり、raw編集・生成器・全providerの監視、粒子・剛体local cell・退避領域・reservoirを合わせた総量の参照比較ではない。外部に永続化したreceiptの整理、非cell表現のbridge、熱energyの収支も残る。保存recordは既存StateStoreへ含め、World・区域archiveの構造は変更しない。新規schemaでContent manifestが変わることと、既存保存の自動互換を混同しない。
 
 E05全体・Q04は引き続き未通過。混合・分離、正規粒子とpool、全体収支、気体source・広域圧力、dirty/sleep、物性・provider統合を残してE06へ進まない。
+
+## PR #6のレビュー確認と継続指示
+
+[PR #6](https://github.com/sofia-gros/charon-engine/pull/6)の対象commitは`01ba6facf1bbe98cc7ce9cf5054e1c6db73ce4ce`。CI20件すべて成功し、[対象commitへのレビュー結果](https://github.com/sofia-gros/charon-engine/pull/6#issuecomment-6208143360)が2026-10-16 13:33 JSTに追加された。「重大な問題は見つからなかった」との結果を確認し、次の単位へ進んだ。
+
+その後のユーザー指示により、E05全体の出口条件を満たし、CI・レビューに問題がなければマージし、その後E06へ進む。E05未達を残して先行マージ・E06着手を行わない。
+
+## 気体sourceと広域圧力job
+
+`codex/e05-wide-pressure`を`01ba6fa`から分けた。[33の契約](../../33_WIDE_PRESSURE.md)と`examples/pressure_job.rs`を追加した。
+
+- `PressureJob`が隣接構築、連結探索、連結量の反映、Jacobi反復とbuffer切替を固定件数で進める。途中の圧力を公開しない。
+- 気体profileは気体・空cellの連結容積と気体mass・絶対温度から圧力sourceを計算する。液体と気体の連結を分離し、活動外・未読込・block・World境界をno-flowとする。
+- 作者のポンプchannelを流体cellの最低圧境界にできる。圧力の指定だけで物質やenergyを発行・消去しない。
+- 入力scope・Content・epoch・活動集合とrevisionを照合し、完成後に全出力を原子的に公開する。channelの解放容量を先に再利用する。
+- 保存recordを復元した場合は、入力の再採取と決定的再計算でscratchを照合する。計算再実行もstep予算を使い、未照合のReadyを公開しない。
+
+### ローカルレビューと検証
+
+ローカルレビューで、有限Worldの部分chunkの外を容積から除外すること、探索queueの全件走査をstageの一件処理に含めないこと、公開時に全反復をやり直さないこと、復元状態を照合する前の公開を禁止することを確認・修正した。通常stepでfrontierを複製せず、new・公開・保存・復元の一括費用と復元照合用の追加scratch・再計算費用は33へ明記した。
+
+Linuxクラウド環境・Rust 1.98.1、`CARGO_BUILD_JOBS=2`。
+
+- `cargo fmt --all -- --check`、`cargo check --all-targets --locked`、`cargo clippy --all-targets --locked -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps`：成功。
+- `cargo test --locked`：全293テスト成功。lib/host 107、assets 24、foundation 19、material_motion 12、material_receipts 15、material_transport 24、pressure_job 14、runtime 28、world 50。失敗・無視なし。doc-testは0件。
+- `cargo run --locked --example pressure_job`：mass2・温度3・容積3でQ16圧力131072、計算48件。途中保存からの再開と連続実行のcheckpoint一致をassertで確認した。
+
+追加14テストで、従来solverとの保存byte一致、予算1・3・65536、全段階のcodec復元、Worldとjobの同時保存、温度と容積、連結の分離、chunk境界、非活動域、有限境界、ポンプ、入力失効、負値・数値上限、scratch容量・channel容量、無視されたエラーを含むrollback、切断・診断量改変を検査した。3 OSのE05 workflowへ対象テストと作例を追加した。
+
+### 残作業
+
+広域圧力jobとsourceのAPI追加は、混合・分離、正規物質粒子とpool、全表現の収支、dirty/sleep、物性とproviderの統合を完了するものではない。初期採取・最終公開まで一定時間で分割するschedulerも別途費用設計が必要である。E05全体・Q04は引き続き未通過。commit/push・PRの実レビューを確認し、指摘へ対応してから次の実装単位へ進む。
+
+### 追加照合：気体targetの緩和
+
+初版commit`181da8e`をレビューへ出した後、22の気体式との追加照合で、targetの直接代入を重みlambda付きのJacobi緩和へ修正した。`GasPressureSource.relaxation_weight`を保存し、気体cellでは近傍の圧力・重力項と`lambda × target`を同時に評価する。閉じた液体だけに平均anchorを適用し、気体の最小座標をanchorへ固定しない。空間のtarget境界は派生値で、物質cellの前回圧を直接置き換えない。
+
+lambda0・1・3、隣接気体2cell、1反復の参照式を検査するテストを追加した。全294テスト成功（pressure_job 15、他の内訳は上と同じ）、fmt・全target check・警告拒否Clippy・Rustdoc成功。保存形式を`CHPRJOB2`へ更新し、初版recordを誤って現形式と解釈せず拒否する。旧recordの自動移行はない。作例と修正後の対象テストも再実行した。初版へのレビュー結果を、この修正を含むcommitのレビュー結果として扱わない。
+
+### PR #7のレビュー対応：空cell境界とlambda
+
+`99cb429`のCI20件はすべて成功したが、[空cell境界からtargetを注入してlambdaを迂回するP1](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4291060260)を指摘された。22の標準式を維持し、空cellの旧圧・固定境界を相対0に保つよう修正した。targetの加算経路を気体cellのlambda項に限り、空間量の集計と圧力の境界条件を混同しない。
+
+空cell2つと気体cell1つを連結し、lambda0・1・3で1反復の参照値を検査する回帰テストを追加した。同テストを修正前`99cb429`で実行し、lambda0の結果が期待0に対して131072となって失敗することを確認した。修正後は0・65536・98304で成功する。温度と容積の他の試験・作例も、target圧と公開される緩和後圧を区別して更新した。
+
+修正後は全295テスト成功（pressure_job 16、他の内訳は上と同じ）。fmt、全target check、警告拒否Clippy・Rustdoc成功。作例はtarget Q16=131072、lambda1・空境界0からの緩和後Q16=65536、計算48件と保存再開一致を確認した。保存recordの構造は`CHPRJOB2`のままで、古い誤ったscratchは復元後の決定的照合で拒否する。修正をpushして再レビューを確認するまで、本単位もレビュー完了とは判定しない。
+
+### PR #7の再レビュー：素材別のlambdaと保存進捗
+
+`1152352`のCI20件はすべて成功したが、[lambdaをjob共通値にしていたP1](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4291099530)を指摘された。`MaterialBuilder::gas_pressure`と`GasPressureProperties`で係数・lambda・上限を気体素材ごとに登録し、`MaterialDef`から各cellの入力へ解決する形へ修正した。同じ連結領域の気体2種類にlambda1・3を与え、1反復でそれぞれ3・4.5となる参照値を検査した。係数によるtargetの変化、上限超過、非気体・負上限の登録拒否、Content fingerprintの変化も検査した。明示物性はContentの物理manifestへ含め、異なる物性を互換と扱わない。
+
+併せて、毎phaseでStateStoreからjobを取得して一件進め再保存する試験を追加した。修正前の復元時全再計算方式では256phase後も完了せず失敗した。過剰な全再計算・照合用の二重scratchを除去し、保存した数値配列・queue・cursorをそのまま継続する。decodeでは数値・段階・隣接索引・queueと不可能な診断件数を検査し、公開前にはWorldの全入力を再採取して照合する。保存bufferのchecksumは既存保存層が担い、反復履歴を再実行した証明とはしない。これは上記初版の再計算方式を置き換える。`CHPRJOB3`として以前の未マージrecordを拒否し、自動移行は行わない。
+
+対象19テストと全298テストが成功。内訳はlib/host 107、assets 24、foundation 19、material_motion 12、material_receipts 15、material_transport 24、pressure_job 19、runtime 28、world 50。失敗・無視なし。fmt・全target check・警告拒否Clippy・Rustdoc、保存再開の作例も成功した。
+
+リソース使用の確認では、同じcommitに4 workflowがpushとpull_requestで二重起動し、計20ジョブとなっていた。開発ブランチはPR、pushはmain、手動実行は維持する設定へ統一した。検査項目と3 OSを削らず、以後の開発PRは計10ジョブにする。変更ごとの検査をまとめてからpushし、最新commitの実レビュー結果とCIで判定する。
+
+### 最新の停止条件
+
+ユーザーの最新指示により、**E05全体の完了・CIとレビューの問題解消後にマージして停止する。E06には着手しない。** PCへ戻すため、最後にmain/branchのcommit、PR、検証結果と引き継ぎ手順を記録する。これは以前の「E06へ進む」指示を置き換える。現時点はE05実装中である。
+
+### PR #7のP2対応：連結成分と訪問集合
+
+`777fc9b`は重複抑制後のCI10件すべて成功したが、[queue外の訪問済みnodeを受理するP2](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4291179686)を指摘された。
+
+decodeで連結成分を一度構築し、stage・cursor・rootに対応する訪問集合、BFS順のqueueと発見prefix、反映済みsourceとanchor、部分集計・target・診断件数を照合する。過去のJacobi反復は再実行しない。未処理の別成分のseenだけをtrueにしたrecordと、訪問bitを保ってqueue順だけを入れ替えたrecordを拒否する試験を追加した。前者は修正前に不整合を受理して失敗することを確認した。正しい保存は液体・気体・空間の複数連結成分について、全計算段階で復元可能なことを検査する。
+
+修正後は全300テスト成功（pressure_job 21、他の内訳は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdoc・保存再開作例が成功した。保存形式はCHPRJOB3を維持し、不整合recordへの検査を強化する。復元の一時scratchと連結探索の費用は33へ追記した。最新commitへの再レビューを待ち、指摘対応を終えてから次の実装単位へ進む。
+
+### PR #7の追加P2：Jacobiとbuffer切替の数値prefix
+
+`95698a7`の再レビューで[Jacobi・buffer切替のcursor改変](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4293119194)を指摘された。現反復の計算を`next_pressure`へ共有し、stage4の処理済みprefixのnext、未処理suffixの保持値と初回oldを照合する。stage6はコピー済みprefixのold==next、初回の未コピーsuffix、コピー開始前のnextを検査し、完成時もold==nextを要求する。過去の全反復を再実行しない。
+
+cursorを0から全node数へ書き換える回帰試験を追加した。修正前はstage4の不整合を受理して失敗し、修正後はstage4・6の両方を拒否する。複数成分・全段階の正しい保存と毎phaseの復元も成功した。対象22テスト、全301テスト、fmt・全target check・警告拒否Clippy・Rustdocと保存作例が成功。保存形式CHPRJOB3は維持する。最新commitのCIと実レビュー結果を確認してから次の実装へ進む。
