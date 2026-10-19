@@ -271,3 +271,15 @@ Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全318テスト成功（混合物17�
 journal snapshotの受理を修正前の失敗で確認した。修正後は古いjournal、分岐Worldのwitness・journal・定義の持込み、容量変更と拒否後の正常な混合を検証する。既存receipt試験3件も、不整合を保存後に検出する想定から、保存自体の拒否と世界の不変を検証する形へ更新した。
 
 Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全320テスト成功（混合物19、receipt15、他は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdoc・保存再開作例が成功した。CHMIX001とreceiptの保存形式は変えない。最新commitのCI・再レビューはpush後に確認する。E05全体とQ04は未完了である。
+
+## PR #8のレビュー・CI完了
+
+対象は`6533710d977715970fa970651c3ba11f6e68b7a8`。CI10件すべて成功し、[対象commitを明記した実結果](https://github.com/sofia-gros/charon-engine/pull/8#issuecomment-6213560690)で重大な指摘なしを確認した。3件のP1スレッドに対応内容を回答し、解決した。E05全体が未完了のためマージしていない。
+
+## 押出し探索の毎phase保存・復元
+
+`codex/e05-push-resume`はPR #8の完了済みheadから分けた。毎phaseでStateStoreから新たに復元すると照合カーソルが0へ戻り、budget1では探索が100回でも完成しないことを公開APIの回帰試験で確認した。保存は`CHPUSH02`を出力し、照合カーソルを末尾u32として保持する。旧`CHPUSH01`は引き続き読め、未照合から始める。旧形式の照合途中を新形式へ保存しても進捗を保持する。入力contextのrevision検査と公開前の全node照合を維持し、cursorの範囲外値を拒否する。
+
+新形式は照合済みReady・NoOutletを復元直後も保持するため、既存試験のReady期待値を更新した。旧形式の再照合・予算共有も継続して検証する。新payloadは4byte増え、schemaのbyte上限は自動で増えない。30に形式・費用・進捗値と実地形監査の違いを記録した。
+
+Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全322テスト成功（lib/host108、material_transport25、他は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdocが成功した。広域圧力作例も成功した。作例名を誤って`material_transport`として一度実行したコマンドは対象不存在で失敗し、存在する`pressure_job`で確認し直した。公開APIの押出し保存再開そのものは新しい回帰試験で検証している。最新commitのCI・外部レビューはPR提出後に確認する。E05全体は未完了である。

@@ -29,7 +29,7 @@ E03の初回実装は全168件のテスト、整形、全ターゲットのコ�
 
 E2・E3とE4のPR指摘対応を取り込んだE04は、旧変更を含まないツリーの全224件のテスト、整形、全target check、警告拒否Clippy、Rustdoc、保存復帰の作例を通過しています。
 
-E05の輸送・圧力部分は[PR #4](https://github.com/sofia-gros/charon-engine/pull/4)のレビューで、空cellの出口圧、channel確保前の容量検査と圧力出力の容量再利用、探索frontierのstepごとの全複製を修正しました。Linux・Rust 1.98.1で全252テスト、整形、全target check、警告拒否Clippy・Rustdocを通過しています。E05全体とQ04は未完了です。詳細は[E05の検証記録](new_docs/evidence/E05/README.md)を参照してください。
+E05の輸送・圧力部分は[PR #4](https://github.com/sofia-gros/charon-engine/pull/4)のレビューで、空cellの出口圧、channel確保前の容量検査と圧力出力の容量再利用、探索frontierのstepごとの全複製を修正しました。PR #4時点ではLinux・Rust 1.98.1で全252テスト、整形、全target check、警告拒否Clippy・Rustdocを通過しました。その後の押出し探索の保存・復元修正は、後述する最新の全322テストで検証しています。E05全体とQ04は未完了です。詳細は[E05の検証記録](new_docs/evidence/E05/README.md)を参照してください。
 
 次のE05単位として[速度・端数と格子経路検査](new_docs/31_MATERIAL_MOTION.md)を追加し、Linux・Rust 1.98.1で全264テストと品質チェック、headless作例を検証しました。一般形状の衝突、力の積分とprovider統合、混合・物質粒子などは残作業です。E05全体・Q04は引き続き未完了です。
 
@@ -38,6 +38,8 @@ cellの発行・消費・変換と[理由付きreceipt](new_docs/32_MATERIAL_REC
 [気体sourceと広域圧力job](new_docs/33_WIDE_PRESSURE.md)も追加しました。温度・連結空間・素材別の係数とlambda・圧力上限・ポンプ境界を明示し、予算付きの計算後に全圧力を一括公開します。毎phaseの状態復元でも進捗を維持し、Linuxで全301テストと品質検査を通過しました。混合のprovider統合・粒子・全体収支・dirty/sleep・物性とprovider統合は残り、E05全体・Q04は未完了です。
 
 [混合・分離](new_docs/34_MATERIAL_MIXTURES.md)では、整数比率の共有組成と有理数の成分量を使い、cell・全payload・組成参照と理由付きreceiptを同時に保存します。汎用書き戻しによる共有storeとjournalの履歴変更を拒否し、参照indexの再利用や分岐Worldからの履歴持込みを防ぎます。Linuxで全320テストと品質検査、保存再開の作例を通過しました。全表現の収支、物質粒子、dirty/sleep、provider統合は引き続きE05の残作業です。
+
+**最新の検証結果は全322テスト成功（失敗・無視なし）です。** [PR #9](https://github.com/sofia-gros/charon-engine/pull/9)の押出し探索修正（`5ba1c92c14757cee67e42dc5ae5145ebde31ca72`）では、毎phaseの保存・復元でも照合進捗を保持し、旧保存形式の読込みにも対応します。公開APIの回帰試験で有限回の完成と、連続実行・World保存再開との結果一致を確認しました。Linux / Rust 1.98.1 / `CARGO_BUILD_JOBS=2`で、`cargo fmt --all -- --check`、`cargo check --all-targets --locked`、`cargo clippy --all-targets --locked -- -D warnings`、`cargo test --locked`、`RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps`と`pressure_job`作例が成功しています。これは上記252〜320件の各段階を含む最新結果で、ローカルWindowsでの再実行結果ではありません。根拠は[E05の押出し探索保存・復元の検証記録](new_docs/evidence/E05/README.md#押出し探索の毎phase保存復元)を参照してください。E05全体とQ04は未完了です。
 
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 

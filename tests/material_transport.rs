@@ -958,13 +958,13 @@ fn pressure_push_uses_atmospheric_outlet_despite_stale_position_pressure() {
         .unwrap();
     let bytes = world.checkpoint(4_000_000).unwrap();
     let mut restored = World::restore(&bytes, content, WorldLimits::default(), 4_000_000).unwrap();
-    // Ready状態の再検査と公開にも同じ出口条件を適用します。
+    // 新形式は照合済みReadyを維持し、公開では全nodeを実地形と再照合します。
     let mut search = restored.state::<PressurePushSearch>(state_key).unwrap();
-    assert_eq!(search.status(), PressurePushStatus::Searching);
-    while search.status() == PressurePushStatus::Searching {
-        search.step(&restored, 1).unwrap();
-    }
     assert_eq!(search.status(), PressurePushStatus::Ready);
+    assert_eq!(
+        search.step(&restored, 0).unwrap(),
+        PressurePushStatus::Ready
+    );
     restored
         .edit(|edit| edit.publish_pressure_push(&search))
         .unwrap();
@@ -1195,4 +1195,51 @@ fn pressure_releases_nonzero_default_chunks_before_writing_surface_zeroes() {
     assert_eq!(pressure(&world, point(3, 2)), 0);
     assert_eq!(pressure(&world, point(67, 2)), 5);
     assert_eq!(pressure(&world, point(68, 2)), 5);
+}
+
+#[test]
+fn pressure_push_progress_survives_a_fresh_state_read_each_phase() {
+    use charon_engine::foundation::codec::{Encoder, StateCodec};
+    let content = content(8, true);
+    let mut world = world(Arc::clone(&content));
+    let (layer, path) = pipe(&mut world);
+    let mut reference = PressurePushSearch::new(&world, layer, path[0], push_config(32)).unwrap();
+    while reference.status() == PressurePushStatus::Searching {
+        reference.step(&world, 1).unwrap();
+    }
+    let state_key = key("game:pending-push");
+    let schema = key("game:push-search");
+    let search = PressurePushSearch::new(&world, layer, path[0], push_config(32)).unwrap();
+    world
+        .edit(|edit| edit.set_state(state_key, schema, &search))
+        .unwrap();
+    let bytes = world.checkpoint(4_000_000).unwrap();
+    let mut saved = World::restore(&bytes, content, WorldLimits::default(), 4_000_000).unwrap();
+    for target in [&mut world, &mut saved] {
+        let mut ready = false;
+        for _ in 0..100 {
+            let mut job: PressurePushSearch = target.state(state_key).unwrap();
+            let status = job.step(target, 1).unwrap();
+            target
+                .edit(|edit| edit.set_state(state_key, schema, &job))
+                .unwrap();
+            if status == PressurePushStatus::Ready {
+                ready = true;
+                let mut expected = Encoder::new(262144);
+                reference.encode(&mut expected).unwrap();
+                let mut actual = Encoder::new(262144);
+                job.encode(&mut actual).unwrap();
+                assert_eq!(expected.finish(), actual.finish());
+                target
+                    .edit(|edit| edit.publish_pressure_push(&job))
+                    .unwrap();
+                break;
+            }
+        }
+        assert!(ready, "毎phaseの復元でも有限回で押出し経路へ到達する");
+    }
+    assert_eq!(
+        world.checkpoint(4_000_000).unwrap(),
+        saved.checkpoint(4_000_000).unwrap()
+    );
 }

@@ -383,6 +383,7 @@ impl CandidateState for PressurePushSearch {
         if self.nodes.is_empty()
             || self.nodes.len() > self.config.nodes as usize
             || self.cursor > self.nodes.len()
+            || self.validated_nodes > self.nodes.len()
             || self.source_pressure < 0
             || self.mass == 0
             || self.material == MaterialId::AIR
@@ -435,7 +436,7 @@ impl CandidateState for PressurePushSearch {
 impl StateCodec for PressurePushSearch {
     fn encode(&self, out: &mut Encoder) -> EngineResult<()> {
         self.validate()?;
-        out.raw(b"CHPUSH01")?;
+        out.raw(b"CHPUSH02")?;
         self.world.encode(out)?;
         out.raw(&self.content)?;
         out.u64(self.epoch)?;
@@ -458,12 +459,15 @@ impl StateCodec for PressurePushSearch {
             out.u32(*parent)?;
         }
         out.u32(self.cursor as u32)?;
-        self.goal.encode(out)
+        self.goal.encode(out)?;
+        out.u32(self.validated_nodes as u32)
     }
     fn decode(input: &mut Decoder<'_>) -> EngineResult<Self> {
-        if input.raw(8)? != b"CHPUSH01" {
-            return Err(invalid("圧力探索recordの形式"));
-        }
+        let persisted_validation = match input.raw(8)? {
+            b"CHPUSH01" => false,
+            b"CHPUSH02" => true,
+            _ => return Err(invalid("圧力探索recordの形式")),
+        };
         let world = WorldId::decode(input)?;
         let mut content = [0u8; 32];
         content.copy_from_slice(input.raw(32)?);
@@ -498,6 +502,13 @@ impl StateCodec for PressurePushSearch {
         }
         let cursor = input.u32()? as usize;
         let goal = Option::<u32>::decode(input)?;
+        // 旧recordは未照合から始め、新recordは照合進捗もphase間で引き継ぎます。
+        // 再開時の入力revision検査と公開前の全node実地形照合は省略しません。
+        let validated_nodes = if persisted_validation {
+            input.u32()? as usize
+        } else {
+            0
+        };
         let mut visited = super::transport::CellReservations::for_chunks(&chunks)?;
         for (point, _) in &nodes {
             visited.insert(*point)?;
@@ -516,7 +527,7 @@ impl StateCodec for PressurePushSearch {
             cursor,
             goal,
             visited,
-            validated_nodes: 0,
+            validated_nodes,
         };
         result.validate()?;
         Ok(result)
@@ -666,19 +677,27 @@ mod tests {
         search.step(&world, 30).unwrap();
         let mut out = Encoder::new(100_000);
         search.encode(&mut out).unwrap();
-        let bytes = out.finish();
+        let canonical = out.finish();
+        let mut bytes = canonical.clone();
+        bytes[..8].copy_from_slice(b"CHPUSH01");
+        bytes.truncate(bytes.len() - 4);
         let mut decoder = Decoder::new(&bytes, 100_000).unwrap();
         let mut restored = PressurePushSearch::decode(&mut decoder).unwrap();
         assert_eq!(restored.validated_nodes, 0);
         let previous_cursor = restored.cursor;
         for validated in 1..=restored.nodes.len() {
+            let mut out = Encoder::new(100_000);
+            restored.encode(&mut out).unwrap();
+            let bytes = out.finish();
+            restored =
+                PressurePushSearch::decode(&mut Decoder::new(&bytes, 100_000).unwrap()).unwrap();
             restored.step(&world, 1).unwrap();
             assert_eq!(restored.validated_nodes, validated);
             assert_eq!(restored.cursor, previous_cursor);
         }
         let mut after = Encoder::new(100_000);
         restored.encode(&mut after).unwrap();
-        assert_eq!(bytes, after.finish());
+        assert_eq!(canonical, after.finish());
         restored.step(&world, 1).unwrap();
         search.step(&world, 1).unwrap();
         assert_eq!(search.nodes, restored.nodes);
@@ -697,7 +716,9 @@ mod tests {
         );
         let mut out = Encoder::new(100_000);
         search.encode(&mut out).unwrap();
-        let bytes = out.finish();
+        let mut bytes = out.finish();
+        bytes[..8].copy_from_slice(b"CHPUSH01");
+        bytes.truncate(bytes.len() - 4);
         let mut input = Decoder::new(&bytes, 100_000).unwrap();
         let mut restored = PressurePushSearch::decode(&mut input).unwrap();
         assert_eq!(restored.status(), PressurePushStatus::Searching);
@@ -710,6 +731,20 @@ mod tests {
             restored.step(&world, 4095).unwrap(),
             PressurePushStatus::NoOutlet
         );
+    }
+
+    #[test]
+    fn saved_validation_cursor_cannot_exceed_the_node_count() {
+        let (world, layer) = filled_world();
+        let search =
+            PressurePushSearch::new(&world, layer, CellPoint { x: 32, y: 32 }, config(4096))
+                .unwrap();
+        let mut out = Encoder::new(100_000);
+        search.encode(&mut out).unwrap();
+        let mut bytes = out.finish();
+        let length = bytes.len();
+        bytes[length - 4..].copy_from_slice(&2u32.to_le_bytes());
+        assert!(PressurePushSearch::decode(&mut Decoder::new(&bytes, 100_000).unwrap()).is_err());
     }
 
     #[test]
