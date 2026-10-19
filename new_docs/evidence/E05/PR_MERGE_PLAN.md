@@ -69,7 +69,7 @@ Q04工程出口が未達の現時点では候補を「絶対に壊れない」�
 
 ## 2026-10-19：PR #22の実状態と検証済み依存順
 
-以下は上の当時の推奨案を、実際に作成済みの集約PR #22に合わせて更新する。GitHub上で各PRのbase/head SHA、state、mergeableを読み直した。#4〜#10はすべてopen・mergeableで、各PRが直前のPR branchをbaseにする直列だった。PR #22もopen・mergeableで、baseはPR #10のhead、headは`7727c29df5f23733f9a9215b999adac71ef9a4e9`。PR #22のheadに対するRust CI、E03、E04、E05 workflowはすべてsuccessとなった。PR #22はdraftのままで、独立したPR review submissionとinline threadはまだない。
+以下は上の当時の推奨案を、実際に作成済みの集約PR #22に合わせて更新する。GitHub上で各PRのbase/head SHA、state、mergeableを読み直した。#4〜#10はすべてopen・mergeableで、各PRが直前のPR branchをbaseにする直列だった。2026-10-19の確認時点でPR #22はopen・mergeable、baseはPR #10のhead、headは`2330b7759a375eebd7535dde5a9b446924dab44d`だった。PR #22のheadに対するRust CI、E03、E04、E05 workflowはすべてsuccessとなった。PR #22はレビュー可能状態だが、独立したPR review submissionとinline threadはまだない。
 
 **PR本文に記載した採用候補順：#4 → #5 → #6 → #7 → #8 → #9 → #10 → #22。** これはGitHubの現在のbase/headを反映した候補列であり、実際のマージは行っていない。各PRのbase/headは次のとおり。
 
@@ -82,8 +82,12 @@ Q04工程出口が未達の現時点では候補を「絶対に壊れない」�
 | #8 | `codex/e05-wide-pressure` / `25e486db8e13396a40ec1cba5527d3f04b7b46e4` | `codex/e05-mixtures` / `6533710d977715970fa970651c3ba11f6e68b7a8` | open・mergeable |
 | #9 | `codex/e05-mixtures` / `6533710d977715970fa970651c3ba11f6e68b7a8` | `codex/e05-push-resume` / `a9d7a4490b9976cc8962a4fb9b25de0fa23e1ccf` | open・mergeable |
 | #10 | `codex/e05-push-resume` / `a9d7a4490b9976cc8962a4fb9b25de0fa23e1ccf` | `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214` | open・mergeable |
-| #22 | `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214` | `codex/e05-q04-review-fixes` / `7727c29df5f23733f9a9215b999adac71ef9a4e9` | open・mergeable・draft |
+| #22 | `codex/e05-material-particles` / `5cfb0cf465e051be179c20f9817b268ca6d85214` | `codex/e05-q04-review-fixes` / `2330b7759a375eebd7535dde5a9b446924dab44d` | open・mergeable・レビュー可能 |
 
 PR #11〜#13の個別マージは除外する。固有のresident/archive・混合内訳診断と旧一様力ProviderをPR #22へ移植したためである。PR #14〜#21も#22の集約差分へ含め、重複適用を避けるため個別マージ対象から除外する。PR #15の過去の`merged=true`はbranch base変更時にGitHubが付けた判定であり、mainへのマージではない。
 
-ローカル出口検査と現headのCIは成功済みだが、PR #22の独立レビューは未実施である。レビュー確認・必要な指摘対応、PR #22の新headで再実行されるCI成功を確認するまではE05完了としない。最終PR本文のマージ順・除外理由は現時点で上記候補と一致することを確認した。mainへのpushやPRマージは行っていない。
+ローカル出口検査と上記headのCIは成功済みだが、PR #22の独立レビューは未実施である。レビュー確認・必要な指摘対応を終えるまではE05完了としない。最終PR本文のマージ順・除外理由は現時点で上記候補と一致することを確認した。mainへのpushやPRマージは行っていない。
+
+### 積み上げPRをmainへ順次取り込むときのbase更新
+
+上記の番号順は、各PRをそのまま現base branchへ連続マージしてよいという意味ではない。#4をmainへ取り込んだ後、#5のbaseをmainへ変更し、差分に#4の変更が重複せず#5固有変更だけが残ること、PRが意図せずmerged/closed扱いにならないこと、更新後CIの成功を確認する。同じ手順を#10まで繰り返す。#10をmainへ取り込んだ後は#22のbaseもmainへ変更し、#4〜#10の変更が差分に再出現しないことを確認してから、PR #22のレビュー・CIを最終確認する。base変更で既存差分が再登場する、PRが自動merged扱いになる、または予期しない変更が見える場合はその場で停止し、rebase/merge方式と差分を再監査する。確認なしに後続PRを進めない。
