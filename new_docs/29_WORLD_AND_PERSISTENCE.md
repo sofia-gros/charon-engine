@@ -68,7 +68,7 @@ worker再開には`restart_generation`を使います。要求IDの世代に加�
 
 ## 保存形式と障害
 
-`CHWORLD1`はWorld、個体allocator、lease、未完了生成、Job、独自状態、channel、remap、退避indexを明示little-endian codecで保存します。`checkpoint`はメモリ状態のsnapshotです。退避済みpayloadも一緒に運ぶ完全な保存には`World::save`を使います。
+E04の`CHWORLD1`はWorld、個体allocator、lease、未完了生成、Job、独自状態、channel、remap、退避indexを明示little-endian codecで保存します。E05の[正規物質粒子](35_MATERIAL_PARTICLES.md)を含む現形式は`CHWORLD2`で、末尾に粒子容量とallocator・recordを追加し、`CHWORLD1`も粒子ゼロとして読み込みます。区域は粒子payloadを含む`CHREGN02`を出力し、旧`CHREGN01`も読めます。`checkpoint`はメモリ状態のsnapshotです。退避済みpayloadも一緒に運ぶ完全な保存には`World::save`を使います。
 
 `CHSAVE01`の世代rootにはengine版、profile、content hash、tick、plugin key/version、scope、kind、codec版、長さ、blob hashを記録します。`CHBLOB01`はkind、形式major/minor、codec版、展開後長、圧縮方式、payload checksumを持ちます。現在の圧縮方式はnoneで、未知方式を無視しません。BLAKE3はcontent/blob照合用です。既存の資産packのSHA-256は変更していません。
 

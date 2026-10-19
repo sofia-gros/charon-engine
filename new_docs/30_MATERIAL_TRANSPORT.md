@@ -73,4 +73,4 @@ world.edit(|edit| edit.publish_pressure_push(&search))?;
 
 ## E05の残作業
 
-[31](31_MATERIAL_MOTION.md)の整数格子の速度・端数・経路検査を物性とproviderへ統合し、広域移動の継続Jobを実装する。[34](34_MATERIAL_MIXTURES.md)の混合・分離を含むprovider統合、物質粒子の正規所有権とpool、[32](32_MATERIAL_RECEIPTS.md)のcell receiptを全表現のsource/sink/変換収支へ接続すること、[33](33_WIDE_PRESSURE.md)の広域圧力を含むdirty/sleepの参照比較、providerの統合・作例とQ04全体を完了してから工程を通過させる。
+[31](31_MATERIAL_MOTION.md)の整数格子の速度・端数・経路検査を物性とproviderへ統合し、広域移動の継続Jobを実装する。[35](35_MATERIAL_PARTICLES.md)では正規粒子のpool・全payload所有権・DDA・着地と所属regionとの退避・復帰を追加したが、これだけでE05を完了とはしない。[34](34_MATERIAL_MIXTURES.md)の混合・分離と粒子を含む物性・provider統合、[32](32_MATERIAL_RECEIPTS.md)のcell receiptを全表現のsource/sink/変換収支へ接続すること、[33](33_WIDE_PRESSURE.md)の広域圧力を含むdirty/sleepの参照比較、Runtime作例とQ04全体を完了してから工程を通過させる。

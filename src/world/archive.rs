@@ -165,6 +165,10 @@ pub struct LoadedRegion {
     chunks: BTreeMap<ChunkCoord, Chunk>,
     blocks: Vec<(super::BlockId, BlockInstance)>,
     channels: Vec<Vec<u8>>,
+    particles: Vec<(
+        crate::foundation::id::Id<super::MaterialParticleKind>,
+        super::MaterialParticle,
+    )>,
 }
 impl RegionLoadTask {
     /// 任意のIO threadで呼べます。checksum・coverage・型・長さを確認して候補を作ります。
@@ -174,7 +178,9 @@ impl RegionLoadTask {
             return Err(invalid("region archive checksum"));
         }
         let mut input = Decoder::new(&bytes, self.byte_limit)?;
-        if input.raw(8)? != b"CHREGN01"
+        let format = input.raw(8)?;
+        let with_particles = format == b"CHREGN02";
+        if (!with_particles && format != b"CHREGN01")
             || WorldId::decode(&mut input)? != self.world
             || !self.content.accepts_content(
                 input
@@ -248,6 +254,33 @@ impl RegionLoadTask {
             }
             channels.push(super::terrain::copy_slice(input.bytes(self.byte_limit)?)?);
         }
+        let mut particles = Vec::new();
+        if with_particles {
+            let count = input.u32()? as usize;
+            if count > self.limits.particles as usize || count > input.remaining() / 65 {
+                return Err(invalid("archive粒子数"));
+            }
+            particles.try_reserve_exact(count).map_err(allocation)?;
+            let mut previous = None;
+            let mut total = 0usize;
+            for _ in 0..count {
+                let id =
+                    crate::foundation::id::Id::<super::MaterialParticleKind>::decode(&mut input)?;
+                let particle = super::MaterialParticle::decode(&mut input)?;
+                total = total
+                    .checked_add(particle.payload_bytes()?)
+                    .ok_or_else(|| invalid("archive粒子byte数overflow"))?;
+                if previous.is_some_and(|old| old >= id)
+                    || particle.is_archived()
+                    || !self.region.contains(ChunkCoord::at(particle.cell()))
+                    || total > self.limits.particle_bytes
+                {
+                    return Err(invalid("archive粒子の辞書・所属・容量"));
+                }
+                previous = Some(id);
+                particles.push((id, particle));
+            }
+        }
         input.finish()?;
         Ok(LoadedRegion {
             world: self.world,
@@ -256,6 +289,7 @@ impl RegionLoadTask {
             chunks,
             blocks,
             channels,
+            particles,
         })
     }
 }
@@ -401,7 +435,7 @@ impl World {
         self.check_evictable(region)?;
         let coordinates = region.coordinates(self.limits.resident_chunks as usize)?;
         let mut out = Encoder::new(byte_limit);
-        out.raw(b"CHREGN01")?;
+        out.raw(b"CHREGN02")?;
         self.id.encode(&mut out)?;
         out.raw(&self.content.fingerprint())?;
         region.encode(&mut out)?;
@@ -432,6 +466,20 @@ impl World {
         for channel in &self.channels {
             channel.key().encode(&mut out)?;
             out.bytes(&channel.extract(region)?)?;
+        }
+        let count = self
+            .particles
+            .iter()
+            .filter(|(_, p)| !p.is_archived() && region.contains(ChunkCoord::at(p.cell())))
+            .count();
+        out.u32(count as u32)?;
+        for (id, particle) in self
+            .particles
+            .iter()
+            .filter(|(_, p)| !p.is_archived() && region.contains(ChunkCoord::at(p.cell())))
+        {
+            id.encode(&mut out)?;
+            particle.encode(&mut out)?;
         }
         Ok(EvictionTask {
             world: self.id,
@@ -606,6 +654,22 @@ impl WorldEdit<'_> {
             for channel in &mut editor.world.channels {
                 channel.clear(stored.region)?;
             }
+            let ids = editor
+                .world
+                .particles
+                .iter()
+                .filter(|(_, p)| {
+                    !p.is_archived() && stored.region.contains(ChunkCoord::at(p.cell()))
+                })
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>();
+            for id in ids {
+                editor
+                    .world
+                    .particles
+                    .get_mut(id)?
+                    .evict_payload(stored.hash);
+            }
             for coord in stored
                 .region
                 .coordinates(editor.world.limits.resident_chunks as usize)?
@@ -654,6 +718,28 @@ impl WorldEdit<'_> {
             }
             for (channel, bytes) in editor.world.channels.iter_mut().zip(loaded.channels) {
                 channel.merge(&bytes)?;
+            }
+            let expected = editor
+                .world
+                .particles
+                .iter()
+                .filter(|(_, p)| p.dormant == Some(loaded.hash))
+                .count();
+            if expected != loaded.particles.len() {
+                return Err(conflict("復帰粒子の欠落"));
+            }
+            for (id, particle) in loaded.particles {
+                let old = editor.world.particles.get(id)?;
+                if old.dormant != Some(loaded.hash)
+                    || old.position_q16() != particle.position_q16()
+                    || old.velocity_q16() != particle.velocity_q16()
+                    || old.layer != particle.layer
+                    || old.core != particle.core
+                    || old.epoch != particle.epoch
+                {
+                    return Err(conflict("復帰粒子の世代・metadata不一致"));
+                }
+                *editor.world.particles.get_mut(id)? = particle;
             }
             editor.world.apply_material_remaps()?;
             Ok(())

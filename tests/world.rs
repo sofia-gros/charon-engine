@@ -773,7 +773,10 @@ fn world_snapshot_preserves_blocks_leases_allocator_and_ready_generation() {
         .edit(|edit| edit.submit_generation(task.run(&pipeline)))
         .unwrap();
     let before = original.canonical_hash(2_000_000).unwrap();
-    let bytes = original.checkpoint(2_000_000).unwrap();
+    let bytes = original
+        .checkpoint(original.checkpoint_limit().unwrap())
+        .unwrap();
+    assert_eq!(bytes.len(), original.checkpoint_limit().unwrap());
     let mut restored = World::restore(
         &bytes,
         Arc::clone(&content),
@@ -1778,7 +1781,10 @@ fn large_edit_jobs_save_their_cursor_and_publish_only_complete_pages() {
     );
     assert_eq!(original.terrain_job(job).unwrap().prepared_cells(), 7);
     assert_eq!(loaded(&original, front, point(0, 0)).core, CellCore::AIR);
-    let bytes = original.checkpoint(2_000_000).unwrap();
+    let bytes = original
+        .checkpoint(original.checkpoint_limit().unwrap())
+        .unwrap();
+    assert_eq!(bytes.len(), original.checkpoint_limit().unwrap());
     let mut restored = World::restore(&bytes, content, WorldLimits::default(), 2_000_000).unwrap();
     for world in [&mut original, &mut restored] {
         while world.terrain_job(job).unwrap().status() == TerrainJobStatus::Preparing {
@@ -2923,4 +2929,107 @@ fn corrupt_published_generations_cannot_overflow_the_budget_and_disable_loading(
     expanded.save(&metadata(5), records(5)).unwrap();
     assert_eq!(expanded.load_latest().unwrap().metadata.tick, 5);
     assert_eq!(expanded.storage_mut().generations(5).unwrap().len(), 4);
+}
+
+/// payload予算の余りへ依存せず、最大長の管理キーと各arenaを保存できることを確認します。
+#[test]
+fn runtime_checkpoint_limit_counts_management_records_and_staged_pages() {
+    let content = state_content();
+    let front = content.layer_id(key("game:front")).unwrap();
+    let limits = WorldLimits {
+        resident_chunks: 2,
+        active_chunks: 0,
+        terrain_bytes: 262_144,
+        blocks: 1,
+        particles: 1,
+        particle_bytes: 0,
+        leases: 1024,
+        requests: 1,
+        jobs: 1,
+        state_records: 128,
+        state_bytes: 512,
+        block_state_records: 128,
+        block_state_bytes: 512,
+        channel_bytes: 16_000_000,
+        ..WorldLimits::default()
+    };
+    let mut original = World::new(
+        WorldId::from_parts(0, 1).unwrap(),
+        0,
+        WorldBounds::expandable(),
+        Arc::clone(&content),
+        limits,
+    )
+    .unwrap();
+    let long_key = |index| key(&format!("{}:{index:04}{}", "x".repeat(96), "y".repeat(92)));
+    let pipeline = pipeline();
+    let (lease, block, job, request) = original
+        .edit(|edit| {
+            edit.insert_empty_chunk(ChunkCoord::new(0, 0)?)?;
+            let block = edit.place_block(
+                front,
+                point(0, 0),
+                MaterialHandle(key("game:chest")),
+                Orientation::Original,
+            )?;
+            let mut last = None;
+            for index in 0..1024 {
+                last = Some(edit.acquire_lease(RegionLease {
+                    source: long_key(index),
+                    region: ChunkRegion::single(ChunkCoord::new(0, 0)?)?,
+                    mode: LeaseMode::LoadOnly,
+                    expires: None,
+                })?);
+            }
+            for index in 0u32..128 {
+                edit.set_state(long_key(index), key("game:number"), &index)?;
+                edit.set_block_state(block, long_key(index), key("game:number"), &index)?;
+            }
+            let job = edit.submit_cell_job(
+                long_key(0),
+                vec![
+                    CellEdit {
+                        layer: front,
+                        point: point(9, 9),
+                        value: CellCore::AIR,
+                    },
+                    CellEdit {
+                        layer: front,
+                        point: point(10, 9),
+                        value: CellCore::AIR,
+                    },
+                ],
+            )?;
+            edit.step_cell_job(job, 1)?;
+            let request = edit.request_generation(
+                long_key(0),
+                ChunkRegion::single(ChunkCoord::new(1, 0)?)?,
+                &pipeline,
+                0,
+            )?;
+            Ok((last.unwrap(), block, job, request))
+        })
+        .unwrap();
+    let generous = original.checkpoint(4_000_000).unwrap();
+    let limit = original.checkpoint_limit().unwrap();
+    // channelのないWorldでは、共有codecが求める長さは保守値ではなく実測値と一致します。
+    assert_eq!(generous.len(), limit);
+    let bytes = original.checkpoint(limit).unwrap();
+    assert_eq!(bytes, generous);
+    let restored = World::restore(&bytes, content, limits, limit).unwrap();
+    assert_eq!(restored.checkpoint(limit).unwrap(), bytes);
+    assert_eq!(restored.lease(lease).unwrap().mode, LeaseMode::LoadOnly);
+    assert_eq!(
+        restored.block_state::<u32>(block, long_key(127)).unwrap(),
+        127
+    );
+    assert_eq!(restored.state::<u32>(long_key(127)).unwrap(), 127);
+    assert_eq!(
+        restored.terrain_job(job).unwrap().status(),
+        TerrainJobStatus::Preparing
+    );
+    assert_eq!(
+        restored.request(request).unwrap().status(),
+        RequestStatus::Requested
+    );
 }

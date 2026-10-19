@@ -9,6 +9,7 @@ use super::error::{EngineError, EngineResult, ErrorCode, allocation};
 pub struct Encoder {
     bytes: Vec<u8>,
     limit: usize,
+    measured: Option<usize>,
 }
 
 impl Encoder {
@@ -17,11 +18,56 @@ impl Encoder {
         Self {
             bytes: Vec::new(),
             limit,
+            measured: None,
         }
+    }
+
+    /// 保存bufferを確保せず、同じcodec経路で書込量だけを数えます。
+    pub(crate) fn measuring() -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit: usize::MAX,
+            measured: Some(0),
+        }
+    }
+
+    pub(crate) fn is_measuring(&self) -> bool {
+        self.measured.is_some()
+    }
+
+    pub(crate) fn written_len(&self) -> usize {
+        self.measured.unwrap_or(self.bytes.len())
+    }
+
+    /// 別codecが数えたpayloadへ、通常のbytesと同じ長さheaderを加えます。
+    pub(crate) fn measure_bytes(&mut self, len: usize) -> EngineResult<()> {
+        if !self.is_measuring() {
+            return Err(EngineError::new(
+                ErrorCode::InvalidValue,
+                "計数専用writerが必要",
+            ));
+        }
+        u32::try_from(len)
+            .map_err(|_| EngineError::new(ErrorCode::InvalidValue, "recordの長さ"))?;
+        let additional = len
+            .checked_add(4)
+            .ok_or_else(|| EngineError::new(ErrorCode::InvalidValue, "recordの長さ"))?;
+        let end = self
+            .written_len()
+            .checked_add(additional)
+            .ok_or_else(|| EngineError::new(ErrorCode::InvalidValue, "保存byte数"))?;
+        self.measured = Some(end);
+        Ok(())
     }
 
     /// 生byte列を追加します。失敗した追加はbufferを変更しません。
     pub fn raw(&mut self, bytes: &[u8]) -> EngineResult<()> {
+        if let Some(count) = self.measured {
+            self.measured = Some(count.checked_add(bytes.len()).ok_or_else(|| {
+                EngineError::new(ErrorCode::InvalidValue, "保存byte数のoverflow")
+            })?);
+            return Ok(());
+        }
         let end = self
             .bytes
             .len()
@@ -70,6 +116,9 @@ impl Encoder {
     /// 長さだけを書いてから容量不足になることを避けるため、
     /// headerとpayloadをまとめて予約してから変更します。
     pub fn bytes(&mut self, value: &[u8]) -> EngineResult<()> {
+        if self.is_measuring() {
+            return self.measure_bytes(value.len());
+        }
         let len = u32::try_from(value.len())
             .map_err(|_| EngineError::new(ErrorCode::InvalidValue, "recordの長さ"))?;
         let additional = value
@@ -284,4 +333,34 @@ pub(crate) fn invalid() -> EngineError {
         None,
         None,
     )
+}
+
+#[cfg(test)]
+mod measurement_tests {
+    use super::*;
+
+    #[test]
+    fn measuring_matches_encoding_and_rejects_invalid_blob_lengths_atomically() {
+        let write = |out: &mut Encoder| -> EngineResult<()> {
+            out.raw(b"header")?;
+            out.u64(17)?;
+            out.bytes(b"payload")
+        };
+        let mut normal = Encoder::new(100);
+        let mut measured = Encoder::measuring();
+        write(&mut normal).unwrap();
+        write(&mut measured).unwrap();
+        assert_eq!(measured.written_len(), normal.finish().len());
+        let before = measured.written_len();
+        if let Some(oversize) = (u32::MAX as usize).checked_add(1) {
+            assert!(measured.measure_bytes(oversize).is_err());
+            assert_eq!(measured.written_len(), before);
+        }
+        measured.measure_bytes(7).unwrap();
+        assert_eq!(measured.written_len(), before + 11);
+        assert!(measured.finish().is_empty());
+        let mut normal = Encoder::new(100);
+        assert!(normal.measure_bytes(0).is_err());
+        assert!(normal.finish().is_empty());
+    }
 }

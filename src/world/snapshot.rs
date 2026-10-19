@@ -30,11 +30,11 @@ impl StateCodec for BlockInstance {
         if let Some(hash) = self.dormant {
             out.raw(&hash)?;
         }
-        let properties = match &self.properties {
-            Some(store) => store.checkpoint()?,
-            None => super::terrain::copy_slice(&self.pending_properties)?,
-        };
-        out.bytes(&properties)?;
+        match &self.properties {
+            Some(store) if out.is_measuring() => out.measure_bytes(store.checkpoint_len()?)?,
+            Some(store) => out.bytes(&store.checkpoint()?)?,
+            None => out.bytes(&self.pending_properties)?,
+        }
         out.u8(match self.orientation {
             Orientation::Original => 0,
             Orientation::Right => 1,
@@ -373,74 +373,94 @@ pub(crate) fn decode_chunk_pages(
 }
 
 impl World {
-    /// Runtimeの保存入口が使う、設定容量から算出したsnapshotの最大byte数。
-    /// 地形・channel・Job・作者状態・個体metadataを含む保守的な上限です。
+    /// 現在の確定状態を保存するためのbyte上限を返します。
+    ///
+    /// 通常の保存と同じcodecを計数専用writerで通し、地形・全arena・作者状態・
+    /// remap・archiveの管理情報を含めます。channelのみ登録されたcodec上限を使います。
+    /// 保存bufferは確保しませんが、地形やrecordを走査する費用がかかります。
+    /// 状態が変化した後は再計算してください。
     pub fn checkpoint_limit(&self) -> EngineResult<usize> {
-        let mut total = 4096usize;
-        for size in [
-            self.limits.terrain_bytes,
-            self.limits.channel_bytes,
-            self.limits.job_bytes,
-            self.limits.state_bytes,
-        ] {
-            total = total
-                .checked_add(size)
-                .ok_or_else(|| invalid("World保存上限overflow"))?;
-        }
-        let block = self
-            .limits
-            .block_state_bytes
-            .checked_add(4096)
-            .and_then(|size| size.checked_mul(self.limits.blocks as usize))
-            .ok_or_else(|| invalid("block保存上限overflow"))?;
-        total
-            .checked_add(block)
-            .and_then(|size| {
-                size.checked_add((self.limits.archived_chunks as usize).checked_mul(80)?)
-            })
-            .ok_or_else(|| invalid("World保存上限overflow"))
+        let mut out = Encoder::measuring();
+        self.encode_checkpoint(&mut out, usize::MAX)?;
+        Ok(out.written_len())
     }
 
     /// 全正規地形、allocator、lease、未完了要求を保存します。呼出側は確定tickで取得します。
     pub fn checkpoint(&self, byte_limit: usize) -> EngineResult<Vec<u8>> {
         self.validate()?;
         let mut out = Encoder::new(byte_limit);
-        out.raw(b"CHWORLD1")?;
-        self.id.encode(&mut out)?;
+        self.encode_checkpoint(&mut out, byte_limit)?;
+        Ok(out.finish())
+    }
+
+    fn encode_checkpoint(&self, out: &mut Encoder, byte_limit: usize) -> EngineResult<()> {
+        out.raw(b"CHWORLD2")?;
+        self.id.encode(out)?;
         out.u64(self.seed)?;
         out.u64(self.tick)?;
         out.u64(self.revision)?;
-        self.bounds.encode(&mut out)?;
+        self.bounds.encode(out)?;
         out.raw(&self.content.fingerprint())?;
-        encode_limits(self.limits, &mut out)?;
+        encode_limits(self.limits, out)?;
         out.u32(self.chunks.len() as u32)?;
         for (coord, chunk) in &self.chunks {
-            coord.encode(&mut out)?;
+            coord.encode(out)?;
             out.u64(chunk.revision)?;
-            chunk.edited.encode(&mut out)?;
-            chunk.active.encode(&mut out)?;
-            chunk.generation.encode(&mut out)?;
+            chunk.edited.encode(out)?;
+            chunk.active.encode(out)?;
+            chunk.generation.encode(out)?;
             out.u64(chunk.epoch)?;
-            encode_chunk_pages(chunk, &mut out)?;
+            encode_chunk_pages(chunk, out)?;
         }
-        out.bytes(&self.blocks.checkpoint(byte_limit)?)?;
-        out.bytes(&self.leases.checkpoint(byte_limit)?)?;
-        out.bytes(&self.requests.checkpoint(byte_limit)?)?;
-        self.remaps.encode(&mut out)?;
+        if out.is_measuring() {
+            out.measure_bytes(self.blocks.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.blocks.checkpoint(byte_limit)?)?;
+        }
+        if out.is_measuring() {
+            out.measure_bytes(self.leases.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.leases.checkpoint(byte_limit)?)?;
+        }
+        if out.is_measuring() {
+            out.measure_bytes(self.requests.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.requests.checkpoint(byte_limit)?)?;
+        }
+        self.remaps.encode(out)?;
         out.u32(self.archived.len() as u32)?;
         for (coord, archive) in &self.archived {
-            coord.encode(&mut out)?;
+            coord.encode(out)?;
             out.raw(&archive.hash)?;
-            archive.region.encode(&mut out)?;
+            archive.region.encode(out)?;
         }
-        out.bytes(&self.jobs.checkpoint(byte_limit)?)?;
-        out.bytes(&self.state.checkpoint()?)?;
+        if out.is_measuring() {
+            out.measure_bytes(self.jobs.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.jobs.checkpoint(byte_limit)?)?;
+        }
+        if out.is_measuring() {
+            out.measure_bytes(self.state.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.state.checkpoint()?)?;
+        }
         out.u32(self.channels.len() as u32)?;
         for channel in &self.channels {
-            channel.key().encode(&mut out)?;
-            out.bytes(&channel.checkpoint()?)?;
+            channel.key().encode(out)?;
+            if out.is_measuring() {
+                out.measure_bytes(channel.checkpoint_limit().min(u32::MAX as usize))?;
+            } else {
+                out.bytes(&channel.checkpoint()?)?;
+            }
         }
-        Ok(out.finish())
+        out.u32(self.limits.particles)?;
+        out.u64(self.limits.particle_bytes as u64)?;
+        if out.is_measuring() {
+            out.measure_bytes(self.particles.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.particles.checkpoint(byte_limit)?)?;
+        }
+        Ok(())
     }
     /// 必須定義と各容量を確認し、完全な候補だけを返します。既存Worldの書換えは行いません。
     pub fn restore(
@@ -450,7 +470,9 @@ impl World {
         byte_limit: usize,
     ) -> EngineResult<Self> {
         let mut input = Decoder::new(bytes, byte_limit)?;
-        if input.raw(8)? != b"CHWORLD1" {
+        let format = input.raw(8)?;
+        let with_particles = format == b"CHWORLD2";
+        if !with_particles && format != b"CHWORLD1" {
             return Err(invalid("World保存形式"));
         }
         let id = WorldId::decode(&mut input)?;
@@ -468,7 +490,11 @@ impl World {
                 "保存したContentの定義と不一致",
             ));
         }
-        let limits = decode_limits(&mut input)?;
+        let mut limits = decode_limits(&mut input)?;
+        // 旧版に粒子は存在しません。新しい容量は呼出側の上限から採用し、
+        // 新版では末尾の明示容量とarenaのallocatorを合わせて復元します。
+        limits.particles = caps.particles;
+        limits.particle_bytes = caps.particle_bytes;
         validate_caps(limits, caps)?;
         let mut world = World::new(id, seed, bounds, content, limits)?;
         world.tick = tick;
@@ -547,6 +573,14 @@ impl World {
                 .channels
                 .push(factory.restore(input.bytes(byte_limit)?)?);
         }
+        if with_particles {
+            world.limits.particles = input.u32()?;
+            world.limits.particle_bytes =
+                usize::try_from(input.u64()?).map_err(|_| invalid("保存粒子byte容量"))?;
+            validate_caps(world.limits, caps)?;
+            world.particles =
+                Arena::restore(input.bytes(byte_limit)?, world.limits.particles, byte_limit)?;
+        }
         input.finish()?;
         world.connect_block_states()?;
         world.validate()?;
@@ -598,10 +632,22 @@ fn decode_limits(input: &mut Decoder<'_>) -> EngineResult<WorldLimits> {
         job_bytes: usize::try_from(input.u64()?).map_err(|_| invalid("保存Job byte数"))?,
         remaps: input.u32()?,
         edit_cells: usize::try_from(input.u64()?).map_err(|_| invalid("保存編集cell数"))?,
+        particles: WorldLimits::default().particles,
+        particle_bytes: WorldLimits::default().particle_bytes,
     })
 }
 fn validate_caps(value: WorldLimits, caps: WorldLimits) -> EngineResult<()> {
     for (name, value, cap) in [
+        (
+            "粒子数",
+            u64::from(value.particles),
+            u64::from(caps.particles),
+        ),
+        (
+            "粒子byte数",
+            value.particle_bytes as u64,
+            caps.particle_bytes as u64,
+        ),
         ("Job数", u64::from(value.jobs), u64::from(caps.jobs)),
         ("Job cell数", value.job_cells as u64, caps.job_cells as u64),
         ("Job byte数", value.job_bytes as u64, caps.job_bytes as u64),

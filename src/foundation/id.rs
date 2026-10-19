@@ -233,6 +233,18 @@ impl<T: StateCodec, K> Arena<T, K> {
     /// slot世代、退役、値、free-listの順序を全て保存します。
     pub fn checkpoint(&self, byte_limit: usize) -> EngineResult<Vec<u8>> {
         let mut out = Encoder::new(byte_limit);
+        self.encode_checkpoint(&mut out)?;
+        Ok(out.finish())
+    }
+
+    /// 実際の保存と同じ順序で、bufferを作らずに長さを求めます。
+    pub(crate) fn checkpoint_len(&self) -> EngineResult<usize> {
+        let mut out = Encoder::measuring();
+        self.encode_checkpoint(&mut out)?;
+        Ok(out.written_len())
+    }
+
+    fn encode_checkpoint(&self, out: &mut Encoder) -> EngineResult<()> {
         out.raw(b"CHARNA01")?;
         out.u32(self.capacity)?;
         out.u32(self.slots.len() as u32)?;
@@ -241,14 +253,14 @@ impl<T: StateCodec, K> Arena<T, K> {
             out.u8(u8::from(slot.retired))?;
             out.u8(u8::from(slot.value.is_some()))?;
             if let Some(value) = &slot.value {
-                value.encode(&mut out)?;
+                value.encode(out)?;
             }
         }
         out.u32(self.free.len() as u32)?;
         for index in &self.free {
             out.u32(*index)?;
         }
-        Ok(out.finish())
+        Ok(())
     }
 
     /// 外部上限と形式を検証して候補arenaを作ります。

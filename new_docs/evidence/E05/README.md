@@ -283,3 +283,90 @@ Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全320テスト成功（混合物19�
 新形式は照合済みReady・NoOutletを復元直後も保持するため、既存試験のReady期待値を更新した。旧形式の再照合・予算共有も継続して検証する。新payloadは4byte増え、schemaのbyte上限は自動で増えない。30に形式・費用・進捗値と実地形監査の違いを記録した。
 
 Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全322テスト成功（lib/host108、material_transport25、他は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdocが成功した。広域圧力作例も成功した。作例名を誤って`material_transport`として一度実行したコマンドは対象不存在で失敗し、存在する`pressure_job`で確認し直した。公開APIの押出し保存再開そのものは新しい回帰試験で検証している。最新commitのCI・外部レビューはPR提出後に確認する。E05全体は未完了である。
+
+## ローカルへの引継ぎとPR #9のP2対応
+
+2026-10-17（日本時間）、`A:/Project/charon-engine`で再開した。元のE04ブランチの追跡済み変更15ファイルと未追跡1ファイル（計16件）を、`local-before-e05-cloud-handoff-20261017`というstash（`1c1f742397a082da2556c52b45fd2f9b3d0cdafa`）へ保護した。元のoriginは保持し、指定リポジトリを`handoff` remoteとして追加した。fetch後の`codex/e05-push-resume`のHEADが`5ba1c92c14757cee67e42dc5ae5145ebde31ca72`に一致することを確認した。Cloud固有のCARGO_HOME/RUSTUP_HOMEは設定していない。ローカルのRust/Cargoは1.98.1である。
+
+[READMEのP2](https://github.com/sofia-gros/charon-engine/pull/9#discussion_r4293732418)は、REST APIの`original_commit_id`でも上記`5ba1c92`への指摘と照合した。`a9d7a4490b9976cc8962a4fb9b25de0fa23e1ccf`で252件をPR #4時点の履歴と明示し、押出し修正の最新322件・品質検査成功をREADMEへ反映してpushした。[対応結果を回答](https://github.com/sofia-gros/charon-engine/pull/9#discussion_r4296298930)し、スレッドを解決した。
+
+同headの[実レビュー結果](https://github.com/sofia-gros/charon-engine/pull/9#issuecomment-6218825222)で対象commitと重大な指摘なしを確認した。要約のcompleted表示だけで判断していない。[Rust CI](https://github.com/sofia-gros/charon-engine/actions/runs/38923773560)、[E03](https://github.com/sofia-gros/charon-engine/actions/runs/38923773546)、[E04](https://github.com/sofia-gros/charon-engine/actions/runs/38923773587)、[E05](https://github.com/sofia-gros/charon-engine/actions/runs/38923773734)の計10ジョブすべて成功。READMEのみの修正なので全検査は重複実行せず、Windowsで`pressure_push_progress_survives_a_fresh_state_read_each_phase`の1件を実行して成功した。E05全体未完了のためPR #4〜#9はマージしていない。
+
+## 正規物質粒子の実装単位
+
+`codex/e05-material-particles`をPR #9の確認済みheadから分けた。[35の公開契約](../../35_MATERIAL_PARTICLES.md)に、所有権・単位・費用・失敗時の保持と保存移行を記載した。
+
+- 一cell分のtokenとflags/variation・全物質channelを粒子へ移し、空きcellへの着地時に戻す。位置固定場は保持し、block個体の暗黙分解を拒否する。
+- Q16の連続位置と速度、整数DDA、同時交差の両直交cell検査、layer別の通過予約、未準備域の待機、非活動域の凍結を追加した。着地不能でも寿命で消さない。
+- pool slot・全payload byte・着地channel・編集・DDA予算不足で外側取引をrollbackする。エラーを無視しても入力を失わない。作者の型付きpayload更新も同じ取引へ接続した。
+- 粒子の所属regionを現在位置から決め、地形と一緒にpayloadを退避・復帰する。退避後はmetadataとslotだけ保持する。保存中の速度変更でも古い退避receiptを拒否し、復帰時はID・世代・全metadata・所属と件数を照合する。
+- World形式はCHWORLD2、区域形式はCHREGN02へ更新した。CHWORLD1・CHREGN01は粒子ゼロとして読める。押出し・混合・圧力jobの形式は維持する。素材ownerはengine:particlesで、archiveの未適用epochは復帰時に処理する。
+
+### ローカルレビュー
+
+辞書キー・長さheaderもparticle_bytesへ計上して、値が小さいchannelを多数登録した場合の保存上限の過小計算を防いだ。着地失敗後に0速度となった粒子も再試行し、空cellに作者payloadが残る場合は上書きしない。復帰時はcell単位の位置だけでなくQ16位置・速度もmetadataと比較する。元のcell内で停止する場合に端数位置を中心へ戻さないようにした。
+
+### 粒子単位の最終ローカル検証
+
+Windows/MSVC・Rust 1.98.1、`-j 2`、既存cacheの`--target-dir target/e01-validation`を使用した。Cドライブの空きが約278MiBのため、TEMP/TMPだけをプロセス内で`A:/Project/charon-engine/target/e05-build-tmp`へ指定した。Cloudのhome設定は移植していない。
+
+- `cargo fmt --all -- --check`：成功。
+- `cargo check --all-targets --locked`：成功。
+- `cargo clippy --all-targets --locked -- -D warnings`：成功。
+- `cargo test --locked`：全342テスト成功、失敗・無視なし。内訳はlib/host108、assets24、foundation19、mixtures19、motion12、particles20、receipts15、transport25、pressure_job22、runtime28、world50。doc-testは0件。
+- `RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps`：成功。
+- `cargo run --locked --example material_particles`：成功。energy=900のまま放出・途中保存・壁直前の着地を行い、連続実行とcheckpointが一致した。
+
+最後のコード変更後に全検査をまとめて実行した。未実装の全体収支・provider・Q04を、この342件で検証済みとは扱わない。GitHubの3 OS CI・実レビューはpushとPR提出後に確認する。
+
+### PR #10のP1対応：退避粒子への空気remap
+
+対象`e3a76f28d8e3ad4c496db62c9812a84a1d6e6571`はCI10件すべて成功したが、[退避中だけの粒子へ空気向けmappingを登録できるP1](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296566162)を指摘された。REST APIのoriginal_commit_idも同commitと照合した。
+
+退避粒子だけを残してremapのエラーを無視する回帰試験を追加し、修正前に規則が受理されて失敗することを確認した。engine:particlesの空気向けmappingは現在の粒子数・所属・活動状態と関係なく規則登録時に拒否する。保存復元にも同じ規則検査を適用する。拒否後にWorld・epochが不変で、保存済み区域を正常復帰してpayload・速度を保持できること、粒子が存在しない場合とresidentの場合も拒否することを検査した。正常な素材変更・退避復帰の既存試験は維持する。
+
+合わせて、初期pool上限を08の既定profileで指定された262,144へ合わせた。保存済みWorldの容量を自動拡張する変更ではない。Windows/MSVC・Rust 1.98.1で対象22件、全344テストが成功し、失敗・無視なし。内訳は上記342件のparticles20が22となる。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功した。最新commitのpush後に再レビューとCIを確認するまで、本単位の対応完了とは判定しない。
+
+### PR #10の追加P2：保存上限とarena容量の整合
+
+`6253655e0ef8722c63c96aa5046e30f01909f1e0`のCI10件は成功したが、[多数channelのcheckpoint上限](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296665660)と[外側slot容量とarena容量の不一致](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296665666)を指摘された。original_commit_idで両方の帰属を照合した。
+
+- 64個の最大長キーの物質channelと、上限8個すべての粒子を持ち、他の容量を小さくした公開APIの試験で、実保存165,723byteに対し上限146,432byteとなる失敗を修正前に再現した。粒子payloadの8byteはキーと値の各4byte長を既に含む。実際の不足は、RAM配列が0byteでも保存するchannelのキー・格子・既定値・revision等である。Worldの上限はRAM用channel_bytesではなく、各channelのcodec byte上限とWorld側のキー・payload長を合算する。修正後は同じ上限APIで保存し、容量を満たしたまま復元して8粒子を保持する。
+- 外側の粒子容量を残したままCHARNA01内部の容量だけ1へ変更した保存が、修正前は受理された。Worldの不変条件に実arena容量と明示slot容量の完全一致を追加し、復元時と通常編集の検証で拒否する。保存形式はCHWORLD2を維持する。
+
+Windows/MSVC・Rust 1.98.1で対象24件、全346テスト成功。失敗・無視なし。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功した。変更のないツリーで全検査を繰り返さず、2件の修正後にまとめて実行した。push後の最新headへの再レビュー・CIを確認してから次の実装単位へ進む。
+
+### PR #10の追加P2：全管理情報を含む保存量の計数
+
+`48536bbf121231afff06345160f0ffcd046a94d8`の[lease arenaの保存上限不足](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296761521)をoriginal_commit_idで確認した。CI10件は成功していたが、指摘があるため完了扱いにしていない。
+
+概算の加算式を置き換え、World・Arena・StateStoreの通常保存と共通のcodecを、bufferを確保しない計数用Encoderで通す。leaseだけでなく、生成要求のReady page、Jobの途中page、blockの作者状態、全arenaのslot世代・free list、remap・archive・粒子payloadを同じ経路で数える。channelは各codecの登録上限を合算する。保存形式のbyte列は変えない。`checkpoint_limit`は現在の確定状態に対する上限となり、将来の変更後まで使い回さず再計算する。Runtimeは従来どおり保存直前に呼ぶ。計数の走査費用はあるが、完全snapshotの一時確保はしない。
+
+公開APIの回帰試験で、最大長キーのLoadOnly leaseを1,024件、World作者状態とblock状態を各128件、途中Jobと未完了生成要求を同時に保持し、算出上限で保存・復元して全管理状態を保持することを確認した。channelがない場合の算出量は実保存量と完全一致する。既存の生成Ready・block・途中Jobの保存試験にも同じ一致検査を追加した。64個の最大長channelと満杯の粒子poolの既存試験も通過した。計数Encoderのheader長・u32長上限と失敗時の不変性も検査した。
+
+Windows/MSVC・Rust 1.98.1で全348テスト成功（失敗・無視なし）。lib109、assets24、foundation19、mixtures19、motion12、particles24、receipts15、transport25、pressure_job22、runtime28、world51。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功。反復中は対象試験を使い、最終コードで全体検証を一度実行した。最新commitの実レビューとCIの確認はpush後に行う。
+
+### PR #10の追加P2：未処理粒子の開始位置の予約
+
+`ca2426e5170d0d9b161806fd6600814b1bd9d677`でCI10件は成功したが、[未処理粒子の現在位置も予約する指摘](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296932890)があり、original_commit_idで帰属を確認した。レビュー要約のcompleted表示を通過とは判定していない。
+
+phase開始時の全resident粒子のlayer・cellを一度だけ索引化し、未処理粒子の現在位置もDDAの通過点・角の検査で占有として扱う。先に動いた粒子の開始位置もphase中は解放しない。同じlayer・cellへの重複放出を拒否し、直接着地も別粒子へ重ならないよう確認する。旧保存に既存の重なりがある場合も一方の着地で他方を埋めず、待機または空き先への移動で両方の所有物を保持する。
+
+索引はfallibleな一括確保とソートを使い、経路中は二分探索する。活動粒子ゼロでは索引を確保しない。公開の直接着地はpoolを走査するが、標準phaseの着地は開始位置の索引と経路予約で安全性を保証し、各着地でpool全体を再走査する二乗費用を避ける。保存形式は変更しない。
+
+6件の回帰を追加した。対向粒子は両ID順・毎phase保存復帰で同じ位置とpayloadを維持する。追従は同phaseに空いた始点へ進入しない。斜めの角にいる未処理粒子、高速8方向の途中停止と保存復帰、同位置放出の失敗時rollback、旧保存の重なりで直接着地を拒否して両粒子を分離・着地できることも検証した。
+
+Windows/MSVC・Rust 1.98.1で粒子対象30件、全354テスト成功（失敗・無視なし）。直前の348件からparticles24が30となり、他の内訳は同じ。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功。反復中は対象試験を使い、最終変更後に全体検証をまとめて1回実行した。push後の最新commitについて実レビューとCIを確認する。
+
+### E05出口の未達
+
+| 必須項目 | 現在の判定 |
+| --- | --- |
+| 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。外部レビューとCIは提出後に確認する |
+| resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | 未完了。混合成分・理由付きreceiptを含めた全表現の保存監査が必要 |
+| 重力・抗力・浮力・摩擦と標準／独自provider統合 | 未完了。型付き状態更新の入口だけで統合済みとしない |
+| 広域移動の保存可能な継続Job | 未完了。phaseの件数超過rollbackを継続処理としない |
+| dirty/sleep・wake依存とscalar参照のtick比較 | 未完了 |
+| 公開APIとRuntimeのQ04統合・CI証拠 | 未完了。対象テストや作例のみでQ04通過としない |
+
+E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、E06へ進まず停止する。

@@ -137,17 +137,29 @@ impl StateStore {
     /// schema識別とpayloadをキー順に保存します。codecの版は1です。
     pub fn checkpoint(&self) -> EngineResult<Vec<u8>> {
         let mut out = Encoder::new(self.limits.checkpoint_bytes);
+        self.encode_checkpoint(&mut out)?;
+        Ok(out.finish())
+    }
+
+    /// 実際の保存と同じ順序で、bufferを作らずに長さを求めます。
+    pub(crate) fn checkpoint_len(&self) -> EngineResult<usize> {
+        let mut out = Encoder::measuring();
+        self.encode_checkpoint(&mut out)?;
+        Ok(out.written_len())
+    }
+
+    fn encode_checkpoint(&self, out: &mut Encoder) -> EngineResult<()> {
         out.raw(b"CHRSTA01")?;
-        self.scope.encode(&mut out)?;
+        self.scope.encode(out)?;
         out.u64(self.revision)?;
         out.u32(self.records.len() as u32)?;
         for record in &self.records {
-            record.key.encode(&mut out)?;
-            record.schema.encode(&mut out)?;
+            record.key.encode(out)?;
+            record.schema.encode(out)?;
             out.u32(record.version)?;
             out.bytes(&record.payload)?;
         }
-        Ok(out.finish())
+        Ok(())
     }
 
     /// 呼出側が指定したscope・上限・registryで候補を復元します。

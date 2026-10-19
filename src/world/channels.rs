@@ -10,7 +10,7 @@ use super::{
 };
 use crate::foundation::{
     EngineError, EngineResult, ErrorCode, StableKey,
-    codec::{Encoder, StateCodec},
+    codec::{Decoder, Encoder, StateCodec},
     error::allocation,
     grid::{CellPoint, GridChannel, GridLayout, GridLimits, GridValue},
 };
@@ -49,6 +49,7 @@ pub(crate) trait ChannelState: Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn try_copy(&self) -> EngineResult<Box<dyn ChannelState>>;
     fn checkpoint(&self) -> EngineResult<Vec<u8>>;
+    fn checkpoint_limit(&self) -> usize;
     fn bytes(&self) -> usize;
     fn validate(&self, world: &World) -> EngineResult<()>;
     fn extract(&self, region: ChunkRegion) -> EngineResult<Vec<u8>>;
@@ -57,6 +58,11 @@ pub(crate) trait ChannelState: Send + Sync {
     fn reset_material(&mut self, layer: StableKey, points: &[CellPoint]) -> EngineResult<()>;
     fn transport_bytes(&self, layer: StableKey, path: &[CellPoint]) -> EngineResult<usize>;
     fn transport(&mut self, layer: StableKey, path: &[CellPoint]) -> EngineResult<()>;
+    fn material_payload(&self, point: CellPoint, limit: usize) -> EngineResult<Vec<u8>>;
+    fn validate_payload(&self, bytes: &[u8]) -> EngineResult<()>;
+    fn payload_is_default(&self, point: CellPoint) -> EngineResult<bool>;
+    fn payload_bytes(&self, point: CellPoint, bytes: &[u8]) -> EngineResult<usize>;
+    fn put_payload(&mut self, point: CellPoint, bytes: &[u8]) -> EngineResult<()>;
 }
 struct Factory<T: GridValue + Send + Sync + 'static>(ChannelDefinition<T>, Option<StableKey>);
 struct Storage<T: GridValue + Send + Sync + 'static> {
@@ -150,6 +156,15 @@ impl<T: GridValue + Send + Sync + 'static> ChannelFactory for Factory<T> {
     }
 }
 impl<T: GridValue + Send + Sync + 'static> Storage<T> {
+    // 粒子にも格子と同じcodec・値検証を適用します。Rustのメモリ表現を
+    // byte列へコピーせず、個体参照や端数を含む作者recordをそのまま往復します。
+    fn decode_payload(&self, bytes: &[u8]) -> EngineResult<T> {
+        let mut input = Decoder::new(bytes, self.definition.0.limits.checkpoint_bytes)?;
+        let value = T::decode(&mut input)?;
+        input.finish()?;
+        value.validate()?;
+        Ok(value)
+    }
     fn transport_coordinate(&self, point: CellPoint) -> EngineResult<CellPoint> {
         let origin = self.grid.layout().origin;
         Ok(CellPoint {
@@ -250,6 +265,33 @@ impl<T: GridValue + Send + Sync + 'static> Storage<T> {
     }
 }
 impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
+    fn material_payload(&self, point: CellPoint, limit: usize) -> EngineResult<Vec<u8>> {
+        let value = self.grid.get(self.transport_coordinate(point)?);
+        value.validate()?;
+        let mut out = Encoder::new(limit);
+        value.encode(&mut out)?;
+        Ok(out.finish())
+    }
+    fn validate_payload(&self, bytes: &[u8]) -> EngineResult<()> {
+        self.decode_payload(bytes).map(|_| ())
+    }
+    fn payload_is_default(&self, point: CellPoint) -> EngineResult<bool> {
+        Ok(self
+            .grid
+            .get(self.transport_coordinate(point)?)
+            .same(self.definition.0.default))
+    }
+    fn payload_bytes(&self, point: CellPoint, bytes: &[u8]) -> EngineResult<usize> {
+        let point = self.transport_coordinate(point)?;
+        let value = self.decode_payload(bytes)?;
+        let delta = i64::from(!value.same(self.definition.0.default))
+            - i64::from(!self.grid.get(point).same(self.definition.0.default));
+        self.projected_bytes(&mut [(point.chunk_local().0, delta)])
+    }
+    fn put_payload(&mut self, point: CellPoint, bytes: &[u8]) -> EngineResult<()> {
+        let value = self.decode_payload(bytes)?;
+        self.grid.set(self.transport_coordinate(point)?, value)
+    }
     fn key(&self) -> StableKey {
         self.definition.0.key
     }
@@ -270,6 +312,9 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
     }
     fn checkpoint(&self) -> EngineResult<Vec<u8>> {
         self.grid.checkpoint()
+    }
+    fn checkpoint_limit(&self) -> usize {
+        self.definition.0.limits.checkpoint_bytes
     }
     fn bytes(&self) -> usize {
         self.grid.allocated_chunks() * 4096 * size_of::<T>()

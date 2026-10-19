@@ -404,6 +404,10 @@ pub struct WorldLimits {
     pub remaps: u32,
     /// 一回の通常取引で触るcell数。巨大操作には分割Jobを使用します。
     pub edit_cells: usize,
+    /// 物質粒子の世代付きslot数。退避中もIDを予約します。
+    pub particles: u32,
+    /// resident物質粒子のchannel辞書・長さheader・値のcodec byte合計上限。
+    pub particle_bytes: usize,
 }
 impl Default for WorldLimits {
     fn default() -> Self {
@@ -425,6 +429,8 @@ impl Default for WorldLimits {
             job_bytes: 64 * 1024 * 1024,
             remaps: 4096,
             edit_cells: 65536,
+            particles: 262144,
+            particle_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -448,6 +454,7 @@ pub struct World {
     pub(crate) state: crate::foundation::state::StateStore,
     pub(crate) jobs: Arena<super::TerrainJob, super::TerrainJobKind>,
     pub(crate) changes: super::WorldChanges,
+    pub(crate) particles: Arena<super::MaterialParticle, super::MaterialParticleKind>,
 }
 impl World {
     /// 定義を共有して空のWorldを作ります。論理世界全体のcellを確保しません。
@@ -491,6 +498,7 @@ impl World {
             jobs: super::jobs::empty(limits.jobs)?,
             changes: super::WorldChanges::empty(),
             channels,
+            particles: Arena::new(limits.particles)?,
         })
     }
     /// 所属ID。描画側のScene IDとは別です。
@@ -650,10 +658,12 @@ impl CandidateState for World {
             state: self.state.try_copy()?,
             jobs: self.jobs.try_copy()?,
             changes: self.changes.try_copy()?,
+            particles: self.particles.try_copy()?,
             channels,
         })
     }
     fn validate(&self) -> EngineResult<()> {
+        self.validate_particles()?;
         self.validate_jobs()?;
         self.validate_state()?;
         self.validate_channels()?;

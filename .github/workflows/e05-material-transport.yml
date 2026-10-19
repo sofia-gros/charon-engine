@@ -33,7 +33,7 @@ jobs:
       - name: 固定toolchainを用意
         run: rustup toolchain install 1.98.1 --profile minimal
       - name: 輸送・速度・圧力・変換記録の公開APIを検証
-        run: cargo test --locked --test material_transport --test material_motion --test material_receipts --test pressure_job --test material_mixtures
+        run: cargo test --locked --test material_transport --test material_motion --test material_receipts --test pressure_job --test material_mixtures --test material_particles
       - name: 速度と端数の保存作例を実行
         run: cargo run --locked --example material_motion
       - name: 物質変換とreceiptの保存作例を実行
@@ -42,3 +42,5 @@ jobs:
         run: cargo run --locked --example pressure_job
       - name: 混合と分離の保存作例を実行
         run: cargo run --locked --example material_mixtures
+      - name: 物質粒子の所有権移動と保存再開の作例を実行
+        run: cargo run --locked --example material_particles

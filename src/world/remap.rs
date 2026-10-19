@@ -158,6 +158,13 @@ impl World {
             for (source, target) in &rule.mappings {
                 let source = self.content.material_id(*source)?;
                 let target = self.content.material_id(*target)?;
+                if rule.owner == StableKey::parse("engine:particles")? && target == MaterialId::AIR
+                {
+                    // 現在のresidentだけで判定すると、退避中または未生成の粒子へ
+                    // 不正規則が後から適用され、区域を復帰不能にします。mappingの
+                    // 登録と保存復元の両方で拒否し、現在の粒子数に依存させません。
+                    return Err(invalid("粒子を空へremapするには明示的な消費ruleが必要"));
+                }
                 if rule.owner == StableKey::parse("engine:blocks")?
                     && let (Some(old), Some(new)) = (
                         self.content.material(source)?,
@@ -278,6 +285,30 @@ impl World {
             }
         }
         let coords = self.chunks.keys().copied().collect::<Vec<_>>();
+        // 粒子はterrainから独立した所有先です。退避中のpayloadは触らず、復帰時に
+        // 同じepoch列を適用します。空気への変更は全payloadの消費ruleが必要なため拒否します。
+        let particle_owner = StableKey::parse("engine:particles")?;
+        let particle_ids = self
+            .particles
+            .iter()
+            .filter(|(_, p)| !p.is_archived())
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        for id in particle_ids {
+            let particle = self.particles.get(id)?;
+            let target = self.remapped(
+                particle_owner,
+                particle.layer,
+                particle.epoch,
+                particle.core.material,
+            )?;
+            if target == MaterialId::AIR {
+                return Err(invalid("粒子を空へremapするには明示的な消費ruleが必要"));
+            }
+            let particle = self.particles.get_mut(id)?;
+            particle.core.material = target;
+            particle.epoch = current;
+        }
         for coord in coords {
             let epoch = self.chunks[&coord].epoch;
             if epoch == current {

@@ -1,0 +1,43 @@
+# E05：正規物質粒子の所有権・移動・区域保存
+
+一cell分のtokenを`MaterialParticle`へ移す公開API。表示用粒子とは独立した正規状態である。これはE05内の実装単位であり、全表現の収支・物性とprovider・dirty/sleep・Q04の完成判定は[E05の記録](evidence/E05/README.md)を参照する。
+
+## 放出と所有権
+
+`WorldEdit::emit_material_particle(layer, point, velocity_q16)`が、非空・非blockのcell本体と、対象layerに所属する**全物質channel**を一つの粒子へ移す。flags・variation、energy、timer、混合参照、作者の個体参照も含む。位置固定channelは移動しない。block個体の暗黙の分解は拒否する。参照先の作者storeはWorldに残り、個体参照を失わず追従させる。
+
+一粒子は一cell分を所有する。複数cellの放出は同じWorld取引内で繰り返し、いずれかの容量拒否で全入力を保持する。発行・消費ではなく所有先の移動であり、この操作でSource/Sink receiptを捏造しない。全表現の収支監査は別のE05統合単位として接続する。
+
+`MaterialParticleHandle`はWorld IDと世代付きIDを持ち、StateCodecで作者状態にも保存できる。復元後のWorldへ渡す際に生存と所属を照合する。着地したslotは解放して世代を更新し、古い参照と別Worldへの参照を拒否する。可変参照は公開しない。`material_particles`は退避粒子も列挙するが、退避中はmetadataだけを保持する。
+
+## 位置・経路・予約
+
+位置は絶対座標の符号付きQ16、速度はQ16 cell/tick。負座標はEuclidean除算で所属cell・regionを決める。小さい変位も位置へ蓄積し、描画座標から逆算しない。
+
+`step_material_particles(candidate_limit, step_limit)`は活動regionの粒子をslot順に一phase進める。整数の交差積で境界到達順を比較するDDAを使い、斜めの同時交差はX側・Y側・斜め先を検査する。空cellだけを通過し、block・占有cell・World境界を飛び越えない。phase開始時の全resident粒子の現在cellをlayer別に占有として索引化し、処理済みかどうかに依存させない。開始位置はその粒子が先へ進んでもphase中は解放しない。通過cellと角の検査cellも予約し、他粒子の開始位置・先行経路との交差は速度を保持して延期する。隣接粒子の正面衝突や追従で、処理順を理由に同じcellへ進入しない。
+
+障害に達したら最後の空cellで停止し、速度を0にして着地を試みる。複数cell進んだ停止位置は最後の空cellの中心、元のcell内で停止する場合は元の連続位置を保持する。未読込・非活動域・予約競合は速度を保持して待機する。未検査の整数距離を借金として積まない。非活動regionとarchiveの粒子は更新しない。0速度でも着地を再試行し、着地不能でも寿命で消さない。
+
+これはpoint tokenの標準DDAであり、半径・mask・一般shapeのsweepや剛体接触の実装ではない。それらのgeometry/couplingはE07の契約に従って接続する。重力・摩擦をこの入口へ隠して適用しない。`set_particle_velocity`と型付き`set_particle_channel`を同じ取引で使い、作者が速度・timer・energy等を変更できる。元のMaterialMotion等のpayloadと粒子本体の速度を連動させる方針も明示的に選ぶ。物性・標準providerとの自動統合はE05の残作業である。
+
+## 着地と容量
+
+`emit_material_particle`は同じlayer・cellにresident粒子がある場合は拒否し、元cellと既存粒子の所有物を保持する。`land_material_particle(handle)`は現在cellが空で、他のresident粒子が同じlayer・cellに存在せず、全物質channelも既定値である場合にだけ所有権を返す。空cellに残る作者payloadを黙って捨てない。修正前の保存に重なった粒子がある場合も、他粒子の内部へ着地させず、待機または空き先への移動で両方を保持する。直接着地では他粒子を走査する。標準phaseでは開始位置の索引と経路予約を使い、各着地でpool全体を再走査する二乗費用を避ける。全channelの最終chunk数とWorld byte数、通常編集数を事前検査し、cell本体と全payloadの書戻し、粒子slotの解放を一つのWorld取引で行う。
+
+`WorldLimits.particles`がslot上限で、[08の既定profile](08_DATA_MODEL_AND_FORMATS.md#容量の基準)に従い262,144とする。`particle_bytes`がresidentのchannelキー・長さheader・値のcodec byte合計上限である。退避中もIDのslotは確保し、payload配列はarchiveへ移して解放する。slotのmetadata、Vecの管理領域、World候補の複製とcodec scratchはこのpayload byte数とは別の費用である。channelの容量と粒子容量は独立し、どちらも自動拡大しない。
+
+pool・payload・着地先channel・編集予算・DDA予算の不足では外側のWorld取引を失敗させ、入力と先行変更を保持する。callbackがエラーを無視しても部分確定しない。phase全体のrollbackは継続Jobではない。広域移動を保存可能な件数分割Jobにすることは別のE05残作業である。
+
+## 保存・退避・素材epoch
+
+World形式は`CHWORLD2`。従来のWorld情報の後ろへ粒子容量とarena（生存record・世代・free list）を保存する。`CHWORLD1`も読め、粒子ゼロとして復元し、新しいpool容量には呼出側のcapsを使う。新版の保存容量はcapsと照合し、arenaの実容量とWorldの明示容量が等しいことも要求する。Runtimeが使う`checkpoint_limit`は、実際のWorld保存と同じcodec経路で現在の必要量を計数する。地形・全arenaの世代とfree list・lease・生成要求・Jobの途中page・作者状態・block状態・remap・archive・粒子payloadを含む。channelは登録されたcodec上限とWorld側のキー・長さheaderを合算する。RAM配列が0byteでも保存情報を省略しない。計数は保存bufferを確保せず状態を変更しないが、地形・recordの走査が必要となる。将来の状態まで保証する容量ではないため、保存する確定状態ごとに再計算する。既存の`CHPUSH02`、`CHMIX001`、`CHPRJOB3`は変更しない。
+
+区域形式は`CHREGN02`。所属位置のregionと一緒に全粒子payloadを保存する。保存の再読込・hash照合後にだけresident payloadを解放し、World側にはID・位置・速度・素材epoch・archive hashを残す。保存中に速度だけを変更した場合も古いreceiptを拒否する。復帰ではID・世代・全metadata・所属・粒子件数を照合し、地形・channelと同時に戻す。`CHREGN01`は粒子ゼロとして読み込む。
+
+素材remapの所有先は`engine:particles`。residentへは同じ取引で適用し、archiveは復帰時に未適用epochを適用する。空素材向けのmappingは、現在の粒子数・resident/退避状態にかかわらず規則登録時に拒否する。保存した規則の復元でも同じ検査を行い、退避中の粒子へ不正規則が潜伏して区域が復帰不能になることを防ぐ。明示的な発行・消費・表現変換の全体監査は次のE05統合で検証する。
+
+## 費用と検証
+
+Worldの候補作成は粒子arenaとresident payloadも複製するため、多数の変更は一つのeditへまとめる。放出・payload更新のbyte集計は生存粒子数、着地はchannel数、DDAは通過境界数に依存する。予約集合は通過点数に応じたscratchを使う。件数予算は候補複製・codec・最終validateまで一定時間に制限する保証ではない。正確なscalar経路を先に用意し、最適化はtick比較を通して行う。
+
+`tests/material_particles.rs`は全payloadと混合参照、正確な成分量、pool・byte・着地容量、無視されたエラー、全方向と負座標、端数、角・壁、予約、未準備域、寿命非消失、保存再開、区域所有の移動、退避・復帰、素材remap、旧World形式、切断codecとcapsを検査する。`cargo run --locked --example material_particles`は放出後に途中保存し、連続実行と同じcell・energy=900へ着地することを確認する。
