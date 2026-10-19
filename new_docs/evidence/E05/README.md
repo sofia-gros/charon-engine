@@ -113,3 +113,37 @@ Linuxクラウド環境、Rust 1.98.1、`CARGO_BUILD_JOBS=2`。リポジトリ�
 ### 残作業
 
 本単位は明示速度の整数格子経路であり、一般shape sweep、重力・抗力・浮力・摩擦の物性接続、広域移動の保存可能Job、providerの統合・認定を実装済みとしない。混合・分離、正規物質粒子とpool、source/sink/変換receiptと収支、気体sourceと広域圧力、dirty/sleepの参照比較も残る。E05全体・Q04は未通過で、次の依存工程へ進まない。
+
+## PR #5の手動レビュー確認
+
+[PR #5](https://github.com/sofia-gros/charon-engine/pull/5)の対象commitは`25d522f13888073473d47797431184b51704ad1d`。CI20件はすべて成功した。
+
+コードレビューの実施状態について確認が必要となり、後続のreceipt作業を退避して[手動再依頼](https://github.com/sofia-gros/charon-engine/pull/5#issuecomment-6207919520)した。2026-10-16 13:17 JSTの[新しいレビュー結果コメント](https://github.com/sofia-gros/charon-engine/pull/5#issuecomment-6207963869)で対象commitと「重大な問題は見つからなかった」との結果を確認した。要約のcompleted表示だけを根拠にせず、この実行の結果コメントを記録する。PRはマージしていない。
+
+## cell変更と理由付きreceipt
+
+`codex/e05-material-receipts`を`25d522f`から分け、次のレビュー単位として実装する。
+
+- `apply_material_changes`が全cellの期待値・出力・payload方針を検査し、Source・Sink・Conversionの理由と変更前後をWorld StateStoreへ地形とともに記録する。
+- 消費・発行を安定した素材キーへ集計し、cell token数はu64、換算massはu128で保存する。作者が意図したmass差を禁止しない。
+- World・Content・journalの所属、保存順、過去の変更列と量の一致を照合する。blockの暗黙消費、未読込、重複、期待値失効、容量不足を拒否する。
+- payloadのKeepChannels・ResetChannelsを明示する。位置固定場と別layerを巻き込まず、参照先storeの個体を自動破棄しない。
+- [32の契約](../../32_MATERIAL_RECEIPTS.md)、root README、`examples/material_receipts.rs`、3 OSのE05 CIを更新した。
+
+### ローカルレビューと検証
+
+ローカルレビューで、receiptの戻り値も外側のWorld取引が成功するまでは候補であることを明示した。外部recordの形式検査とWorld参照・集計の照合を区別し、監査用の`validate_world`を公開した。journalの容量を超えたときに古いreceiptを自動削除せず、変換を停止する。
+
+Linux / Rust 1.98.1、`CARGO_BUILD_JOBS=2`で次を実行した。
+
+- 全279テスト成功：lib/host 107、assets 24、foundation 19、material_motion 12、material_receipts 15、material_transport 24、runtime 28、world 50。失敗・無視なし。doc-testは0件。
+- fmt、全target check、警告拒否Clippy・Rustdocが成功。コマンドは`cargo +1.98.1 fmt --all -- --check`、`cargo +1.98.1 check --all-targets --locked`、`cargo +1.98.1 clippy --all-targets --locked -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo +1.98.1 doc --locked --no-deps`。
+- `cargo +1.98.1 run --locked --example material_receipts`が成功。発行mass10、mass10→10の変換、消費mass10の3receiptと、空になった地形を保存・復元してassertで確認した。
+
+15件の対象試験で、Source・Conversion・Sink、payload移行、意図したmass差、複数cell、失効と無視されたエラー、件数・codec・通常編集容量、World・Content・journal、block、codec切断、集計の不一致、区域退避・復帰を検査した。
+
+### 未完了の境界
+
+これはcell表現のreceiptであり、raw編集・生成器・全providerの監視、粒子・剛体local cell・退避領域・reservoirを合わせた総量の参照比較ではない。外部に永続化したreceiptの整理、非cell表現のbridge、熱energyの収支も残る。保存recordは既存StateStoreへ含め、World・区域archiveの構造は変更しない。新規schemaでContent manifestが変わることと、既存保存の自動互換を混同しない。
+
+E05全体・Q04は引き続き未通過。混合・分離、正規粒子とpool、全体収支、気体source・広域圧力、dirty/sleep、物性・provider統合を残してE06へ進まない。

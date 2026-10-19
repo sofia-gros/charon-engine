@@ -54,6 +54,7 @@ pub(crate) trait ChannelState: Send + Sync {
     fn extract(&self, region: ChunkRegion) -> EngineResult<Vec<u8>>;
     fn clear(&mut self, region: ChunkRegion) -> EngineResult<()>;
     fn merge(&mut self, bytes: &[u8]) -> EngineResult<()>;
+    fn reset_material(&mut self, layer: StableKey, points: &[CellPoint]) -> EngineResult<()>;
     fn transport_bytes(&self, layer: StableKey, path: &[CellPoint]) -> EngineResult<usize>;
     fn transport(&mut self, layer: StableKey, path: &[CellPoint]) -> EngineResult<()>;
 }
@@ -315,6 +316,15 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
                 ));
             }
             self.grid.set(point, value)?;
+        }
+        Ok(())
+    }
+    fn reset_material(&mut self, layer: StableKey, points: &[CellPoint]) -> EngineResult<()> {
+        if self.definition.1 == Some(layer) {
+            for point in points {
+                let coordinate = self.transport_coordinate(*point)?;
+                self.grid.set(coordinate, self.definition.0.default)?;
+            }
         }
         Ok(())
     }
