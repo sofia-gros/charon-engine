@@ -221,3 +221,53 @@ decodeで連結成分を一度構築し、stage・cursor・rootに対応する�
 `95698a7`の再レビューで[Jacobi・buffer切替のcursor改変](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4293119194)を指摘された。現反復の計算を`next_pressure`へ共有し、stage4の処理済みprefixのnext、未処理suffixの保持値と初回oldを照合する。stage6はコピー済みprefixのold==next、初回の未コピーsuffix、コピー開始前のnextを検査し、完成時もold==nextを要求する。過去の全反復を再実行しない。
 
 cursorを0から全node数へ書き換える回帰試験を追加した。修正前はstage4の不整合を受理して失敗し、修正後はstage4・6の両方を拒否する。複数成分・全段階の正しい保存と毎phaseの復元も成功した。対象22テスト、全301テスト、fmt・全target check・警告拒否Clippy・Rustdocと保存作例が成功。保存形式CHPRJOB3は維持する。最新commitのCIと実レビュー結果を確認してから次の実装へ進む。
+
+## PR #7のレビュー・CI完了
+
+[PR #7](https://github.com/sofia-gros/charon-engine/pull/7)の対象commitは`25e486db8e13396a40ec1cba5527d3f04b7b46e4`。重複抑制後のCI10件すべて成功し、[対象commitを明記した実レビュー結果](https://github.com/sofia-gros/charon-engine/pull/7#issuecomment-6212775166)で重大な指摘なしを確認した。指摘スレッドは対応結果を回答して解決した。E05全体が未完了のためマージはしていない。
+
+## 混合・分離と共有組成
+
+`codex/e05-mixtures`を`25e486d`から分けた。契約は[34](../../34_MATERIAL_MIXTURES.md)、作例は`examples/material_mixtures.rs`。
+
+- MixtureStateの素材キーと整数token比率を正規化し、Worldの共有storeへ登録する。cellにはWorld付きの固定長MixtureRefだけを置く。定義に物質所有権を持たせず、appendしたindexを再利用しない。
+- carrierの質量を純物質別に正確な有理数量へ展開する。mass5・3の素材をmass4の二cellへ混合する場合、各cellに純物質tokenを各1/2ずつ持ち、前後の成分量を保持する。
+- PreserveComponentsは素材別token・massの完全一致を要求し、RecordConversionは作者が理由付きで指定した発行・消費・変換差を認める。接触だけで液体を自動混合しない。
+- 全cell・payload方針・組成参照と、cell receiptへ結び付く組成witnessを同じWorld取引で保存する。容量不足や期待値失効を無視しても外側の取引全体を破棄する。
+- World・Content・schema・channel所有権・参照indexを照合する。共有定義とwitnessは既存StateStore、参照channelは既存の輸送・保存・区域退避を使う。
+
+### ローカルレビューと検証
+
+ローカルレビューで、同じ組成を再登録するno-opでもschema不一致を拒否すること、成分数上限をdecodeの確保前に検査すること、監査でjournalキーを照合して同じjournalを一度だけ読み込むことを確認・修正した。組成数と全履歴・入出力の成分展開に依存する費用、u128中間値で拒否する範囲、外部store個体とenergyの移行を作者が指定する境界を34へ明記した。
+
+Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2。
+
+- 全316テスト成功。lib/host 107、assets 24、foundation 19、material_mixtures 15、material_motion 12、material_receipts 15、material_transport 24、pressure_job 22、runtime 28、world 50。失敗・無視なし。doc-testは0件。
+- fmt、全target check、警告拒否Clippy・Rustdocが成功。`cargo fmt --all -- --check`、`cargo check --all-targets --locked`、`cargo clippy --all-targets --locked -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps`を実行した。
+- `cargo run --locked --example material_mixtures`が成功。水token1/2・mass5/2、油token1/2・mass3/2、総mass8の発行→混合→分離、witness2件と途中保存からの再開のcheckpoint一致をassertした。
+
+15テストで正規化・再登録、正確な端数・混合分離、詰めたcarrier、意図した変換差、Source/Sink、payload保持・初期化、World・Content・schema・layer所有権、未登録素材、種類数・定義数・receipt件数・codec byte・journal・channel容量、期待値・重複・block・未読込、無視されたエラー、輸送・保存・区域退避、codec切断と有理数演算上限を検査した。3 OSのE05 CIへ対象テストと作例を追加した。
+
+### 残作業
+
+この単位は現在の全表現を監視する総量台帳ではない。正規物質粒子とpool、粒子・剛体local cell・reservoir・退避領域を含む全体収支、dirty/sleepの参照比較、物性とproviderの統合、広域移動とQ04を続ける。E05の出口を満たすまではマージせず、満たした後はマージしてPCへ引き継ぎ、E06には着手しない。
+
+### PR #8のP1対応：古い共有storeからの巻戻し
+
+[指摘](https://github.com/sofia-gros/charon-engine/pull/8#discussion_r4293458391)は、`MixtureStore::new`の既存record検査だけでは、あらかじめ作った空storeや過去のsnapshotを汎用`set_state`で書き戻せる点だった。登録indexを再利用して既存参照の意味を変えるためP1に該当する。古い定義前・receipt前のsnapshotで上書きする回帰試験が修正前に失敗することを確認した。
+
+Worldの固定キーへのtyped・encoded書込みで型とWorld/Contentを検査し、現在の全定義とwitnessが候補の同一prefixとして残ることを取引内で要求する。別型への置換も拒否し、エラーを無視しても外側をrollbackする。古い候補二つを先に準備する場合も拒否し、容量変更と正規の追記は許す。CHMIX001の形式は変えない。全履歴の再decode・prefix比較費用を34へ記録した。
+
+Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全318テスト成功（混合物17、他の内訳は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdocと混合分離の保存再開作例が成功した。
+
+この再開直後にはGitHub APIが401、Gitのreadが認証入力エラーとなったが、ローカル検証後のpushは成功し、APIの再試行でもPRのhead更新を確認できた。一時的な失敗として認証の追加設定は不要だった。最新CI・再レビュー・指摘返信を続け、完了と見なすのは実結果確認後とする。E05全体は未完了、E06は未着手である。
+
+### PR #8の追加P1：journalと分岐履歴の書戻し
+
+`1faeea5`のCI10件は全成功したが、再レビューで[journalの巻戻し](https://github.com/sofia-gros/charon-engine/pull/8#discussion_r4293579504)と[分岐Worldのwitness追記](https://github.com/sofia-gros/charon-engine/pull/8#discussion_r4293579511)を指摘された。prefix保持だけでは、対応receiptが現Worldにない履歴を追記できる。最初の再レビュー実行はサービスのUnknown errorで終了し、再依頼した実行の実指摘に対応した。
+
+汎用typed・encoded書込みではMixtureStoreの定義・witnessとMaterialReceiptLogのreceipt列を現在の全履歴と完全比較し、初回は空履歴だけを受理する。容量変更は許す。定義と履歴の追記は公開commandから呼べない専用内部経路へ移し、登録またはcell編集の同じ候補内だけで実行する。全checkpoint復元はこの差分書戻しとは別の経路である。
+
+journal snapshotの受理を修正前の失敗で確認した。修正後は古いjournal、分岐Worldのwitness・journal・定義の持込み、容量変更と拒否後の正常な混合を検証する。既存receipt試験3件も、不整合を保存後に検出する想定から、保存自体の拒否と世界の不変を検証する形へ更新した。
+
+Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全320テスト成功（混合物19、receipt15、他は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdoc・保存再開作例が成功した。CHMIX001とreceiptの保存形式は変えない。最新commitのCI・再レビューはpush後に確認する。E05全体とQ04は未完了である。

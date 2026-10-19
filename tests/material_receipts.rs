@@ -474,8 +474,7 @@ fn reset_channel_writes_are_included_in_the_edit_budget() {
 
 #[test]
 fn foreign_world_and_journal_logs_are_rejected() {
-    let (mut world, layer) = world();
-    let water = core(&world, "test:water");
+    let (mut world, _) = world();
     let other = World::new(
         WorldId::from_parts(1, 1).unwrap(),
         3,
@@ -488,18 +487,10 @@ fn foreign_world_and_journal_logs_are_rejected() {
         MaterialReceiptLog::new(&other, journal().key, 16).unwrap(),
         MaterialReceiptLog::new(&world, key("test:other-journal"), 16).unwrap(),
     ] {
-        world
-            .edit(|edit| edit.set_state(journal().key, journal().schema, &log))
-            .unwrap();
         let before = world.checkpoint(4_000_000).unwrap();
         assert!(
             world
-                .edit(|edit| edit.apply_material_changes(
-                    layer,
-                    journal(),
-                    reason(MaterialReceiptKind::Source),
-                    &[change(p(1, 2), CellCore::AIR, water)]
-                ))
+                .edit(|edit| edit.set_state(journal().key, journal().schema, &log))
                 .is_err()
         );
         assert_eq!(before, world.checkpoint(4_000_000).unwrap());
@@ -596,20 +587,11 @@ fn content_mismatch_is_not_accepted_as_the_same_journal() {
     let (first, _) = world();
     let log = first.state::<MaterialReceiptLog>(journal().key).unwrap();
     // schema上限の違いもContentの違いです。同じWorld IDだけでは受け入れません。
-    let (mut second, layer) = setup(16, 16_384, WorldLimits::default());
-    let water = core(&second, "test:water");
-    second
-        .edit(|edit| edit.set_state(journal().key, journal().schema, &log))
-        .unwrap();
+    let (mut second, _) = setup(16, 16_384, WorldLimits::default());
     let before = second.checkpoint(4_000_000).unwrap();
     assert!(
         second
-            .edit(|edit| edit.apply_material_changes(
-                layer,
-                journal(),
-                reason(MaterialReceiptKind::Source),
-                &[change(p(1, 2), CellCore::AIR, water)]
-            ))
+            .edit(|edit| edit.set_state(journal().key, journal().schema, &log))
             .is_err()
     );
     assert_eq!(before, second.checkpoint(4_000_000).unwrap());
@@ -713,18 +695,10 @@ fn restored_amounts_must_match_the_recorded_cell_changes_before_reuse() {
     bytes[length - 16..].copy_from_slice(&10u128.to_le_bytes());
     let forged = MaterialReceiptLog::decode(&mut Decoder::new(&bytes, 32_768).unwrap()).unwrap();
     assert!(forged.validate_world(&world).is_err());
-    world
-        .edit(|edit| edit.set_state(journal().key, journal().schema, &forged))
-        .unwrap();
     let before = world.checkpoint(4_000_000).unwrap();
     assert!(
         world
-            .edit(|edit| edit.apply_material_changes(
-                layer,
-                journal(),
-                reason(MaterialReceiptKind::Source),
-                &[change(p(2, 2), CellCore::AIR, water)]
-            ))
+            .edit(|edit| edit.set_state(journal().key, journal().schema, &forged))
             .is_err()
     );
     assert_eq!(before, world.checkpoint(4_000_000).unwrap());

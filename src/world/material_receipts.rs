@@ -88,6 +88,7 @@ pub struct MaterialReceiptAmount {
 /// World編集候補へ記録する、一つのreceiptです。
 /// 外側のWorld::editが成功した場合だけ、変更とjournalがともに確定します。
 /// callback内部で得た値を持ち出しても、失敗した取引の確定証明にはなりません。
+#[derive(PartialEq, Eq)]
 pub struct MaterialReceipt {
     sequence: u64,
     tick: u64,
@@ -249,6 +250,19 @@ impl MaterialReceiptLog {
         self.capacity = capacity;
         Ok(())
     }
+    /// 汎用書戻しは容量変更だけを認め、履歴変更はcell取引の専用経路に限定します。
+    pub(super) fn validate_replacement(&self, world: &World, key: StableKey) -> EngineResult<()> {
+        self.validate_for(world, key)?;
+        if world.state.records().any(|record| record.key == key) {
+            let current = world.state::<Self>(key)?;
+            if self.receipts != current.receipts {
+                return Err(conflict("物質journalの専用取引外での履歴変更"));
+            }
+        } else if !self.receipts.is_empty() {
+            return Err(conflict("物質journalの非空状態での初期化"));
+        }
+        Ok(())
+    }
     fn validate(&self) -> EngineResult<()> {
         if self.capacity == 0 || self.receipts.len() > self.capacity as usize {
             return Err(invalid("物質receipt logの容量"));
@@ -390,7 +404,7 @@ impl WorldEdit<'_> {
             log.receipts.push(receipt.try_copy()?);
             // codecと保存容量を先に検査します。後の地形編集が失敗した場合も、
             // この候補recordだけが残らないよう外側のWorld取引へ含めます。
-            editor.set_state(journal.key, journal.schema, &log)?;
+            editor.set_material_state(journal.key, journal.schema, &log)?;
             for channel in &mut editor.world.channels {
                 channel.reset_material(layer_key, &reset)?;
             }

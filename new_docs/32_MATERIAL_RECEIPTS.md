@@ -61,3 +61,7 @@ cargo test --locked --test material_receipts
 ```
 
 対象試験は発行・消費・意図したmass差、複数cell変換、payload移行、期待値失効、block拒否、編集・保存容量のrollback、所属、codec、履歴量の不一致、区域退避・復帰での履歴保持を扱う。全体の検証と未完了項目は[evidence/E05](evidence/E05/README.md)へ記録する。
+
+## 汎用状態書戻しからの履歴保護
+
+`WorldEdit::set_state`とruntimeのencoded書込みでMaterialReceiptLogを保存する場合、初回は空履歴だけを認め、既存recordは現在のreceipt列と完全一致する容量変更だけを認める。古いsnapshotによる短縮・変更と、同じcheckpointから分岐したWorldの履歴の追記を拒否する。cell取引の専用内部経路だけがreceiptを追記するため、混合witnessの参照先を後から巻き戻せない。これは作者の汎用state全般をappend-onlyにする制限ではなく、標準の物質receipt型の契約である。完全checkpointの復元は世界全体を同時に復元する。
