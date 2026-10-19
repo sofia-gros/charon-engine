@@ -34,11 +34,11 @@ pool・payload・着地先channel・編集予算・DDA予算の不足では外�
 
 `MaterialParticleJob::new(world, candidate_limit, step_limit)`は、活動中のsimulated layerに属するresident粒子をslot順に候補化し、全resident粒子の開始位置、全active chunkのrevision、World/Content/remap epochをsnapshotする。候補数は`candidate_limit`以下でなければならず、開始時のoccupancy索引と保存状態は`WorldLimits.job_cells`/`job_bytes`以内に収める。`step(world, budget)`は最大budget件の候補を整数DDAで計画し、最大`step_limit`交差をJob全体で検査する。通過cell・角guard・開始cellの予約は後続候補へ引き継ぐ。
 
-Jobは全候補がReadyになるまでWorldを変更しない。`StateCodec`でJobをWorld StateStoreへ保存し、Runtime Systemはbarrierごとに読み戻して`ContinueSameTick`を返せる。Ready後の`publish`は全粒子の位置・停止速度・着地を一つのWorldEdit候補へ適用する。publish前に活動chunk revision、候補粒子の位置/速度、resident占有snapshotを再検査し、失効時または後段容量失敗時は部分公開しない。進捗recordを消費するSystemはpublishと`remove_state`を同じRuntime取引へ含める。
+Jobは全候補がReadyになるまでWorldを変更しない。`StateCodec`でJobをWorld StateStoreへ保存し、Runtime Systemはbarrierごとに読み戻して`ContinueSameTick`を返せる。Ready後の`publish`は全粒子の位置・停止速度・着地を一つのWorldEdit候補へ適用する。publish前に活動chunk revision、候補粒子の位置/速度、resident占有snapshotを再検査し、保存planは候補順に現Worldから整数DDAを再計算して照合する。再計算では先行候補の通過・角guard予約も順に再構築し、plan、累積step数、最終予約集合がrecordと一致しなければ公開を拒否する。codecとして形式が正しいだけのrecordで壁を越えたりoccupied cellへ飛ぶことを防ぐ。失効時または後段容量失敗時は部分公開しない。進捗recordを消費するSystemはpublishと`remove_state`を同じRuntime取引へ含める。
 
 このJobは通常の`step_material_particles`の置換候補であり、同tickに両方を実行して二重に粒子を動かさない。`MaterialParticleJob`単独ではforce積分を行わない。通常の粒子forceとcell/scalar phaseを同tickに連携する場合は`step_material_phase`系APIを使い、同じphaseの予約を共有する。保存可能な`MaterialParticleJob`をcell/scalar solverと同tickに合成し、Job経路まで予約共有する公開APIは現在ない。したがって同じtickにJobをpublishした後で別のcell solverを実行してはならない。この組合せはこのJobの契約・Q04受け入れとして実装済みとは扱わず、必要になった場合は共有予約を伴う統合APIを別途設計する。
 
-費用はJob開始時に全particle arenaとactive chunkを走査し、resident occupancyを保存する。各pollはbudget件分のDDA境界・予約検索とactive revision照合、publish時は候補とresident occupancyを再照合する。メモリは候補・plans・occupancy・経路予約に比例し、累積scratch/保存recordを`job_cells`/`job_bytes`で上限付ける。PressureJob・広域Job・複数Provider・正規粒子を含む複合Runtime profileはQ04出口計測でworker 1/2/4のtest/release test profileを比較した。一方、極小budgetでparticle job全recordを何度もStateStoreへ保存するcodec費用だけを分離した比較や、動的multi-chunk workloadは未計測である。jobの待機・容量失敗ではWorldは変わらないが、Ready時に一括publishするため一回の編集上限を超える候補は容量エラーになる。必要なら呼び出し側が対象World/活動域を分けてJobを構成する。
+費用はJob開始時に全particle arenaとactive chunkを走査し、resident occupancyを保存する。各pollはbudget件分のDDA境界・予約検索とactive revision照合、publish時は候補・resident occupancyの再照合に加えて、保存planのDDA境界を合計`checked_steps`以下で再実行する。経路・予約scratchは`job_cells`/`job_bytes`と累積`step_limit`で制限するため、不正な保存入力でも検証仕事を上限外へ広げない。今回の再検証追加に伴う専用性能比較は未実施であり、性能改善は主張しない。PressureJob・広域Job・複数Provider・正規粒子を含む複合Runtime profileはQ04出口計測でworker 1/2/4のtest/release test profileを比較した。一方、極小budgetでparticle job全recordを何度もStateStoreへ保存するcodec費用だけを分離した比較や、動的multi-chunk workloadは未計測である。jobの待機・容量失敗ではWorldは変わらないが、Ready時に一括publishするため一回の編集上限を超える候補は容量エラーになる。必要なら呼び出し側が対象World/活動域を分けてJobを構成する。
 
 ## 保存・退避・素材epoch
 
@@ -52,7 +52,7 @@ World形式は`CHWORLD2`。従来のWorld情報の後ろへ粒子容量とarena�
 
 Worldの候補作成は粒子arenaとresident payloadも複製するため、多数の変更は一つのeditへまとめる。放出・payload更新のbyte集計は生存粒子数、着地はchannel数、DDAは通過境界数に依存する。予約集合は通過点数に応じたscratchを使う。件数予算は候補複製・codec・最終validateまで一定時間に制限する保証ではない。正確なscalar経路を先に用意し、最適化はtick比較を通して行う。
 
-`tests/material_particles.rs`は全payloadと混合参照、正確な成分量、pool・byte・着地容量、無視されたエラー、全方向と負座標、端数、角・壁、予約、未準備域、寿命非消失、保存再開、区域所有の移動、退避・復帰、素材remap、旧World形式、切断codecとcapsを検査する。`cargo run --locked --example material_particles`は放出後に途中保存し、連続実行と同じcell・energy=900へ着地することを確認する。
+`tests/material_particles.rs`は全payloadと混合参照、正確な成分量、pool・byte・着地容量、無視されたエラー、全方向と負座標、端数、角・壁、予約、未準備域、寿命非消失、保存再開、保存planの壁越え改ざん拒否、区域所有の移動、退避・復帰、素材remap、旧World形式、切断codecとcapsを検査する。`cargo run --locked --example material_particles`は放出後に途中保存し、連続実行と同じcell・energy=900へ着地することを確認する。
 
 ## 全表現の収支との接続
 

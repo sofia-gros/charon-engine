@@ -1627,6 +1627,53 @@ fn saved_particle_job_rejects_stale_particle_inputs_without_partial_publish() {
 }
 
 #[test]
+fn saved_particle_job_rejects_forged_plan_that_jumps_past_a_wall() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    activate(&mut world);
+    place(&mut world, layer, p(4, 0));
+    place(&mut world, layer, p(0, 0));
+    let wall = world
+        .content()
+        .material_id(MaterialHandle(key("test:wall")))
+        .unwrap();
+    world
+        .edit(|edit| {
+            edit.set_cell(
+                layer,
+                p(3, 0),
+                CellCore {
+                    material: wall,
+                    ..CellCore::AIR
+                },
+            )?;
+            edit.emit_material_particle(layer, p(4, 0), [65536, 0])?;
+            edit.emit_material_particle(layer, p(0, 0), [5 * 65536, 0])?;
+            Ok(())
+        })
+        .unwrap();
+    let mut job = MaterialParticleJob::new(&world, 4, 16).unwrap();
+    assert_eq!(
+        job.step(&world, 2).unwrap(),
+        MaterialParticleJobStatus::Ready
+    );
+
+    let mut encoded = Encoder::new(4_000_000);
+    job.encode(&mut encoded).unwrap();
+    let mut bytes = encoded.finish();
+    // 二件目のplanだけを、壁の向こうにいる先行particleのcellへ改ざんする。
+    let plan = bytes.len() - 25;
+    bytes[plan..plan + 8].copy_from_slice(&(5i64 * 65536 + 32768).to_le_bytes());
+    bytes[plan + 16..plan + 20].copy_from_slice(&5i32.to_le_bytes());
+    let mut input = Decoder::new(&bytes, bytes.len()).unwrap();
+    let forged = MaterialParticleJob::decode(&mut input).unwrap();
+    input.finish().unwrap();
+
+    let before = save(&world);
+    assert!(world.edit(|edit| forged.publish(edit)).is_err());
+    assert_eq!(save(&world), before);
+}
+
+#[test]
 fn saved_particle_job_checks_candidate_step_and_byte_budgets() {
     let (mut world, layer) = fixture(WorldLimits::default());
     activate(&mut world);

@@ -808,7 +808,7 @@ struct MaterialParticleJobCandidate {
     velocity: [i64; 2],
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MaterialParticleJobPlan {
     position: [i64; 2],
     cell: CellPoint,
@@ -1008,7 +1008,7 @@ impl MaterialParticleJob {
             let path_limit = cells_left.min(bytes_left);
             let step_budget = self.step_limit.saturating_sub(self.checked_steps);
             let (plan, path, checked) =
-                self.plan_candidate(world, candidate, path_limit, step_budget)?;
+                self.plan_candidate(world, candidate, &self.reserved, path_limit, step_budget)?;
             let next_steps = self
                 .checked_steps
                 .checked_add(checked)
@@ -1089,6 +1089,7 @@ impl MaterialParticleJob {
             if self.status() != MaterialParticleJobStatus::Ready {
                 return Err(conflict("粒子Jobが未完成"));
             }
+            self.validate_plans_against_world(edit.world)?;
             for (candidate, plan) in self.candidates.iter().zip(&self.plans) {
                 if plan.position != candidate.position
                     || (plan.stopped && candidate.velocity != [0, 0])
@@ -1118,6 +1119,7 @@ impl MaterialParticleJob {
         &self,
         world: &World,
         candidate: MaterialParticleJobCandidate,
+        reserved: &std::collections::BTreeSet<(u32, i32, i32)>,
         path_limit: usize,
         step_budget: usize,
     ) -> EngineResult<(MaterialParticleJobPlan, Vec<CellPoint>, usize)> {
@@ -1145,9 +1147,7 @@ impl MaterialParticleJob {
             velocity[0].unsigned_abs() as u128,
             velocity[1].unsigned_abs() as u128,
         ];
-        let mut waiting = self
-            .reserved
-            .contains(&(candidate.layer.0, source.x, source.y));
+        let mut waiting = reserved.contains(&(candidate.layer.0, source.x, source.y));
         let mut stopped = velocity == [0, 0] && !waiting;
         let mut checked = 0usize;
         let mut path = Vec::new();
@@ -1208,9 +1208,7 @@ impl MaterialParticleJob {
                     .occupied
                     .binary_search(&(candidate.layer.0, point.x, point.y))
                     .is_ok()
-                    || self
-                        .reserved
-                        .contains(&(candidate.layer.0, point.x, point.y))
+                    || reserved.contains(&(candidate.layer.0, point.x, point.y))
                 {
                     waiting = true;
                     break;
@@ -1372,6 +1370,57 @@ impl MaterialParticleJob {
         occupied.sort_unstable();
         if occupied != self.occupied {
             return Err(conflict("粒子Jobの占有snapshotが失効"));
+        }
+        Ok(())
+    }
+
+    /// 保存planが現Worldに対する候補順・DDA・予約結果と一致することを公開直前に再計算します。
+    fn validate_plans_against_world(&self, world: &World) -> EngineResult<()> {
+        let stored_reserved_bytes = self
+            .reserved
+            .len()
+            .checked_mul(64)
+            .ok_or_else(|| invalid("粒子Job予約byte数overflow"))?;
+        let fixed_bytes = self
+            .estimated_bytes()?
+            .checked_sub(stored_reserved_bytes)
+            .ok_or_else(|| invalid("粒子Job固定byte数不整合"))?;
+        let mut reserved = std::collections::BTreeSet::new();
+        let mut checked_steps = 0usize;
+        for (candidate, saved_plan) in self.candidates.iter().zip(&self.plans) {
+            let base_cells = self
+                .candidates
+                .len()
+                .checked_add(self.chunks.len())
+                .and_then(|count| count.checked_add(reserved.len()))
+                .ok_or_else(|| invalid("粒子Job再検査cell数overflow"))?;
+            let cells_left = world.limits.job_cells.saturating_sub(base_cells);
+            let current_reserved_bytes = reserved
+                .len()
+                .checked_mul(64)
+                .ok_or_else(|| invalid("粒子Job再検査byte数overflow"))?;
+            let bytes_used = fixed_bytes
+                .checked_add(current_reserved_bytes)
+                .ok_or_else(|| invalid("粒子Job再検査byte数overflow"))?;
+            let bytes_left = world.limits.job_bytes.saturating_sub(bytes_used) / 64;
+            let path_limit = cells_left.min(bytes_left);
+            let step_budget = self.step_limit.saturating_sub(checked_steps);
+            let (plan, path, checked) =
+                self.plan_candidate(world, *candidate, &reserved, path_limit, step_budget)?;
+            if plan != *saved_plan {
+                return Err(conflict("粒子Jobの保存計画がDDA再計算結果と不一致"));
+            }
+            checked_steps = checked_steps
+                .checked_add(checked)
+                .ok_or_else(|| invalid("粒子Job再検査DDA件数overflow"))?;
+            for point in path {
+                reserved.insert((candidate.layer.0, point.x, point.y));
+            }
+        }
+        if checked_steps != self.checked_steps || reserved != self.reserved {
+            return Err(conflict(
+                "粒子Jobの保存進捗・経路予約がDDA再計算結果と不一致",
+            ));
         }
         Ok(())
     }
