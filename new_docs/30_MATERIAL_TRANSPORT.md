@@ -73,4 +73,4 @@ world.edit(|edit| edit.publish_pressure_push(&search))?;
 
 ## E05の残作業
 
-速度・残差とsweep、混合の登録・分離と取引、物質粒子の正規所有権とpool、source/sink/変換receiptを含む収支、気体source、広域圧力更新、dirty/sleepの参照比較、providerの統合・作例とQ04全体を完了してから工程を通過させる。
+[31](31_MATERIAL_MOTION.md)の整数格子の速度・端数・経路検査を物性とproviderへ統合し、広域移動の継続Jobを実装する。混合の登録・分離と取引、物質粒子の正規所有権とpool、source/sink/変換receiptを含む収支、気体source、広域圧力更新、dirty/sleepの参照比較、providerの統合・作例とQ04全体を完了してから工程を通過させる。

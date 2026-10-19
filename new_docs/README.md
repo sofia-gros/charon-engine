@@ -44,6 +44,7 @@ Cargoはビルドへ含める実装と依存を選び、YAMLはエンジンの�
 | [28_ASSET_AND_BASIC_RENDERING.md](28_ASSET_AND_BASIC_RENDERING.md) | 実装したE03の資産、pack、scope、差し替え、sprite、camera、描画adapter |
 | [29_WORLD_AND_PERSISTENCE.md](29_WORLD_AND_PERSISTENCE.md) | 実装したE04の世界・生成・活動域・独自状態・退避・保存API |
 | [30_MATERIAL_TRANSPORT.md](30_MATERIAL_TRANSPORT.md) | 実装中のE05：物質状態の輸送、局所移動、圧力と押出し探索 |
+| [31_MATERIAL_MOTION.md](31_MATERIAL_MOTION.md) | 実装中のE05：速度・端数の保存と整数格子の複数cell経路検査 |
 | [27_FULL_CLONE_DESIGN_REVIEW.md](27_FULL_CLONE_DESIGN_REVIEW.md) | 完全クローン基準のレビュー、18件の不足と修正、設計判断の根拠 |
 
 ## この文書群の位置付け

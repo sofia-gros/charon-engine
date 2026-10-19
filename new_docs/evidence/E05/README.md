@@ -84,3 +84,32 @@ E05全体・Q04の未完了と残作業は変わらない。追加commit・push�
 - Linux / Rust 1.98.1で全252テスト成功（lib/host 107、assets 24、foundation 19、material_transport 24、runtime 28、world 50）。失敗・無視なし。fmt、全target check、警告拒否Clippy・Rustdocも成功した。公開APIと保存形式の変更なし。
 
 E05全体・Q04は未完了。輸送・圧力の外部レビュー対応後に残るE05の実装へ進む。
+
+## 輸送・圧力のレビュー完了と次の単位
+
+[PR #4](https://github.com/sofia-gros/charon-engine/pull/4)の最終commitは`f4c2b550f939d26a9f1c8eb4647037c5e4e8d56d`。CI20件すべて成功し、2026-10-16の再レビューは新規・未解決指摘なしで完了した。PRはマージしていない。
+
+次の単位を同commitから`codex/e05-motion-and-sweep`へ分け、PR #4を基点とする差分として実装する。
+
+### 速度・端数と整数格子の経路検査
+
+- `MaterialMotion`を物質channelへ登録し、符号付きQ16速度と未消化の端数を輸送・保存する。
+- `transport_material_motion`が整数変位の途中をDDAで検査し、通過点と角の直交検査点を予約する。壁・World境界、未準備域、予約競合を区別する。
+- 逆順の一括経路輸送で全物質channelを追従させる。力・時計の暗黙更新、一般形状の衝突、密度交換は実行しない。
+- [31の契約](../../31_MATERIAL_MOTION.md)、root README、実行可能な`examples/material_motion.rs`、3 OSのE05 CIを更新した。
+
+ローカルレビューでは、静止cellを通過予約にせず物理障害と区別すること、非活動域の占有情報から物理応答を決めないこと、連続する交換を逆順の一括経路輸送へまとめて最終容量を検査することを修正した。
+
+### 検証
+
+Linuxクラウド環境、Rust 1.98.1、`CARGO_BUILD_JOBS=2`。リポジトリ直下で以下を実行した。
+
+- `cargo +1.98.1 test --locked`：全264テスト成功。lib/host 107、assets 24、foundation 19、material_motion 12、material_transport 24、runtime 28、world 50。失敗・無視なし。doc-testは0件。
+- `cargo +1.98.1 fmt --all -- --check`、`cargo +1.98.1 check --all-targets --locked`、`cargo +1.98.1 clippy --all-targets --locked -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo +1.98.1 doc --locked --no-deps`：成功。
+- `cargo +1.98.1 run --locked --example material_motion`：20tick・7cell・衝突1回。壁の直前での停止と速度・端数を含む保存復元をassertで確認した。
+
+12件の対象試験は正負の端数と保存再開、壁・角、全八分象限、経路交差と予約、全物質payloadと位置固定場、未読込・非活動域、有限World境界、誤ったchannel、極端な速度、容量不足の全体rollback、codec切断・不正端数を検査する。
+
+### 残作業
+
+本単位は明示速度の整数格子経路であり、一般shape sweep、重力・抗力・浮力・摩擦の物性接続、広域移動の保存可能Job、providerの統合・認定を実装済みとしない。混合・分離、正規物質粒子とpool、source/sink/変換receiptと収支、気体sourceと広域圧力、dirty/sleepの参照比較も残る。E05全体・Q04は未通過で、次の依存工程へ進まない。

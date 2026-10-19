@@ -39,49 +39,8 @@ impl WorldEdit<'_> {
         candidate_limit: usize,
     ) -> EngineResult<MaterialTransportReport> {
         self.run(|editor| {
-            if !editor.world.content.layer(layer)?.simulated {
-                return Err(invalid("物質輸送の対象layerはsimulatedでなければならない"));
-            }
-            let mut points = Vec::new();
-            for (coord, chunk) in &editor.world.chunks {
-                if !chunk.active {
-                    continue;
-                }
-                let page = &chunk.layers[layer.0 as usize];
-                let origin = coord.origin()?;
-                for (index, core) in page.cells.iter().enumerate() {
-                    if core.material == MaterialId::AIR
-                        || page
-                            .blocks
-                            .as_ref()
-                            .is_some_and(|blocks| blocks[index].is_some())
-                    {
-                        continue;
-                    }
-                    if points.len() >= candidate_limit {
-                        return Err(EngineError::capacity(
-                            "物質輸送の候補数",
-                            points.len() as u64 + 1,
-                            candidate_limit as u64,
-                        ));
-                    }
-                    points.try_reserve(1).map_err(allocation)?;
-                    points.push(CellPoint {
-                        x: origin.x + (index % 64) as i32,
-                        y: origin.y + (index / 64) as i32,
-                    });
-                }
-            }
-            let left_first = editor.world.tick() % 2 == 0;
-            points.sort_unstable_by(|a, b| {
-                b.y.cmp(&a.y).then_with(|| {
-                    if left_first {
-                        a.x.cmp(&b.x)
-                    } else {
-                        b.x.cmp(&a.x)
-                    }
-                })
-            });
+            let points = editor.material_candidates(layer, candidate_limit)?;
+            let left_first = editor.world.tick().is_multiple_of(2);
             let mut report = MaterialTransportReport {
                 candidates: points.len(),
                 exchanges: 0,
@@ -154,6 +113,56 @@ impl WorldEdit<'_> {
             }
             Ok(report)
         })
+    }
+    pub(super) fn material_candidates(
+        &self,
+        layer: LayerId,
+        candidate_limit: usize,
+    ) -> EngineResult<Vec<CellPoint>> {
+        if !self.world.content.layer(layer)?.simulated {
+            return Err(invalid("物質輸送の対象layerはsimulatedでなければならない"));
+        }
+        let mut points = Vec::new();
+        for (coord, chunk) in &self.world.chunks {
+            if !chunk.active {
+                continue;
+            }
+            let page = &chunk.layers[layer.0 as usize];
+            let origin = coord.origin()?;
+            for (index, core) in page.cells.iter().enumerate() {
+                if core.material == MaterialId::AIR
+                    || page
+                        .blocks
+                        .as_ref()
+                        .is_some_and(|blocks| blocks[index].is_some())
+                {
+                    continue;
+                }
+                if points.len() >= candidate_limit {
+                    return Err(EngineError::capacity(
+                        "物質輸送の候補数",
+                        points.len() as u64 + 1,
+                        candidate_limit as u64,
+                    ));
+                }
+                points.try_reserve(1).map_err(allocation)?;
+                points.push(CellPoint {
+                    x: origin.x + (index % 64) as i32,
+                    y: origin.y + (index / 64) as i32,
+                });
+            }
+        }
+        let left_first = self.world.tick().is_multiple_of(2);
+        points.sort_unstable_by(|a, b| {
+            b.y.cmp(&a.y).then_with(|| {
+                if left_first {
+                    a.x.cmp(&b.x)
+                } else {
+                    b.x.cmp(&a.x)
+                }
+            })
+        });
+        Ok(points)
     }
     fn active_transport_cell(&self, layer: LayerId, point: CellPoint) -> EngineResult<bool> {
         if !self

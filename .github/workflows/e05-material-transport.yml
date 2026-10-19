@@ -31,5 +31,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev
       - name: 固定toolchainを用意
         run: rustup toolchain install 1.98.1 --profile minimal
-      - name: 輸送・圧力・探索再開の公開APIを検証
-        run: cargo test --locked --test material_transport
+      - name: 輸送・速度・圧力・探索再開の公開APIを検証
+        run: cargo test --locked --test material_transport --test material_motion
+      - name: 速度と端数の保存作例を実行
+        run: cargo run --locked --example material_motion
