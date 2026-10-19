@@ -104,7 +104,9 @@ struct Slot<T> {
     value: Option<T>,
 }
 
-/// 容量を先に確保するarenaです。追加と削除時に配列を再確保しません。
+/// 最大slot数を論理上限として持つarenaです。新規作成時は容量を予約します。
+/// 独立候補へ複製する場合は使用中slotだけを複製し、候補の追加・削除で必要になった
+/// 容量をfallibleに確保します。これにより大きな上限を持つWorld編集の複製費用を抑えます。
 pub struct Arena<T, K> {
     slots: Vec<Slot<T>>,
     free: Vec<u32>,
@@ -135,7 +137,7 @@ impl<T, K> Arena<T, K> {
         })
     }
 
-    /// 値を追加します。失敗時にallocatorを消費しません。
+    /// 値を追加します。容量超過・確保失敗ではarenaの論理状態を変更しません。
     pub fn insert(&mut self, value: T) -> EngineResult<Id<K>> {
         let index = if let Some(index) = self.free.pop() {
             self.slots[index as usize].value = Some(value);
@@ -148,6 +150,7 @@ impl<T, K> Arena<T, K> {
                     u64::from(self.capacity),
                 ));
             }
+            self.slots.try_reserve(1).map_err(allocation)?;
             let index = self.slots.len() as u32;
             self.slots.push(Slot {
                 generation: 1,
@@ -182,8 +185,20 @@ impl<T, K> Arena<T, K> {
             .ok_or_else(stale)
     }
 
-    /// 所有値を取り出して世代を進めます。古いIDでは状態を変更しません。
+    /// 所有値を取り出して世代を進めます。古いIDや確保失敗では状態を変更しません。
     pub fn remove(&mut self, id: Id<K>) -> EngineResult<T> {
+        let existing = self
+            .slots
+            .get(id.index as usize)
+            .filter(|slot| slot.generation == id.generation)
+            .ok_or_else(stale)?;
+        if existing.value.is_none() {
+            return Err(stale());
+        }
+        let next_generation = existing.generation.checked_add(1);
+        if next_generation.is_some() {
+            self.free.try_reserve(1).map_err(allocation)?;
+        }
         let slot = self
             .slots
             .get_mut(id.index as usize)
@@ -191,7 +206,7 @@ impl<T, K> Arena<T, K> {
             .ok_or_else(stale)?;
         let value = slot.value.take().ok_or_else(stale)?;
         self.live -= 1;
-        if let Some(next) = slot.generation.checked_add(1) {
+        if let Some(next) = next_generation {
             slot.generation = next;
             self.free.push(id.index);
         } else {
@@ -339,7 +354,21 @@ fn stale() -> EngineError {
 
 impl<T: super::transaction::CandidateState, K> super::transaction::CandidateState for Arena<T, K> {
     fn try_copy(&self) -> EngineResult<Self> {
-        let mut copy = Self::new(self.capacity)?;
+        // World候補では最大slot数でなく、現在保持するslotとfree-listだけを複製します。
+        // 論理capacityは維持し、候補内のinsert/removeは必要量を先にfallible reserveします。
+        let mut copy = Self {
+            slots: Vec::new(),
+            free: Vec::new(),
+            capacity: self.capacity,
+            live: self.live,
+            kind: PhantomData,
+        };
+        copy.slots
+            .try_reserve_exact(self.slots.len())
+            .map_err(allocation)?;
+        copy.free
+            .try_reserve_exact(self.free.len())
+            .map_err(allocation)?;
         for slot in &self.slots {
             let value = slot
                 .value
@@ -353,7 +382,6 @@ impl<T: super::transaction::CandidateState, K> super::transaction::CandidateStat
             });
         }
         copy.free.extend_from_slice(&self.free);
-        copy.live = self.live;
         Ok(copy)
     }
     fn validate(&self) -> EngineResult<()> {

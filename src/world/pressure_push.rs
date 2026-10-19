@@ -64,6 +64,19 @@ pub struct PressurePushSearch {
     validated_nodes: usize,
 }
 impl PressurePushSearch {
+    pub(super) fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub(super) fn node_capacity(&self) -> usize {
+        self.config.nodes as usize
+    }
+
+    pub(super) fn batch_order_key(&self) -> (StableKey, i32, i32) {
+        let source = self.nodes[0].0;
+        (self.layer, source.y, source.x)
+    }
+
     /// 活動中の液体または気体cellから探索を始めます。開始だけでは輸送しません。
     pub fn new(
         world: &World,
@@ -334,29 +347,44 @@ impl PressurePushSearch {
         }
         Ok(())
     }
+
+    pub(super) fn prepared_publish_path(
+        &self,
+        world: &World,
+    ) -> EngineResult<(StableKey, Vec<CellPoint>)> {
+        self.validate_inputs(world)?;
+        if self.status() != PressurePushStatus::Ready {
+            return Err(conflict("圧力押出し探索が公開可能状態ではない"));
+        }
+        let mut index = self.goal.ok_or_else(|| invalid("圧力探索の経路が未完成"))? as usize;
+        let mut path_len = 1usize;
+        let mut cursor = index;
+        while cursor != 0 {
+            cursor = self.nodes[cursor].1 as usize;
+            path_len = path_len
+                .checked_add(1)
+                .ok_or_else(|| invalid("圧力探索の経路長overflow"))?;
+        }
+        let mut path = Vec::new();
+        path.try_reserve_exact(path_len).map_err(allocation)?;
+        loop {
+            path.push(self.nodes[index].0);
+            if index == 0 {
+                break;
+            }
+            index = self.nodes[index].1 as usize;
+        }
+        path.reverse();
+        Ok((self.layer, path))
+    }
 }
 impl WorldEdit<'_> {
     /// 完成した押出し経路だけを公開します。未完成・失効・容量不足では一切輸送しません。
     /// 公開後はchunk revisionが変わるので、同じ探索を二度公開することも拒否されます。
     pub fn publish_pressure_push(&mut self, search: &PressurePushSearch) -> EngineResult<()> {
         self.run(|editor| {
-            search.validate_inputs(editor.world)?;
-            let mut index = search
-                .goal
-                .ok_or_else(|| invalid("圧力探索の経路が未完成"))?
-                as usize;
-            let mut path = Vec::new();
-            path.try_reserve_exact(search.nodes.len())
-                .map_err(allocation)?;
-            loop {
-                path.push(search.nodes[index].0);
-                if index == 0 {
-                    break;
-                }
-                index = search.nodes[index].1 as usize;
-            }
-            path.reverse();
-            editor.transport_path(editor.world.content.layer_id(search.layer)?, &path)
+            let (layer, path) = search.prepared_publish_path(editor.world)?;
+            editor.transport_path(editor.world.content.layer_id(layer)?, &path)
         })
     }
 }

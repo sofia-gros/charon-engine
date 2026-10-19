@@ -48,6 +48,35 @@ pub struct MaterialForceInput<'a> {
     pub neighbor: Option<MaterialForceNeighbor>,
 }
 
+/// 作者Providerが候補ごとに参照する空間入力の矩形境界です。
+///
+/// `integrate`から読むWorldのcell/channelに加え、入力の隣接素材など結果へ影響する
+/// 全ての空間依存を候補cellの周囲へ対称に広げる半径として宣言します。実際の読み取りが
+/// 矩形の一部だけでも全体を監視する保守的な境界です。上限は各軸64 cellで、
+/// それを超える広域依存はsleepへ登録せず参照経路を使います。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaterialForceDependencyStencil {
+    radius_x: u8,
+    radius_y: u8,
+}
+impl MaterialForceDependencyStencil {
+    /// 依存矩形の半径を構築します。各軸は0〜64 cellです。
+    pub fn new(radius_x: u8, radius_y: u8) -> EngineResult<Self> {
+        if radius_x > 64 || radius_y > 64 {
+            return Err(invalid("力学Providerのsleep依存半径"));
+        }
+        Ok(Self { radius_x, radius_y })
+    }
+    /// 水平方向の依存半径。
+    pub fn radius_x(self) -> u8 {
+        self.radius_x
+    }
+    /// 垂直方向の依存半径。
+    pub fn radius_y(self) -> u8 {
+        self.radius_y
+    }
+}
+
 /// 書換え可能な力学処理。キー・versionを作者のsim設定とともに保存してください。
 ///
 /// callbackはWorldの参照だけを受け取り、結果を返します。追加の作者状態は
@@ -59,6 +88,38 @@ pub trait MaterialForceProvider: Send + Sync {
     fn version(&self) -> u32;
     /// 一候補のQ16速度と端数の更新。別のcellを書き換えません。
     fn integrate(&self, input: MaterialForceInput<'_>) -> EngineResult<MaterialMotion>;
+    /// 独自sleepへ参加する場合のcell依存境界。既定は常に参照実行です。
+    fn sleep_stencil(&self) -> Option<MaterialForceDependencyStencil> {
+        None
+    }
+    /// 保存済み作者状態・tick・外部入力を含め、全候補が次回も静止する条件です。
+    ///
+    /// `true`は「現在のactive候補のintegrateが速度・端数を変えず、宣言stencil内の
+    /// cellまたは作者状態の変更がない間、その結果が続く」というProviderの保証です。
+    /// この関数はsleep中も毎tick一度呼ばれます。未実装・未証明なら`false`を返します。
+    fn sleep_invariant(
+        &self,
+        _world: &World,
+        _layer: LayerId,
+        _force: MaterialForceConfig,
+        _motion: MaterialMotionConfig,
+    ) -> EngineResult<bool> {
+        Ok(false)
+    }
+
+    /// 正規粒子の静止sleepへ参加するProviderのtick不変条件です。
+    ///
+    /// `true`は、現在の対象粒子が静止しているとき次回も速度を0のまま保つことを
+    /// 保証します。chunk編集は標準trackerが全てwakeし、World状態や外部入力への
+    /// 依存はProvider自身がこの判定に含めます。既定は参照実行です。
+    fn particle_sleep_invariant(
+        &self,
+        _world: &World,
+        _layer: LayerId,
+        _force: MaterialParticleForceConfig,
+    ) -> EngineResult<bool> {
+        Ok(false)
+    }
 }
 
 /// 標準Q16参照式。独自providerに置き換えれば標準式は適用されません。
@@ -109,6 +170,17 @@ impl MaterialForceProvider for StandardMaterialForces {
         }
         updated.validate()?;
         Ok(updated)
+    }
+
+    fn particle_sleep_invariant(
+        &self,
+        _world: &World,
+        _layer: LayerId,
+        force: MaterialParticleForceConfig,
+    ) -> EngineResult<bool> {
+        // 静止粒子の集合と速度は証明作成時だけ走査し、sleep中のtickごとに
+        // 全粒子を走査しません。粒子状態の編集は所属chunkのrevisionでwakeします。
+        Ok(force.gravity_q16 == [0, 0])
     }
 }
 
@@ -188,6 +260,31 @@ impl WorldEdit<'_> {
         config: MaterialForceConfig,
         provider: &dyn MaterialForceProvider,
     ) -> EngineResult<MaterialForceReport> {
+        self.integrate_material_forces_with_reservations(layer, config, provider, None)
+    }
+
+    pub(super) fn integrate_material_forces_reserved(
+        &mut self,
+        layer: LayerId,
+        config: MaterialForceConfig,
+        provider: &dyn MaterialForceProvider,
+        reservations: &super::transport::CellReservations,
+    ) -> EngineResult<MaterialForceReport> {
+        self.integrate_material_forces_with_reservations(
+            layer,
+            config,
+            provider,
+            Some(reservations),
+        )
+    }
+
+    fn integrate_material_forces_with_reservations(
+        &mut self,
+        layer: LayerId,
+        config: MaterialForceConfig,
+        provider: &dyn MaterialForceProvider,
+        reservations: Option<&super::transport::CellReservations>,
+    ) -> EngineResult<MaterialForceReport> {
         self.run(|editor| {
             if provider.version() == 0 || config.max_velocity_q16 <= 0 {
                 return Err(invalid("物性provider版・速度上限"));
@@ -205,10 +302,7 @@ impl WorldEdit<'_> {
                 .channel_layout::<MaterialMotion>(config.channel)?
                 .origin;
             let points = editor.material_candidates(layer, config.candidate_limit)?;
-            let mut report = MaterialForceReport {
-                candidates: points.len(),
-                ..Default::default()
-            };
+            let mut report = MaterialForceReport::default();
             // 全候補のprovider評価を同一の読取りスナップショットで終えてから
             // 更新を公開します。候補順による隣接速度の参照ぶれを防ぎます。
             let mut updates = Vec::new();
@@ -216,6 +310,10 @@ impl WorldEdit<'_> {
                 .try_reserve_exact(points.len())
                 .map_err(allocation)?;
             for point in points {
+                if reservations.is_some_and(|reserved| reserved.contains(point)) {
+                    continue;
+                }
+                report.candidates += 1;
                 let cell = match editor.world.cell(layer, point)? {
                     CellQuery::Loaded(value) => value,
                     _ => return Err(invalid("物性候補のcoverage")),
@@ -538,6 +636,27 @@ impl WorldEdit<'_> {
                 layer,
                 config.candidate_limit,
                 dda_step_limit,
+            )?;
+            Ok(MaterialParticleForceStepReport { force, particles })
+        })
+    }
+
+    pub(super) fn step_material_particle_forces_in_layer_reserved(
+        &mut self,
+        layer: LayerId,
+        config: MaterialParticleForceConfig,
+        provider: &dyn MaterialForceProvider,
+        dda_step_limit: usize,
+        reserved_cells: &super::transport::CellReservations,
+    ) -> EngineResult<MaterialParticleForceStepReport> {
+        self.run(|editor| {
+            let force =
+                editor.integrate_material_particle_forces_in_layer(layer, config, provider)?;
+            let particles = editor.step_material_particles_in_layer_reserved(
+                layer,
+                config.candidate_limit,
+                dda_step_limit,
+                reserved_cells,
             )?;
             Ok(MaterialParticleForceStepReport { force, particles })
         })

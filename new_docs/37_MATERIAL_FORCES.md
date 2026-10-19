@@ -15,7 +15,13 @@
 
 この基準式はゲーム用のcell接触物性であり、SI物理や任意形状CCDを保証しない。標準以外の接触、複合流体や連成を作者が実装する場合は `MaterialForceProvider` を渡して標準式を**完全置換**する。providerは不変のWorldから保存済み作者状態を参照できるが、callbackに非保存の時間状態を持たせない。利用するProviderのkey/versionと重力などのProfileは作者の実行設定・保存契約へ含める。標準providerの定義を独自providerへ強制しない。
 
-`WorldEdit::step_material_force_motion` は力積分と既存 `transport_material_motion` のDDA・予約・全物質channel追従を単一World候補で行う。失敗時は力だけ先に適用済みになることがなく、1tickに二重積分を発生させない。正規粒子向けの力積分・広域保存可能Job・dirty/sleep・Runtimeの自動Scheduleは**別途E05残作業**であり、この実装単位でQ04を合格にしない。
+`WorldEdit::step_material_force_motion` は力積分と既存 `transport_material_motion` のDDA・予約・全物質channel追従を単一World候補で行う。失敗時は力だけ先に適用済みになることがなく、1tickに二重積分を発生させない。正規粒子の力積分とcell/particle共通の標準phase予約は実装済み。Runtimeの自動schedule、保存可能な粒子Job、複数Provider・別表現を含むdirty/sleep連携は**別途E05残作業**であり、この実装単位でQ04を合格にしない。
+
+### 作者Providerのsleep参加
+
+`MaterialForceDependencyStencil`は候補cellの周囲にある空間依存を、各軸最大64 cellの矩形半径で宣言する。`integrate`が直接読むWorldのcell/channelだけでなく、`MaterialForceInput::neighbor`など結果へ影響する全ての空間入力を含める。Providerが読むWorld作者状態、tick、その他の非空間入力は`MaterialForceProvider::sleep_invariant`で毎sleep tick検査する。契約を宣言しない既定Providerは通常の参照経路を使う。
+
+`World::step_material_force_motion_sleeping_with_provider`は一度参照実行して全active候補が静止していることを検査し、provider key/version、profile、Content/epoch、World枝、active chunk revision、依存chunk集合を派生証明へ記録する。sleep中は不変条件と直近のchunk変更を確認し、依存範囲内の変更、active集合変更、枝・設定の不一致で通常経路へ戻る。trackerのcodec復元後は証明を信用せず、必ず参照実行で再構築する。証明作成の走査・scratchは候補数とactive chunk数に比例し、sleep時はProviderの不変条件callbackと変更chunk数を確認する。4,096静止候補の合成比較では参照実行とsleepの時間・割当を測定したが、動的材料、複数active chunk、Materials Runtime統合のprofile性能はQ04/E05の出口検証に残る。
 
 ## 正規粒子の力積分
 

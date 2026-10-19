@@ -41,6 +41,9 @@ fn content(mode: BreakMode, shape: BlockShape) -> Arc<Content> {
                 .shape(shape),
         )
         .unwrap();
+    registry
+        .register(MaterialBuilder::new("game:sand", MaterialBase::Powder).unwrap())
+        .unwrap();
     registry.freeze().unwrap()
 }
 fn world(content: Arc<Content>) -> World {
@@ -557,10 +560,10 @@ fn generated_chunks_wait_for_explicit_publication_and_ignore_worker_completion_o
     let content = content(BreakMode::Cell, BlockShape::Full);
     let front = content.layer_id(key("game:front")).unwrap();
     let pipeline = pipeline();
-    let make = |reverse: bool| {
+    let make = |worker_count: usize, reverse: bool| {
         let mut world = world(Arc::clone(&content));
         let mut requests = Vec::new();
-        for x in -1..=0 {
+        for x in -2..=1 {
             requests.push(
                 world
                     .edit(|edit| {
@@ -578,15 +581,31 @@ fn generated_chunks_wait_for_explicit_publication_and_ignore_worker_completion_o
             .iter()
             .map(|request| world.edit(|edit| edit.begin_generation(*request)).unwrap())
             .collect::<Vec<_>>();
-        let mut results = tasks
-            .into_iter()
-            .map(|task| {
+        assert!(worker_count > 0);
+        let mut pending = std::collections::VecDeque::from(tasks);
+        let mut results = Vec::new();
+        while !pending.is_empty() {
+            let batch_count = worker_count.min(pending.len());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let start = Arc::new(std::sync::Barrier::new(batch_count + 1));
+            let mut workers = Vec::new();
+            for _ in 0..batch_count {
+                let task = pending.pop_front().unwrap();
                 let pipeline = Arc::clone(&pipeline);
-                std::thread::spawn(move || task.run(&pipeline))
-                    .join()
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
+                let sender = sender.clone();
+                let start = Arc::clone(&start);
+                workers.push(std::thread::spawn(move || {
+                    start.wait();
+                    sender.send(task.run(&pipeline)).unwrap();
+                }));
+            }
+            drop(sender);
+            start.wait();
+            results.extend(receiver);
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        }
         if reverse {
             results.reverse();
         }
@@ -602,18 +621,66 @@ fn generated_chunks_wait_for_explicit_publication_and_ignore_worker_completion_o
         world.validate().unwrap();
         world
     };
-    let a = make(false);
-    let b = make(true);
-    for x in -64..64 {
-        for y in 0..64 {
-            assert_eq!(
-                loaded(&a, front, point(x, y)).core,
-                loaded(&b, front, point(x, y)).core
-            );
+    let mut worlds = vec![
+        make(1, false),
+        make(2, false),
+        make(4, false),
+        make(4, true),
+    ];
+    let baseline = worlds[0].checkpoint(8_000_000).unwrap();
+    for candidate in &worlds[1..] {
+        assert_eq!(baseline, candidate.checkpoint(8_000_000).unwrap());
+    }
+    assert_eq!(worlds[0].resident_chunks(), 4);
+    assert_eq!(worlds[0].tick(), 1);
+
+    let seed_transport = |world: &mut World| {
+        world
+            .edit(|edit| {
+                edit.acquire_lease(RegionLease {
+                    source: key("game:material-transport"),
+                    region: ChunkRegion::new(ChunkCoord::new(-2, 0)?, 2, 1)?,
+                    mode: LeaseMode::Simulate,
+                    expires: None,
+                })?;
+                edit.set_cell(
+                    front,
+                    point(8, 1),
+                    CellCore {
+                        material: content.material_id(MaterialHandle(key("game:sand")))?,
+                        ..CellCore::AIR
+                    },
+                )?;
+                edit.set_cell(front, point(8, 2), CellCore::AIR)
+            })
+            .unwrap();
+    };
+    for world in &mut worlds {
+        seed_transport(world);
+    }
+    for _ in 0..4 {
+        let run_transport = |world: &mut World| {
+            world
+                .edit(|edit| {
+                    let report = edit.transport_materials(front, 32768)?;
+                    edit.advance_tick()?;
+                    Ok(report)
+                })
+                .unwrap()
+        };
+        let reports = worlds.iter_mut().map(run_transport).collect::<Vec<_>>();
+        assert!(reports.windows(2).all(|pair| pair[0] == pair[1]));
+        let checkpoint = worlds[0].checkpoint(8_000_000).unwrap();
+        for candidate in &worlds[1..] {
+            assert_eq!(checkpoint, candidate.checkpoint(8_000_000).unwrap());
         }
     }
-    assert_eq!(a.resident_chunks(), 2);
-    assert_eq!(a.tick(), 1);
+    assert_eq!(
+        loaded(&worlds[0], front, point(8, 2)).core.material,
+        content
+            .material_id(MaterialHandle(key("game:sand")))
+            .unwrap()
+    );
 }
 
 #[test]

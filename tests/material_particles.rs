@@ -147,6 +147,16 @@ fn restore(world: &World) -> World {
     .unwrap()
 }
 
+fn particle_job_roundtrip(job: &MaterialParticleJob) -> MaterialParticleJob {
+    let mut out = Encoder::new(4_000_000);
+    job.encode(&mut out).unwrap();
+    let bytes = out.finish();
+    let mut input = Decoder::new(&bytes, bytes.len()).unwrap();
+    let restored = MaterialParticleJob::decode(&mut input).unwrap();
+    input.finish().unwrap();
+    restored
+}
+
 #[test]
 fn all_payload_moves_cell_particle_landing_and_stale_handle_is_rejected() {
     let (mut world, layer) = fixture(WorldLimits::default());
@@ -1465,5 +1475,219 @@ fn fast_particles_stop_before_other_particle_sources_in_all_octants() {
         assert_eq!(world.material_particles().count(), 0);
         assert_eq!(value(&world, "test:energy", stopped), 345);
         assert_eq!(value(&world, "test:energy", obstacle), 345);
+    }
+}
+
+#[test]
+fn saved_particle_job_resumes_by_candidate_count_and_matches_reference_atomically() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    activate(&mut world);
+    place(&mut world, layer, p(0, 0));
+    place(&mut world, layer, p(1, 0));
+    let wall = CellCore {
+        material: world
+            .content()
+            .material_id(MaterialHandle(key("test:wall")))
+            .unwrap(),
+        flags: 0,
+        variation: 0,
+    };
+    world
+        .edit(|edit| edit.set_cell(layer, p(3, 0), wall))
+        .unwrap();
+    world
+        .edit(|edit| {
+            edit.emit_material_particle(layer, p(0, 0), [65536, 0])?;
+            edit.emit_material_particle(layer, p(1, 0), [2 * 65536, 0])?;
+            Ok(())
+        })
+        .unwrap();
+    let mut reference = restore(&world);
+    let before = save(&world);
+    let mut job = MaterialParticleJob::new(&world, 8, 16).unwrap();
+    assert_eq!(job.status(), MaterialParticleJobStatus::Computing);
+    assert_eq!(
+        job.step(&world, 1).unwrap(),
+        MaterialParticleJobStatus::Computing
+    );
+    assert_eq!(save(&world), before, "Jobの検査中はWorldを書き換えない");
+
+    job = particle_job_roundtrip(&job);
+    assert_eq!(job.report().processed, 1);
+    assert_eq!(
+        job.step(&world, 1).unwrap(),
+        MaterialParticleJobStatus::Ready
+    );
+    let job_report = world.edit(|edit| job.publish(edit)).unwrap();
+    let reference_report = reference
+        .edit(|edit| edit.step_material_particles(8, 16))
+        .unwrap();
+    assert_eq!(
+        (
+            job_report.processed,
+            job_report.moved,
+            job_report.landed,
+            job_report.waiting,
+            job_report.checked_steps,
+        ),
+        (
+            reference_report.processed,
+            reference_report.moved,
+            reference_report.landed,
+            reference_report.waiting,
+            reference_report.checked_steps,
+        )
+    );
+    assert_eq!(save(&world), save(&reference));
+}
+
+#[test]
+fn saved_particle_job_matches_particle_phase_across_all_octants() {
+    for (dx, dy) in [
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+    ] {
+        let (mut world, layer) = fixture(WorldLimits::default());
+        activate(&mut world);
+        let source = p(10, 10);
+        let obstacle = p(10 + 3 * dx, 10 + 3 * dy);
+        place(&mut world, layer, source);
+        place(&mut world, layer, obstacle);
+        world
+            .edit(|edit| {
+                edit.emit_material_particle(
+                    layer,
+                    source,
+                    [i64::from(dx) * 8 * 65536, i64::from(dy) * 8 * 65536],
+                )?;
+                edit.emit_material_particle(layer, obstacle, [0, 0])?;
+                Ok(())
+            })
+            .unwrap();
+        let mut reference = restore(&world);
+        let mut job = MaterialParticleJob::new(&world, 4, 100).unwrap();
+        assert_eq!(
+            job.step(&world, 1).unwrap(),
+            MaterialParticleJobStatus::Computing
+        );
+        job = particle_job_roundtrip(&job);
+        assert_eq!(
+            job.step(&world, 1).unwrap(),
+            MaterialParticleJobStatus::Ready
+        );
+        let job_report = world.edit(|edit| job.publish(edit)).unwrap();
+        let reference_report = reference
+            .edit(|edit| edit.step_material_particles(4, 100))
+            .unwrap();
+        assert_eq!(
+            (
+                job_report.processed,
+                job_report.moved,
+                job_report.landed,
+                job_report.waiting,
+                job_report.checked_steps,
+            ),
+            (
+                reference_report.processed,
+                reference_report.moved,
+                reference_report.landed,
+                reference_report.waiting,
+                reference_report.checked_steps,
+            )
+        );
+        assert_eq!(save(&world), save(&reference));
+    }
+}
+
+#[test]
+fn saved_particle_job_rejects_stale_particle_inputs_without_partial_publish() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    activate(&mut world);
+    place(&mut world, layer, p(0, 0));
+    let handle = world
+        .edit(|edit| edit.emit_material_particle(layer, p(0, 0), [65536, 0]))
+        .unwrap();
+    let mut job = MaterialParticleJob::new(&world, 4, 8).unwrap();
+    assert_eq!(
+        job.step(&world, 1).unwrap(),
+        MaterialParticleJobStatus::Ready
+    );
+    world
+        .edit(|edit| edit.set_particle_velocity(handle, [0, 65536]))
+        .unwrap();
+    let before = save(&world);
+    assert!(world.edit(|edit| job.publish(edit)).is_err());
+    assert_eq!(save(&world), before);
+}
+
+#[test]
+fn saved_particle_job_checks_candidate_step_and_byte_budgets() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    activate(&mut world);
+    place(&mut world, layer, p(0, 0));
+    place(&mut world, layer, p(10, 10));
+    world
+        .edit(|edit| {
+            edit.emit_material_particle(layer, p(0, 0), [2 * 65536, 0])?;
+            edit.emit_material_particle(layer, p(10, 10), [0, 0])?;
+            Ok(())
+        })
+        .unwrap();
+    let before = save(&world);
+    let error = MaterialParticleJob::new(&world, 1, 16).unwrap_err();
+    assert_eq!(error.code, ErrorCode::CapacityExceeded);
+    let mut job = MaterialParticleJob::new(&world, 4, 1).unwrap();
+    let error = job.step(&world, 1).unwrap_err();
+    assert_eq!(error.code, ErrorCode::CapacityExceeded);
+    assert_eq!(
+        job.report().processed,
+        0,
+        "未完了候補の途中状態を保持しない"
+    );
+    assert_eq!(save(&world), before);
+
+    let low_memory = WorldLimits {
+        job_bytes: 256,
+        ..WorldLimits::default()
+    };
+    let (mut limited, layer) = fixture(low_memory);
+    activate(&mut limited);
+    place(&mut limited, layer, p(0, 0));
+    limited
+        .edit(|edit| edit.emit_material_particle(layer, p(0, 0), [0, 0]))
+        .unwrap();
+    let error = MaterialParticleJob::new(&limited, 4, 8).unwrap_err();
+    assert_eq!(error.code, ErrorCode::CapacityExceeded);
+}
+
+#[test]
+fn saved_particle_job_codec_rejects_every_truncation() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    activate(&mut world);
+    place(&mut world, layer, p(0, 0));
+    world
+        .edit(|edit| edit.emit_material_particle(layer, p(0, 0), [65_536, 0]))
+        .unwrap();
+    let mut job = MaterialParticleJob::new(&world, 4, 8).unwrap();
+    assert_eq!(
+        job.step(&world, 1).unwrap(),
+        MaterialParticleJobStatus::Ready
+    );
+
+    let mut encoded = Encoder::new(4_000_000);
+    job.encode(&mut encoded).unwrap();
+    let bytes = encoded.finish();
+    for length in 0..bytes.len() {
+        let mut input = Decoder::new(&bytes[..length], 4_000_000).unwrap();
+        assert!(
+            MaterialParticleJob::decode(&mut input).is_err(),
+            "prefix {length}"
+        );
     }
 }

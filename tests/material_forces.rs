@@ -1,6 +1,6 @@
 //! Q16の物性・独自力学provider・DDA統合を公開APIから検証します。
 use charon_engine::{
-    foundation::{EngineResult, StableKey, grid::*, id::WorldId, schema::Schema},
+    foundation::{EngineResult, ErrorCode, StableKey, grid::*, id::WorldId, schema::Schema},
     world::*,
 };
 use std::sync::Arc;
@@ -104,6 +104,9 @@ fn content(sand_drag: u32) -> Arc<Content> {
         .unwrap();
     registry
         .schema(Schema::of::<i64>(key("test:pressure-schema"), 1, 8).unwrap())
+        .unwrap();
+    registry
+        .schema(Schema::of::<u64>(key("test:sleep-state-schema"), 1, 8).unwrap())
         .unwrap();
     registry
         .channel(ChannelDefinition {
@@ -215,6 +218,291 @@ fn travel() -> MaterialMotionConfig {
         max_distance: 8,
         step_limit: 500,
     }
+}
+
+struct StencilForceProvider;
+impl MaterialForceProvider for StencilForceProvider {
+    fn key(&self) -> StableKey {
+        key("test:stencil-force")
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn integrate(&self, input: MaterialForceInput<'_>) -> EngineResult<MaterialMotion> {
+        let signal = input
+            .world
+            .channel_value::<i64>(key("test:pressure"), p(input.point.x + 2, input.point.y))?;
+        if matches!(signal, ChannelQuery::Loaded(value) if value > 0) {
+            Ok(MaterialMotion {
+                velocity_q16: [0, 65536],
+                remainder_q16: [0, 0],
+            })
+        } else {
+            Ok(input.motion)
+        }
+    }
+    fn sleep_stencil(&self) -> Option<MaterialForceDependencyStencil> {
+        Some(MaterialForceDependencyStencil::new(2, 0).unwrap())
+    }
+    fn sleep_invariant(
+        &self,
+        world: &World,
+        _layer: LayerId,
+        _force: MaterialForceConfig,
+        _motion: MaterialMotionConfig,
+    ) -> EngineResult<bool> {
+        match world.state::<u64>(key("test:sleep-state")) {
+            Ok(value) => Ok(value == 0),
+            Err(error) if error.code == ErrorCode::MissingKey => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+}
+
+#[test]
+fn provider_without_sleep_contract_always_uses_reference_execution() {
+    let (mut base, layer) = fixture();
+    place(&mut base, layer, p(8, 8), "test:sand", [0, 0]);
+    let snapshot = base.checkpoint(4_000_000).unwrap();
+    let mut reference = World::restore(
+        &snapshot,
+        Arc::clone(base.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    let mut optimized = World::restore(
+        &snapshot,
+        Arc::clone(base.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    let provider = StandardMaterialForces;
+    let force = zero_gravity();
+    let motion = travel();
+    let mut tracker = MaterialProviderSleepTracker::default();
+
+    for _ in 0..2 {
+        let expected = reference
+            .edit(|edit| edit.step_material_force_motion(layer, force, motion, &provider))
+            .unwrap();
+        let actual = optimized
+            .step_material_force_motion_sleeping_with_provider(
+                &mut tracker,
+                layer,
+                force,
+                motion,
+                &provider,
+            )
+            .unwrap();
+        assert!(!actual.sleeping);
+        assert!(!tracker.has_proof());
+        assert_eq!(actual.reference, expected);
+        assert_eq!(
+            reference.checkpoint(4_000_000).unwrap(),
+            optimized.checkpoint(4_000_000).unwrap()
+        );
+        reference.edit(|edit| edit.advance_tick()).unwrap();
+        optimized.edit(|edit| edit.advance_tick()).unwrap();
+    }
+}
+
+#[test]
+fn author_provider_sleep_wakes_only_inside_declared_dependency_and_revalidates_restore() {
+    use charon_engine::foundation::codec::{Decoder, Encoder, StateCodec};
+
+    let (mut base, layer) = fixture();
+    base.edit(|edit| {
+        edit.insert_empty_chunk(ChunkCoord::new(1, 0)?)?;
+        edit.insert_empty_chunk(ChunkCoord::new(2, 0)?)
+    })
+    .unwrap();
+    place(&mut base, layer, p(63, 8), "test:sand", [0, 0]);
+    let snapshot = base.checkpoint(4_000_000).unwrap();
+    let mut reference = World::restore(
+        &snapshot,
+        Arc::clone(base.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    let mut optimized = World::restore(
+        &snapshot,
+        Arc::clone(base.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    let provider = StencilForceProvider;
+    let force = zero_gravity();
+    let motion = travel();
+    let mut tracker = MaterialProviderSleepTracker::default();
+
+    for index in 0..3 {
+        let expected = reference
+            .edit(|edit| edit.step_material_force_motion(layer, force, motion, &provider))
+            .unwrap();
+        let actual = optimized
+            .step_material_force_motion_sleeping_with_provider(
+                &mut tracker,
+                layer,
+                force,
+                motion,
+                &provider,
+            )
+            .unwrap();
+        assert_eq!(actual.reference, expected);
+        assert_eq!(actual.sleeping, index != 0);
+        assert_eq!(
+            reference.checkpoint(4_000_000).unwrap(),
+            optimized.checkpoint(4_000_000).unwrap()
+        );
+        reference.edit(|edit| edit.advance_tick()).unwrap();
+        optimized.edit(|edit| edit.advance_tick()).unwrap();
+    }
+
+    // 保存復元したtrackerは同じWorldでも一度参照実行してから再証明します。
+    let mut encoder = Encoder::new(1_000_000);
+    tracker.encode(&mut encoder).unwrap();
+    let bytes = encoder.finish();
+    let mut decoder = Decoder::new(&bytes, bytes.len()).unwrap();
+    let mut decoded = MaterialProviderSleepTracker::decode(&mut decoder).unwrap();
+    decoder.finish().unwrap();
+    let expected = reference
+        .edit(|edit| edit.step_material_force_motion(layer, force, motion, &provider))
+        .unwrap();
+    let actual = optimized
+        .step_material_force_motion_sleeping_with_provider(
+            &mut decoded,
+            layer,
+            force,
+            motion,
+            &provider,
+        )
+        .unwrap();
+    assert!(!actual.sleeping);
+    assert_eq!(actual.reference, expected);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        optimized.checkpoint(4_000_000).unwrap()
+    );
+
+    // 依存矩形の外側chunkの変更はwakeせず、参照結果のままsleepを続けます。
+    for world in [&mut reference, &mut optimized] {
+        world
+            .edit(|edit| edit.set_channel(key("test:pressure"), p(130, 8), 1i64))
+            .unwrap();
+    }
+    let expected = reference
+        .edit(|edit| edit.step_material_force_motion(layer, force, motion, &provider))
+        .unwrap();
+    let outside = optimized
+        .step_material_force_motion_sleeping_with_provider(
+            &mut decoded,
+            layer,
+            force,
+            motion,
+            &provider,
+        )
+        .unwrap();
+    assert!(outside.sleeping);
+    assert_eq!(outside.reference, expected);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        optimized.checkpoint(4_000_000).unwrap()
+    );
+
+    // Provider状態の変化はchunk stencil外でも毎tickの不変条件で検出します。
+    for world in [&mut reference, &mut optimized] {
+        world
+            .edit(|edit| {
+                edit.set_state(
+                    key("test:sleep-state"),
+                    key("test:sleep-state-schema"),
+                    &1u64,
+                )
+            })
+            .unwrap();
+    }
+    let expected = reference
+        .edit(|edit| edit.step_material_force_motion(layer, force, motion, &provider))
+        .unwrap();
+    let state_wake = optimized
+        .step_material_force_motion_sleeping_with_provider(
+            &mut decoded,
+            layer,
+            force,
+            motion,
+            &provider,
+        )
+        .unwrap();
+    assert!(!state_wake.sleeping);
+    assert!(state_wake.woke);
+    assert_eq!(state_wake.reference, expected);
+    for world in [&mut reference, &mut optimized] {
+        world
+            .edit(|edit| {
+                edit.set_state(
+                    key("test:sleep-state"),
+                    key("test:sleep-state-schema"),
+                    &0u64,
+                )
+            })
+            .unwrap();
+    }
+    let expected = reference
+        .edit(|edit| edit.step_material_force_motion(layer, force, motion, &provider))
+        .unwrap();
+    let reproved = optimized
+        .step_material_force_motion_sleeping_with_provider(
+            &mut decoded,
+            layer,
+            force,
+            motion,
+            &provider,
+        )
+        .unwrap();
+    assert!(!reproved.sleeping);
+    assert_eq!(reproved.reference, expected);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        optimized.checkpoint(4_000_000).unwrap()
+    );
+
+    // source x=63の+2 stencilはchunk 1へ跨る。そこが変わるとwakeして力を再評価します。
+    for world in [&mut reference, &mut optimized] {
+        world
+            .edit(|edit| edit.set_channel(key("test:pressure"), p(65, 8), 1i64))
+            .unwrap();
+    }
+    let expected = reference
+        .edit(|edit| edit.step_material_force_motion(layer, force, motion, &provider))
+        .unwrap();
+    let wake = optimized
+        .step_material_force_motion_sleeping_with_provider(
+            &mut decoded,
+            layer,
+            force,
+            motion,
+            &provider,
+        )
+        .unwrap();
+    assert!(!wake.sleeping);
+    assert!(wake.woke);
+    assert_eq!(wake.reference, expected);
+    let sand = reference
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    assert!(matches!(
+        optimized.cell(layer, p(63, 9)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material == sand
+    ));
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        optimized.checkpoint(4_000_000).unwrap()
+    );
 }
 
 #[test]
@@ -386,6 +674,141 @@ fn particle_config(cap: i64) -> MaterialParticleForceConfig {
         candidate_limit: 4,
         max_velocity_q16: cap,
     }
+}
+
+#[test]
+fn particle_sleep_in_material_phase_matches_reference_and_wakes_after_velocity_edit() {
+    use charon_engine::foundation::codec::{Decoder, Encoder, StateCodec};
+
+    let (mut reference, layer) = fixture();
+    place(&mut reference, layer, p(8, 8), "test:sand", [0, 0]);
+    let handle = reference
+        .edit(|edit| edit.emit_material_particle(layer, p(8, 8), [0, 0]))
+        .unwrap();
+    let checkpoint = reference.checkpoint(4_000_000).unwrap();
+    let mut sleeping = World::restore(
+        &checkpoint,
+        Arc::clone(reference.content()),
+        WorldLimits::default(),
+        checkpoint.len(),
+    )
+    .unwrap();
+    let sleeping_handle = sleeping.material_particles().next().unwrap().0;
+    // particleは独立した質量所有者です。同じcellに地形を配置すると静止粒子の着地先が
+    // ふさがり、zero-velocity粒子がarenaに残る状態を作れます。
+    place(&mut reference, layer, p(8, 8), "test:sand", [0, 0]);
+    place(&mut sleeping, layer, p(8, 8), "test:sand", [0, 0]);
+    let force = MaterialParticleForceConfig {
+        gravity_q16: [0, 0],
+        candidate_limit: 4,
+        max_velocity_q16: 1_000_000,
+    };
+    let phase_config = MaterialPhaseConfig {
+        layer,
+        pressure: None,
+        motion: None,
+        scalar_candidate_limit: None,
+        particle: Some((force, 100)),
+    };
+    let mut tracker = MaterialParticleSleepTracker::default();
+
+    for tick in 0..3 {
+        let expected = reference
+            .edit(|edit| {
+                edit.step_material_particle_forces_in_layer(
+                    layer,
+                    force,
+                    &StandardMaterialForces,
+                    100,
+                )
+            })
+            .unwrap();
+        reference.edit(|edit| edit.advance_tick()).unwrap();
+        let (phase_report, next_tracker, actual) = sleeping
+            .edit(|edit| {
+                edit.step_material_phase_with_particle_sleep(
+                    phase_config,
+                    &StandardMaterialForces,
+                    tracker.clone(),
+                )
+            })
+            .unwrap();
+        tracker = next_tracker;
+        assert_eq!(phase_report.particle, Some(actual.reference));
+        assert!(phase_report.motion.is_none());
+        assert!(phase_report.scalar.is_none());
+        assert_eq!(actual.reference, expected);
+        assert_eq!(actual.sleeping, tick > 0);
+        assert!(!actual.woke);
+        sleeping.edit(|edit| edit.advance_tick()).unwrap();
+        assert_eq!(
+            reference.checkpoint(4_000_000).unwrap(),
+            sleeping.checkpoint(4_000_000).unwrap(),
+            "tick {tick}の正規World状態が参照と一致する"
+        );
+    }
+
+    let mut encoder = Encoder::new(1_000_000);
+    tracker.encode(&mut encoder).unwrap();
+    let bytes = encoder.finish();
+    let mut decoder = Decoder::new(&bytes, bytes.len()).unwrap();
+    let mut malformed = bytes.clone();
+    malformed[8] = 2;
+    let mut malformed_decoder = Decoder::new(&malformed, malformed.len()).unwrap();
+    assert!(MaterialParticleSleepTracker::decode(&mut malformed_decoder).is_err());
+    let decoded_tracker = MaterialParticleSleepTracker::decode(&mut decoder).unwrap();
+    decoder.finish().unwrap();
+    let expected = reference
+        .edit(|edit| {
+            edit.step_material_particle_forces_in_layer(layer, force, &StandardMaterialForces, 100)
+        })
+        .unwrap();
+    let (resumed_phase, _resumed_tracker, resumed) = sleeping
+        .edit(|edit| {
+            edit.step_material_phase_with_particle_sleep(
+                phase_config,
+                &StandardMaterialForces,
+                decoded_tracker,
+            )
+        })
+        .unwrap();
+    assert!(resumed.woke);
+    assert!(!resumed.sleeping);
+    assert_eq!(resumed_phase.particle, Some(resumed.reference));
+    assert_eq!(resumed.reference, expected);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        sleeping.checkpoint(4_000_000).unwrap()
+    );
+
+    reference
+        .edit(|edit| edit.set_particle_velocity(handle, [65536, 0]))
+        .unwrap();
+    sleeping
+        .edit(|edit| edit.set_particle_velocity(sleeping_handle, [65536, 0]))
+        .unwrap();
+    let expected = reference
+        .edit(|edit| {
+            edit.step_material_particle_forces_in_layer(layer, force, &StandardMaterialForces, 100)
+        })
+        .unwrap();
+    let (_, _, actual) = sleeping
+        .edit(|edit| {
+            edit.step_material_phase_with_particle_sleep(
+                phase_config,
+                &StandardMaterialForces,
+                tracker.clone(),
+            )
+        })
+        .unwrap();
+    assert!(actual.woke);
+    assert!(!actual.sleeping);
+    assert_eq!(actual.reference, expected);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        sleeping.checkpoint(4_000_000).unwrap()
+    );
+    assert!(reference.material_particle(handle).is_ok());
 }
 
 #[test]
@@ -882,6 +1305,7 @@ fn integrated_material_phase_matches_individual_reference_steps_and_checkpoint()
                     pressure: None,
                     motion: Some(motion),
                     scalar: None,
+                    scalar_sleep: None,
                     particle: Some(particles),
                 })
             })
@@ -1056,7 +1480,106 @@ fn world_wide_particle_steps_preserve_non_simulated_layer_owners() {
 }
 
 #[test]
-fn integrated_material_phase_pressure_and_scalar_match_reference_same_tick() {
+fn opt_in_legacy_uniform_forces_preserve_old_gas_buoyancy_and_powder_friction() {
+    let uniform = UniformMaterialForces {
+        gravity_q16: 8000,
+        gas_buoyancy_q16: 20000,
+        drag_q16: 0,
+        powder_friction_q16: 2000,
+        maximum_velocity_q16: 100_000,
+    };
+    let input = LegacyMaterialForceInput {
+        point: p(8, 8),
+        tick: 7,
+        material: key("test:gas"),
+        base: MaterialBase::Gas,
+        mass_per_cell: 1,
+        motion: MaterialMotion::default(),
+    };
+    assert_eq!(
+        LegacyMaterialForceProvider::evaluate(&uniform, input).unwrap(),
+        [0, -12000],
+        "旧式の一様気体浮力は隣接物質なしで有効"
+    );
+    let powder = LegacyMaterialForceInput {
+        base: MaterialBase::Powder,
+        motion: MaterialMotion {
+            velocity_q16: [10000, 0],
+            ..Default::default()
+        },
+        ..input
+    };
+    assert_eq!(
+        LegacyMaterialForceProvider::evaluate(&uniform, powder).unwrap(),
+        [8000, 8000]
+    );
+    let invalid = UniformMaterialForces {
+        drag_q16: 65537,
+        ..uniform
+    };
+    assert!(invalid.validate().is_err());
+}
+
+#[test]
+fn legacy_force_entrypoint_keeps_remainder_and_rolls_back_ignored_error() {
+    struct FailAfterFirst;
+    impl LegacyMaterialForceProvider for FailAfterFirst {
+        fn evaluate(&self, input: LegacyMaterialForceInput) -> EngineResult<[i64; 2]> {
+            if input.point.x == 9 {
+                return Err(charon_engine::foundation::EngineError::new(
+                    charon_engine::foundation::ErrorCode::InvalidState,
+                    "意図的な旧provider失敗",
+                ));
+            }
+            Ok([32768, 0])
+        }
+    }
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 0]);
+    place(&mut world, layer, p(9, 8), "test:sand", [0, 0]);
+    let snapshot = world.checkpoint(4_000_000).unwrap();
+    assert!(
+        world
+            .edit(|edit| {
+                let _ = edit.apply_material_forces(layer, key("test:motion"), &FailAfterFirst, 10);
+                Ok(())
+            })
+            .is_err()
+    );
+    assert_eq!(world.checkpoint(4_000_000).unwrap(), snapshot);
+    let uniform = UniformMaterialForces {
+        gravity_q16: 8000,
+        gas_buoyancy_q16: 0,
+        drag_q16: 0,
+        powder_friction_q16: 0,
+        maximum_velocity_q16: 100_000,
+    };
+    let updated = world
+        .edit(|edit| edit.apply_material_forces(layer, key("test:motion"), &uniform, 10))
+        .unwrap();
+    assert_eq!(updated.updated, 2);
+    assert_eq!(motion(&world, p(8, 8)).velocity_q16, [0, 8000]);
+    // 新Provider経由でも一様力学の数式は完全に同じ。
+    let compatible = world
+        .edit(|edit| {
+            edit.integrate_material_forces(
+                layer,
+                MaterialForceConfig {
+                    channel: key("test:motion"),
+                    gravity_q16: [0, 0],
+                    candidate_limit: 10,
+                    max_velocity_q16: 100_000,
+                },
+                &uniform,
+            )
+        })
+        .unwrap();
+    assert_eq!(compatible.changed, 2);
+    assert_eq!(motion(&world, p(8, 8)).velocity_q16, [0, 16000]);
+}
+
+#[test]
+fn integrated_material_phase_pressure_and_scalar_match_reference_each_tick() {
     let (mut baseline, layer) = fixture();
     place(&mut baseline, layer, p(8, 8), "test:liquid", [0, 0]);
     place(&mut baseline, layer, p(9, 8), "test:water", [0, 0]);
@@ -1084,36 +1607,47 @@ fn integrated_material_phase_pressure_and_scalar_match_reference_same_tick() {
     let mut config = phase(layer);
     config.pressure = Some(pressure);
     config.motion = None;
-    let expected = reference
-        .edit(|edit| {
-            let pressure_report = edit.relax_pressure(layer, pressure)?;
-            let scalar_report = edit.transport_materials(layer, 100)?;
-            let particle_report = edit.step_material_particle_forces(
-                MaterialParticleForceConfig {
-                    gravity_q16: [0, 65536],
-                    candidate_limit: 100,
-                    max_velocity_q16: 1_000_000,
-                },
-                &StandardMaterialForces,
-                500,
-            )?;
-            Ok(MaterialPhaseReport {
-                pressure: Some(pressure_report),
-                motion: None,
-                scalar: Some(scalar_report),
-                particle: Some(particle_report),
+    for tick in 0..4 {
+        let expected = reference
+            .edit(|edit| {
+                let pressure_report = edit.relax_pressure(layer, pressure)?;
+                let scalar_report = edit.transport_materials(layer, 100)?;
+                let particle_report = edit.step_material_particle_forces(
+                    MaterialParticleForceConfig {
+                        gravity_q16: [0, 65536],
+                        candidate_limit: 100,
+                        max_velocity_q16: 1_000_000,
+                    },
+                    &StandardMaterialForces,
+                    500,
+                )?;
+                edit.advance_tick()?;
+                Ok(MaterialPhaseReport {
+                    pressure: Some(pressure_report),
+                    motion: None,
+                    scalar: Some(scalar_report),
+                    scalar_sleep: None,
+                    particle: Some(particle_report),
+                })
             })
-        })
-        .unwrap();
-    let actual = combined
-        .edit(|edit| edit.step_material_phase(config, &StandardMaterialForces))
-        .unwrap();
-    assert_eq!(actual, expected);
-    assert_eq!(actual.pressure.unwrap().cells, 2);
-    assert_eq!(
-        combined.checkpoint(4_000_000).unwrap(),
-        reference.checkpoint(4_000_000).unwrap(),
-    );
+            .unwrap();
+        let actual = combined
+            .edit(|edit| {
+                let report = edit.step_material_phase(config, &StandardMaterialForces)?;
+                edit.advance_tick()?;
+                Ok(report)
+            })
+            .unwrap();
+        assert_eq!(
+            actual, expected,
+            "tick {tick}のphase reportが参照と一致する"
+        );
+        assert_eq!(
+            combined.checkpoint(4_000_000).unwrap(),
+            reference.checkpoint(4_000_000).unwrap(),
+            "tick {tick}の正規World状態が参照と一致する"
+        );
+    }
 }
 
 #[test]
@@ -1292,6 +1826,67 @@ fn integrated_phase_shares_reservations_and_never_moves_a_cell_twice_in_one_tick
     assert!(matches!(
         world.cell(layer, p(8, 10)).unwrap(),
         CellQuery::Loaded(value) if value.core.material == MaterialId::AIR
+    ));
+}
+
+#[test]
+fn integrated_particle_motion_respects_cell_motion_and_scalar_reservations() {
+    struct NoGravity;
+    impl MaterialForceProvider for NoGravity {
+        fn key(&self) -> StableKey {
+            key("test:phase-no-gravity")
+        }
+        fn version(&self) -> u32 {
+            1
+        }
+        fn integrate(&self, input: MaterialForceInput<'_>) -> EngineResult<MaterialMotion> {
+            Ok(input.motion)
+        }
+    }
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 65536]);
+    place(&mut world, layer, p(8, 7), "test:wall", [0, 0]);
+    let particle = world
+        .edit(|edit| edit.emit_material_particle(layer, p(8, 7), [0, 65536]))
+        .unwrap();
+    let mut config = phase(layer);
+    config.motion = Some((
+        MaterialForceConfig {
+            channel: key("test:motion"),
+            gravity_q16: [0, 0],
+            candidate_limit: 32,
+            max_velocity_q16: 1_000_000,
+        },
+        travel(),
+    ));
+    config.scalar_candidate_limit = Some(32);
+    config.particle = Some((
+        MaterialParticleForceConfig {
+            gravity_q16: [0, 0],
+            candidate_limit: 32,
+            max_velocity_q16: 1_000_000,
+        },
+        64,
+    ));
+
+    let report = world
+        .edit(|edit| edit.step_material_phase(config, &NoGravity))
+        .unwrap();
+    assert_eq!(report.motion.unwrap().motion.moved, 1);
+    assert_eq!(report.scalar.unwrap().exchanges, 0);
+    assert_eq!(report.particle.unwrap().particles.waiting, 1);
+    assert_eq!(world.material_particle(particle).unwrap().cell(), p(8, 7));
+    assert!(matches!(
+        world.cell(layer, p(8, 8)).unwrap(),
+        CellQuery::Loaded(value) if value.core.material == MaterialId::AIR
+    ));
+    let sand = world
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    assert!(matches!(
+        world.cell(layer, p(8, 9)).unwrap(),
+        CellQuery::Loaded(value) if value.core.material == sand
     ));
 }
 

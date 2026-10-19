@@ -3,10 +3,16 @@
 
 use charon_engine::{
     foundation::{
-        StableKey,
+        EngineResult, StableKey,
+        codec::{Decoder, Encoder, StateCodec},
         grid::{CellPoint, GridLayout, GridLimits, GridScale},
         id::WorldId,
         schema::Schema,
+    },
+    runtime::{
+        Engine, StepResult,
+        input::TickInput,
+        schedule::{Phase, System, SystemContext, SystemDescriptor, WorkStatus},
     },
     world::*,
 };
@@ -348,6 +354,23 @@ fn activate(world: &mut World, min: i32, max: i64) {
         })
         .unwrap();
 }
+
+/// Runtime経路とWorldEdit参照経路を、同じ標準scalar solverでtickごとに比較します。
+struct RuntimeScalarTransportSystem {
+    layer: LayerId,
+}
+impl System for RuntimeScalarTransportSystem {
+    fn run(&mut self, ctx: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
+        let mut worlds = ctx.worlds();
+        let world = worlds.view().id("world")?;
+        let layer = self.layer;
+        worlds.edit_terrain(world, move |edit| {
+            edit.transport_materials(layer, 8)?;
+            Ok(())
+        })?;
+        Ok(WorkStatus::Complete)
+    }
+}
 fn material(world: &World, name: &str) -> CellCore {
     CellCore {
         material: world
@@ -568,6 +591,146 @@ fn pressure_matches_jacobi_reference_and_does_not_change_materials() {
         (2..=4)
             .map(|y| core(&world, layer, point(3, y)))
             .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pressure_sleep_matches_each_reference_tick_and_wakes_after_field_edit() {
+    let content = content(8, true);
+    let mut reference = world(Arc::clone(&content));
+    let mut sleeping = world(content);
+    let layer = column(&mut reference, false);
+    column(&mut sleeping, false);
+    let config = PressureRelaxation {
+        gravity_q16: 0,
+        ..pressure_config(3)
+    };
+    let mut tracker = PressureSleepTracker::default();
+
+    for expected_sleep in [false, true, true] {
+        let expected = reference
+            .edit(|edit| edit.relax_pressure(layer, config))
+            .unwrap();
+        let actual = sleeping
+            .relax_pressure_sleeping(&mut tracker, layer, config)
+            .unwrap();
+        assert_eq!(actual.reference, expected);
+        assert_eq!(actual.sleeping, expected_sleep);
+        assert!(!actual.woke);
+        let reference_bytes = reference.checkpoint(4_000_000).unwrap();
+        let sleeping_bytes = sleeping.checkpoint(4_000_000).unwrap();
+        assert_eq!(reference_bytes.len(), sleeping_bytes.len());
+        assert_eq!(
+            reference_bytes
+                .iter()
+                .zip(&sleeping_bytes)
+                .position(|(left, right)| left != right),
+            None
+        );
+    }
+
+    for target in [&mut reference, &mut sleeping] {
+        target
+            .edit(|edit| edit.set_channel(key("game:fluid-pressure"), point(3, 3), 777_777i64))
+            .unwrap();
+    }
+    let expected = reference
+        .edit(|edit| edit.relax_pressure(layer, config))
+        .unwrap();
+    let actual = sleeping
+        .relax_pressure_sleeping(&mut tracker, layer, config)
+        .unwrap();
+    assert!(actual.woke);
+    assert!(!actual.sleeping);
+    assert_eq!(actual.reference, expected);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        sleeping.checkpoint(4_000_000).unwrap()
+    );
+
+    // 編集後のfieldが固定するまで参照緩和を両Worldへ適用し、各tickを照合する。
+    let mut reached_sleep = false;
+    for _ in 0..64 {
+        let expected = reference
+            .edit(|edit| edit.relax_pressure(layer, config))
+            .unwrap();
+        let actual = sleeping
+            .relax_pressure_sleeping(&mut tracker, layer, config)
+            .unwrap();
+        assert_eq!(actual.reference, expected);
+        assert!(!actual.woke);
+        assert_eq!(
+            reference.checkpoint(4_000_000).unwrap(),
+            sleeping.checkpoint(4_000_000).unwrap()
+        );
+        if actual.sleeping {
+            reached_sleep = true;
+            break;
+        }
+    }
+    assert!(
+        reached_sleep,
+        "緩和後の圧力fieldが64tick以内に固定しなかった"
+    );
+
+    let changed_config = PressureRelaxation {
+        gravity_q16: 65536,
+        ..config
+    };
+    let expected = reference
+        .edit(|edit| edit.relax_pressure(layer, changed_config))
+        .unwrap();
+    let actual = sleeping
+        .relax_pressure_sleeping(&mut tracker, layer, changed_config)
+        .unwrap();
+    assert!(actual.woke);
+    assert!(!actual.sleeping);
+    assert_eq!(actual.reference, expected);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        sleeping.checkpoint(4_000_000).unwrap()
+    );
+}
+
+#[test]
+fn pressure_sleep_tracker_restore_requires_reference_revalidation() {
+    let content = content(8, true);
+    let mut world = world(Arc::clone(&content));
+    let layer = column(&mut world, false);
+    let config = PressureRelaxation {
+        gravity_q16: 0,
+        ..pressure_config(3)
+    };
+    let mut tracker = PressureSleepTracker::default();
+    world
+        .relax_pressure_sleeping(&mut tracker, layer, config)
+        .unwrap();
+    assert!(
+        world
+            .relax_pressure_sleeping(&mut tracker, layer, config)
+            .unwrap()
+            .sleeping
+    );
+
+    let mut encoder = Encoder::new(4096);
+    tracker.encode(&mut encoder).unwrap();
+    let saved = encoder.finish();
+    let mut decoder = Decoder::new(&saved, 4096).unwrap();
+    let mut restored_tracker = PressureSleepTracker::decode(&mut decoder).unwrap();
+    decoder.finish().unwrap();
+    let checkpoint = world.checkpoint(4_000_000).unwrap();
+    let mut restored_world =
+        World::restore(&checkpoint, content, WorldLimits::default(), 4_000_000).unwrap();
+
+    let first = restored_world
+        .relax_pressure_sleeping(&mut restored_tracker, layer, config)
+        .unwrap();
+    assert!(!first.sleeping);
+    assert!(
+        restored_world
+            .relax_pressure_sleeping(&mut restored_tracker, layer, config)
+            .unwrap()
+            .sleeping
     );
 }
 
@@ -832,8 +995,87 @@ fn material_channel_registration_rejects_missing_layer_and_implicit_resampling()
     registry.freeze().unwrap();
 }
 
-#[derive(Default)]
-struct TestArchives(std::collections::BTreeMap<[u8; 32], Vec<u8>>);
+#[derive(Clone, Default)]
+struct TestArchives {
+    objects: std::collections::BTreeMap<[u8; 32], Vec<u8>>,
+    read_delay_ms: u64,
+    fail_read: bool,
+}
+
+/// region archive workerを実filesystemへ接続する回帰用storage。
+#[derive(Clone)]
+struct FileTestArchives {
+    root: std::path::PathBuf,
+    read_delay_ms: u64,
+    remove_before_read: bool,
+}
+impl FileTestArchives {
+    fn blob_path(&self, hash: [u8; 32]) -> std::path::PathBuf {
+        let name = hash
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        self.root.join(format!("{name}.blob"))
+    }
+}
+impl ArchiveStorage for FileTestArchives {
+    fn put(
+        &mut self,
+        hash: [u8; 32],
+        bytes: &[u8],
+    ) -> charon_engine::foundation::EngineResult<SaveDurability> {
+        DirectoryArchives::new(&self.root)?.put(hash, bytes)
+    }
+    fn read(
+        &mut self,
+        hash: [u8; 32],
+        limit: usize,
+    ) -> charon_engine::foundation::EngineResult<Vec<u8>> {
+        if self.read_delay_ms != 0 {
+            std::thread::sleep(std::time::Duration::from_millis(self.read_delay_ms));
+        }
+        if self.remove_before_read {
+            std::fs::remove_file(self.blob_path(hash)).map_err(|error| {
+                charon_engine::foundation::EngineError::new(
+                    charon_engine::foundation::ErrorCode::Io,
+                    "filesystem fault注入用archive削除",
+                )
+                .detail(error.to_string())
+            })?;
+        }
+        DirectoryArchives::new(&self.root)?.read(hash, limit)
+    }
+}
+
+struct ArchiveTestDirectory(std::path::PathBuf);
+impl ArchiveTestDirectory {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let name = format!(
+            "charon-e05-material-archive-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(name);
+        std::fs::create_dir(&path).unwrap();
+        Self(std::fs::canonicalize(path).unwrap())
+    }
+}
+impl Drop for ArchiveTestDirectory {
+    fn drop(&mut self) {
+        let safe_name = self.0.file_name().is_some_and(|name| {
+            name.to_string_lossy()
+                .starts_with("charon-e05-material-archive-")
+        });
+        let real_directory = std::fs::symlink_metadata(&self.0).is_ok_and(|metadata| {
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink()
+        });
+        if safe_name && real_directory {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 impl ArchiveStorage for TestArchives {
     fn put(
         &mut self,
@@ -841,7 +1083,7 @@ impl ArchiveStorage for TestArchives {
         bytes: &[u8],
     ) -> charon_engine::foundation::EngineResult<SaveDurability> {
         assert_eq!(blake3::hash(bytes).as_bytes(), &hash);
-        self.0.insert(hash, bytes.to_vec());
+        self.objects.insert(hash, bytes.to_vec());
         Ok(SaveDurability::FilesAndAtomicPublish)
     }
     fn read(
@@ -849,8 +1091,17 @@ impl ArchiveStorage for TestArchives {
         hash: [u8; 32],
         limit: usize,
     ) -> charon_engine::foundation::EngineResult<Vec<u8>> {
+        if self.read_delay_ms != 0 {
+            std::thread::sleep(std::time::Duration::from_millis(self.read_delay_ms));
+        }
+        if self.fail_read {
+            return Err(charon_engine::foundation::EngineError::new(
+                charon_engine::foundation::ErrorCode::Io,
+                "テスト用archive読込失敗",
+            ));
+        }
         let bytes = self
-            .0
+            .objects
             .get(&hash)
             .expect("テスト用archiveが保存済みであること");
         assert!(bytes.len() <= limit);
@@ -897,6 +1148,225 @@ fn material_payload_survives_region_eviction_without_retaining_channel_arrays() 
         .edit(|edit| edit.exchange_cells(layer, point(62, 2), point(63, 2)))
         .unwrap();
     assert_eq!(value(&world, "game:energy", point(65, 2)), 900);
+}
+
+#[test]
+fn archive_io_completion_order_preserves_scalar_transport_each_tick() {
+    let content = content(8, true);
+    let front = content.layer_id(key("game:front")).unwrap();
+    let fixture = world(Arc::clone(&content));
+    let sand = material(&fixture, "game:sand");
+    let stone = material(&fixture, "game:stone");
+    let run = |slow_first: bool| {
+        let mut world = world(Arc::clone(&content));
+        world
+            .edit(|edit| {
+                edit.set_cell(front, point(-2, 1), sand)?;
+                edit.set_cell(front, point(-2, 3), stone)?;
+                edit.set_cell(front, point(66, 1), sand)?;
+                edit.set_cell(front, point(66, 3), stone)
+            })
+            .unwrap();
+        let directory = ArchiveTestDirectory::new();
+        let mut archives = FileTestArchives {
+            root: directory.0.clone(),
+            read_delay_ms: 0,
+            remove_before_read: false,
+        };
+        for coordinate in [-1, 1] {
+            let region = ChunkRegion::single(ChunkCoord::new(coordinate, 0).unwrap()).unwrap();
+            let receipt = world
+                .prepare_eviction(region, 4_000_000)
+                .unwrap()
+                .store(&mut archives)
+                .unwrap();
+            world.edit(|edit| edit.finish_eviction(receipt)).unwrap();
+        }
+
+        let tasks = [-1, 1].map(|coordinate| {
+            (
+                coordinate,
+                world
+                    .region_load_task(ChunkCoord::new(coordinate, 0).unwrap(), 4_000_000)
+                    .unwrap(),
+            )
+        });
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for (coordinate, task) in tasks {
+            let mut worker_archives = archives.clone();
+            worker_archives.read_delay_ms = if (coordinate == -1) == slow_first {
+                40
+            } else {
+                0
+            };
+            let sender = sender.clone();
+            let start = Arc::clone(&start);
+            workers.push(std::thread::spawn(move || {
+                start.wait();
+                let loaded = task.load(&mut worker_archives);
+                sender.send((coordinate, loaded)).unwrap();
+            }));
+        }
+        drop(sender);
+        start.wait();
+        let mut completion_order = Vec::new();
+        let mut ready_regions = Vec::new();
+        for (coordinate, loaded) in receiver {
+            completion_order.push(coordinate);
+            ready_regions.push(loaded.unwrap());
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(completion_order, if slow_first { [1, -1] } else { [-1, 1] });
+        // completion順でreadyへ集め、同一barrierの一取引としてまとめて公開します。
+        world
+            .edit(|edit| {
+                for loaded in ready_regions {
+                    edit.restore_region(loaded)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        activate(&mut world, -1, 2);
+
+        let reference_bytes = world.checkpoint(4_000_000).unwrap();
+        let mut reference = World::restore(
+            &reference_bytes,
+            Arc::clone(&content),
+            WorldLimits::default(),
+            4_000_000,
+        )
+        .unwrap();
+        let runtime_descriptor =
+            SystemDescriptor::new(key("game:runtime-scalar-transport"), Phase::Materials)
+                .write(key("engine:terrain"))
+                .in_world(key("game:world"))
+                .barrier();
+        let mut runtime = Engine::builder()
+            .sandbox_world("world", WorldBuilder::restored(world))
+            .system(
+                runtime_descriptor,
+                RuntimeScalarTransportSystem { layer: front },
+            )
+            .build()
+            .unwrap();
+        let runtime_world = runtime.worlds().id("world").unwrap();
+        let mut ticks = Vec::new();
+        for tick in 1..=4 {
+            assert_eq!(
+                runtime.step(TickInput::empty(tick)).unwrap(),
+                StepResult::Complete(tick)
+            );
+            reference
+                .edit(|edit| {
+                    edit.transport_materials(front, 8)?;
+                    Ok(())
+                })
+                .unwrap();
+            reference.edit(|edit| edit.advance_tick()).unwrap();
+            let runtime_terrain = runtime.worlds().terrain(runtime_world).unwrap();
+            let runtime_checkpoint = runtime_terrain.checkpoint(4_000_000).unwrap();
+            assert_eq!(
+                runtime_terrain.canonical_hash(4_000_000).unwrap(),
+                reference.canonical_hash(4_000_000).unwrap(),
+                "tick {tick}, runtime tick {}, reference tick {}",
+                runtime.worlds().tick(runtime_world).unwrap(),
+                reference.tick()
+            );
+            ticks.push(runtime_checkpoint);
+        }
+        ticks
+    };
+
+    let negative_chunk_slow = run(true);
+    let positive_chunk_slow = run(false);
+    assert_eq!(negative_chunk_slow, positive_chunk_slow);
+}
+
+#[test]
+fn archive_worker_failure_rolls_back_earlier_ready_region_publication() {
+    let content = content(8, true);
+    let front = content.layer_id(key("game:front")).unwrap();
+    let mut world = world(Arc::clone(&content));
+    let sand = material(&world, "game:sand");
+    world
+        .edit(|edit| {
+            edit.set_cell(front, point(-2, 1), sand)?;
+            edit.set_cell(front, point(66, 1), sand)
+        })
+        .unwrap();
+    let directory = ArchiveTestDirectory::new();
+    let mut archives = FileTestArchives {
+        root: directory.0.clone(),
+        read_delay_ms: 0,
+        remove_before_read: false,
+    };
+    for coordinate in [-1, 1] {
+        let region = ChunkRegion::single(ChunkCoord::new(coordinate, 0).unwrap()).unwrap();
+        let receipt = world
+            .prepare_eviction(region, 4_000_000)
+            .unwrap()
+            .store(&mut archives)
+            .unwrap();
+        world.edit(|edit| edit.finish_eviction(receipt)).unwrap();
+    }
+    let before = world.checkpoint(4_000_000).unwrap();
+    let tasks = [-1, 1].map(|coordinate| {
+        (
+            coordinate,
+            world
+                .region_load_task(ChunkCoord::new(coordinate, 0).unwrap(), 4_000_000)
+                .unwrap(),
+        )
+    });
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let start = Arc::new(std::sync::Barrier::new(3));
+    let mut workers = Vec::new();
+    for (coordinate, task) in tasks {
+        let mut worker_archives = archives.clone();
+        worker_archives.remove_before_read = coordinate == -1;
+        worker_archives.read_delay_ms = if coordinate == -1 { 40 } else { 0 };
+        let sender = sender.clone();
+        let start = Arc::clone(&start);
+        workers.push(std::thread::spawn(move || {
+            start.wait();
+            sender
+                .send((coordinate, task.load(&mut worker_archives)))
+                .unwrap();
+        }));
+    }
+    drop(sender);
+    start.wait();
+    let mut completion_order = Vec::new();
+    let ready = receiver
+        .into_iter()
+        .map(|(coordinate, result)| {
+            completion_order.push(coordinate);
+            result
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(completion_order, [1, -1]);
+    assert!(ready[0].is_ok());
+    assert!(matches!(
+        &ready[1],
+        Err(error) if error.code == charon_engine::foundation::ErrorCode::Io
+    ));
+    let error = world
+        .edit(|edit| {
+            for loaded in ready {
+                edit.restore_region(loaded?)?;
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.code, charon_engine::foundation::ErrorCode::Io);
+    assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
 }
 
 #[test]

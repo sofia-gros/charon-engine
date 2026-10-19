@@ -45,7 +45,7 @@ receiptは連続番号、tick、material epoch、作者ruleのキー・0以外�
 - `save_material_accounted`は全参照archiveと全実量・履歴を照合してからSaveRepositoryの保存を始める。不一致なら既存世代を維持する。
 - `load_material_accounted`は完全な保存候補を読み、全表現の実量を検証してからWorldを返す。不一致を無視したWorldを公開しない。
 
-通常のcheckpoint/save/loadを監査の代用とは呼ばない。RuntimeとのQ04統合は別の残作業であり、現段階で全Runtime保存へ監査が自動適用されるという意味ではない。
+通常のcheckpoint/save/loadを監査の代用とは呼ばない。`WorldAccess::edit_material_accounted`で作者がMaterials barrierの単一原子取引を選べることは[40](40_MATERIAL_RUNTIME.md)へ統合し、RuntimeのQ04回帰でも確認した。監査は全Runtime保存へ暗黙に自動適用されず、対象台帳・profileと物質を変更するSystemが明示的に選ぶ。
 
 ## 数値・容量・費用
 

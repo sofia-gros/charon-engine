@@ -258,6 +258,34 @@ impl WorldEdit<'_> {
             Ok(())
         })
     }
+    /// World作者状態を削除します。物質所有権・receipt・監査台帳のrecordは削除できません。
+    ///
+    /// 進行中Jobを完了・取消した時に、その正規進捗だけを地形と同じ候補から除去します。
+    /// state容量の解放とJob消費を同じWorldEditで確定でき、後段の失敗では両方をrollbackします。
+    pub fn remove_state(&mut self, key: StableKey) -> EngineResult<()> {
+        self.run(|editor| {
+            let record = editor
+                .world
+                .state
+                .records()
+                .find(|record| record.key == key)
+                .ok_or_else(|| EngineError::new(ErrorCode::MissingKey, "World作者状態"))?;
+            let schema = editor.world.content.schemas.get(record.schema)?;
+            if schema.is::<super::MixtureStore>()
+                || schema.is::<super::MaterialReceiptLog>()
+                || schema.is::<super::MaterialBalanceLog>()
+            {
+                return Err(EngineError::new(
+                    ErrorCode::InvalidState,
+                    "物質store・receipt・収支台帳は一般削除できません",
+                ));
+            }
+            let mut transaction = editor.world.state.transaction()?;
+            transaction.remove(key)?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
     /// blockに作者型を保存します。schemaの型・版・payload上限はCoreと同じ検証です。
     pub fn set_block_state<T: StateCodec + 'static>(
         &mut self,

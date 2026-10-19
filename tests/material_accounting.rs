@@ -118,6 +118,62 @@ impl MaterialInventoryProvider for Provider {
         }
     }
 }
+
+/// body providerと異なるcallback実装で、reservoir所有を独立に収集します。
+struct DistinctReservoirProvider {
+    version: u32,
+}
+impl MaterialInventoryProvider for DistinctReservoirProvider {
+    fn key(&self) -> StableKey {
+        key("test:distinct-reservoir-provider")
+    }
+    fn version(&self) -> u32 {
+        self.version
+    }
+    fn collect_world(
+        &self,
+        world: &World,
+        output: &mut MaterialInventorySink<'_>,
+    ) -> EngineResult<()> {
+        let cells = world.state::<OwnedCells>(key("test:reservoir"))?;
+        if cells.0.iter().any(|cell| cell.energy == u64::MAX) {
+            return Err(error());
+        }
+        for cell in cells.0 {
+            output.add(
+                cell.layer,
+                cell.material,
+                cell.epoch,
+                cell.mixture,
+                MaterialQuantity::ONE,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Q04で別Providerの最終監査失敗を、複合World取引へ注入します。
+struct FaultGuardProvider;
+impl MaterialInventoryProvider for FaultGuardProvider {
+    fn key(&self) -> StableKey {
+        key("test:fault-guard-provider")
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn collect_world(
+        &self,
+        world: &World,
+        _output: &mut MaterialInventorySink<'_>,
+    ) -> EngineResult<()> {
+        let body = world.state::<OwnedCells>(key("test:body"))?;
+        if body.0.iter().any(|cell| cell.energy == u64::MAX) {
+            return Err(error());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct Archives {
     values: BTreeMap<[u8; 32], Vec<u8>>,
@@ -138,6 +194,13 @@ impl ArchiveStorage for Archives {
     }
 }
 fn fixture(log_bytes: usize) -> (World, LayerId, MaterialInventoryProfile, Archives) {
+    fixture_with_profile(log_bytes, profile(1, 1_000_000))
+}
+
+fn fixture_with_profile(
+    log_bytes: usize,
+    profile: MaterialInventoryProfile,
+) -> (World, LayerId, MaterialInventoryProfile, Archives) {
     let mut registry = ContentRegistry::new(ContentLimits::default()).unwrap();
     registry
         .layer(LayerDef {
@@ -222,7 +285,6 @@ fn fixture(log_bytes: usize) -> (World, LayerId, MaterialInventoryProfile, Archi
             )
         })
         .unwrap();
-    let profile = profile(1, 1_000_000);
     (world, layer, profile, Archives::default())
 }
 fn profile(version: u32, atoms: usize) -> MaterialInventoryProfile {
@@ -240,18 +302,14 @@ fn profile(version: u32, atoms: usize) -> MaterialInventoryProfile {
                 block: false,
                 version,
             }),
-            Arc::new(Provider {
-                name: key("test:reservoir-provider"),
-                record: key("test:reservoir"),
-                block: false,
-                version,
-            }),
+            Arc::new(DistinctReservoirProvider { version }),
             Arc::new(Provider {
                 name: key("test:block-provider"),
                 record: key("test:block-owned"),
                 block: true,
                 version,
             }),
+            Arc::new(FaultGuardProvider),
         ],
         MaterialInventoryLimits {
             atoms,
@@ -1563,6 +1621,117 @@ fn generation_save_and_load_verify_all_material_before_publishing_a_world() {
 }
 
 #[test]
+fn q04_distinct_inventory_providers_exchange_material_in_one_atomic_tick() {
+    let profile = MaterialInventoryProfile::new(
+        key("test:distinct-provider-inventory"),
+        1,
+        vec![MaterialInventoryMixture {
+            layer: key("test:layer"),
+            channel: key("test:mixture"),
+        }],
+        vec![
+            Arc::new(Provider {
+                name: key("test:body-provider"),
+                record: key("test:body"),
+                block: false,
+                version: 1,
+            }),
+            Arc::new(DistinctReservoirProvider { version: 1 }),
+            Arc::new(FaultGuardProvider),
+        ],
+        MaterialInventoryLimits {
+            atoms: 128,
+            components: 16,
+        },
+    )
+    .unwrap();
+    let (mut world, layer, profile, mut storage) = fixture_with_profile(1_000_000, profile);
+    world
+        .edit(|edit| {
+            edit.set_state(
+                key("test:body"),
+                key("test:owned"),
+                &owned(layer, "test:a", MixtureRef::NONE, 1),
+            )?;
+            edit.set_state(
+                key("test:reservoir"),
+                key("test:owned"),
+                &owned(layer, "test:b", MixtureRef::NONE, 1),
+            )
+        })
+        .unwrap();
+    let archive = world
+        .load_material_archive_inventory(&profile, &mut storage, 1_000_000)
+        .unwrap();
+    init(&mut world, &profile, &archive, 8);
+    let baseline = world
+        .verify_material_accounting(&profile, &archive, key("test:balance"))
+        .unwrap();
+    assert_eq!(total(&baseline, "test:a"), MaterialQuantity::ONE);
+    assert_eq!(total(&baseline, "test:b"), MaterialQuantity::ONE);
+
+    let before_failure = save(&world);
+    let mut invalid_reservoir = owned(layer, "test:a", MixtureRef::NONE, 1);
+    invalid_reservoir.0[0].energy = u64::MAX;
+    assert!(
+        world
+            .edit_material_accounted(
+                &profile,
+                &archive,
+                key("test:balance"),
+                key("test:balance-schema"),
+                None,
+                |edit| {
+                    edit.set_state(
+                        key("test:body"),
+                        key("test:owned"),
+                        &owned(layer, "test:b", MixtureRef::NONE, 1),
+                    )?;
+                    edit.set_state(key("test:reservoir"), key("test:owned"), &invalid_reservoir)
+                },
+            )
+            .is_err(),
+        "別実装Providerの最終集計失敗で前段所有権変更も戻る"
+    );
+    assert_eq!(save(&world), before_failure);
+
+    world
+        .edit_material_accounted(
+            &profile,
+            &archive,
+            key("test:balance"),
+            key("test:balance-schema"),
+            None,
+            |edit| {
+                // 同じ原子候補でbodyのaとreservoirのbを相互に移す。
+                edit.set_state(
+                    key("test:body"),
+                    key("test:owned"),
+                    &owned(layer, "test:b", MixtureRef::NONE, 1),
+                )?;
+                edit.set_state(
+                    key("test:reservoir"),
+                    key("test:owned"),
+                    &owned(layer, "test:a", MixtureRef::NONE, 1),
+                )
+            },
+        )
+        .unwrap();
+    let after = world
+        .verify_material_accounting(&profile, &archive, key("test:balance"))
+        .unwrap();
+    baseline.verify_conserved(&after).unwrap();
+    assert_eq!(
+        world.state::<OwnedCells>(key("test:body")).unwrap().0[0].material,
+        MaterialHandle(key("test:b"))
+    );
+    assert_eq!(
+        world.state::<OwnedCells>(key("test:reservoir")).unwrap().0[0].material,
+        MaterialHandle(key("test:a"))
+    );
+}
+
+#[test]
 fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_totals() {
     // 専用対象試験を互いに並べるだけでなく、同一Worldと同一収支台帳で
     // scalar輸送→正規粒子所有権へ変換→region退避→World保存復元→復帰を照合。
@@ -1597,12 +1766,12 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
             edit.set_state(
                 key("test:body"),
                 key("test:owned"),
-                &owned(layer, "test:carrier", mixture, 1),
+                &owned(layer, "test:a", MixtureRef::NONE, 1),
             )?;
             edit.set_state(
                 key("test:reservoir"),
                 key("test:owned"),
-                &owned(layer, "test:carrier", mixture, 1),
+                &owned(layer, "test:b", MixtureRef::NONE, 1),
             )?;
             Ok(mixture)
         })
@@ -1616,11 +1785,11 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
         .unwrap();
     assert_eq!(
         total(&baseline, "test:a"),
-        MaterialQuantity::new(6, 7).unwrap()
+        MaterialQuantity::new(9, 7).unwrap()
     );
     assert_eq!(
         total(&baseline, "test:b"),
-        MaterialQuantity::new(18, 7).unwrap()
+        MaterialQuantity::new(13, 7).unwrap()
     );
     assert_eq!(total(&baseline, "test:carrier"), MaterialQuantity::ZERO);
     let mass_of = |name: &str| {
@@ -1631,8 +1800,39 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
             .unwrap()
             .mass
     };
-    assert_eq!(mass_of("test:a"), MaterialQuantity::new(30, 7).unwrap());
-    assert_eq!(mass_of("test:b"), MaterialQuantity::new(54, 7).unwrap());
+    assert_eq!(mass_of("test:a"), MaterialQuantity::new(45, 7).unwrap());
+    assert_eq!(mass_of("test:b"), MaterialQuantity::new(39, 7).unwrap());
+
+    // 異なる所有Provider間の交換後も、後続の粒子化・archive復帰まで
+    // 同じWorld・同じ有理量baselineを保つ。
+    world
+        .edit_material_accounted(
+            &profile,
+            &cache,
+            key("test:balance"),
+            key("test:balance-schema"),
+            None,
+            |edit| {
+                edit.set_state(
+                    key("test:body"),
+                    key("test:owned"),
+                    &owned(layer, "test:b", MixtureRef::NONE, 1),
+                )?;
+                edit.set_state(
+                    key("test:reservoir"),
+                    key("test:owned"),
+                    &owned(layer, "test:a", MixtureRef::NONE, 1),
+                )
+            },
+        )
+        .unwrap();
+    baseline
+        .verify_conserved(
+            &world
+                .verify_material_accounting(&profile, &cache, key("test:balance"))
+                .unwrap(),
+        )
+        .unwrap();
 
     let lease = world
         .edit(|edit| {
@@ -1666,6 +1866,33 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
         save(&world),
         before,
         "容量不足で取引前の混合・台帳まで巻き戻す"
+    );
+    let before_provider_failure = save(&world);
+    let mut provider_fault = world.state::<OwnedCells>(key("test:body")).unwrap();
+    provider_fault.0[0].energy = u64::MAX;
+    assert!(
+        world
+            .edit_material_accounted(
+                &profile,
+                &cache,
+                key("test:balance"),
+                key("test:balance-schema"),
+                None,
+                |edit| {
+                    // scalar移送と正規粒子化の後、別Providerの最終監査を失敗させる。
+                    edit.transport_materials(layer, 16)?;
+                    edit.emit_material_particle(layer, point(10, 11), [0, 0])?;
+                    edit.set_state(key("test:body"), key("test:owned"), &provider_fault)?;
+                    Ok(())
+                },
+            )
+            .is_err(),
+        "作者Providerの監査失敗を取引全体の失敗へ伝播する"
+    );
+    assert_eq!(
+        save(&world),
+        before_provider_failure,
+        "Provider失敗でscalar・粒子・所有record・台帳を一括rollbackする"
     );
     let report = world
         .edit_material_accounted(

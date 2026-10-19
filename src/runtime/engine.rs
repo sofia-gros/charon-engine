@@ -16,7 +16,15 @@ use crate::foundation::{
     state::StateStore,
     transaction::CandidateState,
 };
-use std::{any::Any, path::PathBuf, time::Duration};
+use std::{
+    any::Any,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 /// pluginの依存を解決してからbuild、全登録後にready、終了時にshutdownを呼びます。
 pub trait Plugin: 'static {
@@ -53,7 +61,7 @@ struct Service {
     slot: StableKey,
     implementation: StableKey,
     dependencies: Vec<StableKey>,
-    value: Box<dyn Any>,
+    value: Box<dyn Any + Send + Sync>,
 }
 
 /// 描画adapterが実際の環境を調べて登録する能力です。設定値を能力とみなしません。
@@ -193,7 +201,9 @@ impl AppBuilder {
         Ok(())
     }
     /// 排他的slotへ実装を登録します。後勝ちによる置換は認めません。
-    pub fn service<T: 'static>(
+    ///
+    /// 並列許可Systemから共有参照されるため、登録値はSend+Syncを実装する必要があります。
+    pub fn service<T: Send + Sync + 'static>(
         &mut self,
         slot: StableKey,
         implementation: StableKey,
@@ -882,7 +892,7 @@ impl WorldAccess<'_> {
     pub fn edit_terrain(
         &mut self,
         world: WorldId,
-        callback: impl FnOnce(&mut crate::world::WorldEdit<'_>) -> EngineResult<()> + 'static,
+        callback: impl FnOnce(&mut crate::world::WorldEdit<'_>) -> EngineResult<()> + Send + 'static,
     ) -> EngineResult<()> {
         let result = (|| {
             check_access(self.access, StableKey::parse("engine:terrain")?, true)?;
@@ -911,7 +921,7 @@ impl WorldAccess<'_> {
         &mut self,
         world: WorldId,
         submission: MaterialAccountingSubmission,
-        callback: impl FnOnce(&mut crate::world::WorldEdit<'_>) -> EngineResult<()> + 'static,
+        callback: impl FnOnce(&mut crate::world::WorldEdit<'_>) -> EngineResult<()> + Send + 'static,
     ) -> EngineResult<()> {
         let result = (|| {
             check_access(self.access, StableKey::parse("engine:terrain")?, true)?;
@@ -967,7 +977,7 @@ fn check_access(
 
 // 固定長キーをinlineで保持します。小さいPauseのために各Putへ追加の失敗不能なBox確保を
 // 導入せず、queue全体のtry_reserveで容量と確保失敗を検査できることを優先します。
-type TerrainCallback = Box<dyn FnOnce(&mut crate::world::World) -> EngineResult<()>>;
+type TerrainCallback = Box<dyn FnOnce(&mut crate::world::World) -> EngineResult<()> + Send>;
 #[allow(clippy::large_enum_variant)]
 enum Command {
     Terrain {
@@ -990,6 +1000,7 @@ pub(crate) struct CommandBuffer {
     failure: Option<EngineError>,
     total: usize,
     limit: usize,
+    shared_total: Option<Arc<AtomicUsize>>,
 }
 impl CommandBuffer {
     fn new(limit: usize) -> Self {
@@ -998,21 +1009,63 @@ impl CommandBuffer {
             failure: None,
             total: 0,
             limit,
+            shared_total: None,
+        }
+    }
+    fn parallel_sibling(limit: usize, shared_total: Arc<AtomicUsize>) -> Self {
+        Self {
+            commands: Vec::new(),
+            failure: None,
+            total: 0,
+            limit,
+            shared_total: Some(shared_total),
         }
     }
     fn push(&mut self, command: Command) -> EngineResult<()> {
-        if self.total >= self.limit {
-            return Err(EngineError::capacity(
-                "tick内のcommand数",
-                self.total as u64 + 1,
-                self.limit as u64,
-            ));
+        let shared = if let Some(total) = &self.shared_total {
+            match total.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_add(1).filter(|next| *next <= self.limit)
+            }) {
+                Ok(_) => true,
+                Err(current) => {
+                    return Err(EngineError::capacity(
+                        "tick内のcommand数",
+                        current as u64 + 1,
+                        self.limit as u64,
+                    ));
+                }
+            }
+        } else {
+            if self.total >= self.limit {
+                return Err(EngineError::capacity(
+                    "tick内のcommand数",
+                    self.total as u64 + 1,
+                    self.limit as u64,
+                ));
+            }
+            false
+        };
+        if let Err(error) = self.commands.try_reserve(1) {
+            if shared {
+                self.shared_total
+                    .as_ref()
+                    .expect("並列command budget")
+                    .fetch_sub(1, Ordering::AcqRel);
+            }
+            return Err(crate::foundation::error::allocation(error));
         }
-        self.commands
-            .try_reserve(1)
-            .map_err(crate::foundation::error::allocation)?;
         self.commands.push(command);
         self.total += 1;
+        Ok(())
+    }
+    fn merge_reserved(&mut self, mut other: Self) -> EngineResult<()> {
+        if self.failure.is_none() {
+            self.failure = other.failure.take();
+        }
+        self.commands
+            .try_reserve(other.commands.len())
+            .map_err(crate::foundation::error::allocation)?;
+        self.commands.append(&mut other.commands);
         Ok(())
     }
     fn remember(&mut self, result: EngineResult<()>) -> EngineResult<()> {
@@ -1080,6 +1133,12 @@ struct PendingTick {
     cursor: usize,
     scenes_updated: bool,
     same_tick_runs: u64,
+    held_runs: Vec<HeldSystemRun>,
+}
+struct HeldSystemRun {
+    index: usize,
+    status: WorkStatus,
+    commands: CommandBuffer,
 }
 impl PendingTick {
     // 実行完了と活動状態によるスキップで同じ境界処理を使います。phase末尾が
@@ -1306,6 +1365,7 @@ impl Engine {
                 cursor: 0,
                 scenes_updated: false,
                 same_tick_runs: 0,
+                held_runs: Vec::new(),
             };
             self.pending = Some(pending);
             self.resume()
@@ -1357,6 +1417,124 @@ impl Engine {
         pending.scenes_updated = true;
         Ok(())
     }
+    fn system_worker_limit(&self) -> usize {
+        let requested = match &self.settings.simulation.system_workers {
+            super::config::WorkerCount::Count(count) => usize::from(*count),
+            super::config::WorkerCount::Auto(_) => std::thread::available_parallelism()
+                .map_or(1, usize::from)
+                .min(64),
+        };
+        requested.min(self.systems.len().max(1))
+    }
+    fn run_parallel_wave(
+        &mut self,
+        pending: &mut PendingTick,
+        count: usize,
+    ) -> EngineResult<Vec<HeldSystemRun>> {
+        let start = pending.cursor;
+        let end = start
+            .checked_add(count)
+            .ok_or_else(|| error(ErrorCode::CapacityExceeded, "System wave範囲"))?;
+        if count < 2 || end > self.systems.len() {
+            return Err(error(ErrorCode::InvalidState, "System parallel wave"));
+        }
+        pending
+            .held_runs
+            .try_reserve(count)
+            .map_err(crate::foundation::error::allocation)?;
+        let shared_total = Arc::new(AtomicUsize::new(pending.commands.total));
+        let command_limit = pending.commands.limit;
+        let tick = pending.tick;
+        let worlds = &pending.worlds;
+        let input = &pending.input;
+        let services = &self.services;
+        let systems = &mut self.systems[start..end];
+        let mut results = Vec::new();
+        results
+            .try_reserve_exact(count)
+            .map_err(crate::foundation::error::allocation)?;
+        let scoped_result = std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            handles
+                .try_reserve_exact(count)
+                .map_err(crate::foundation::error::allocation)?;
+            let mut spawn_failed = false;
+            for (offset, entry) in systems.iter_mut().enumerate() {
+                let index = start + offset;
+                let (descriptor, system) = (&entry.descriptor, &mut entry.system);
+                let world_paused = descriptor.world.is_some_and(|key| {
+                    worlds
+                        .entries
+                        .iter()
+                        .any(|world| world.key == key && world.paused)
+                });
+                let scene_active = descriptor.scene.is_none_or(|key| {
+                    self.scenes
+                        .iter()
+                        .any(|scene| scene.key == key && scene.state == SceneState::Running)
+                });
+                let mut commands =
+                    CommandBuffer::parallel_sibling(command_limit, Arc::clone(&shared_total));
+                match std::thread::Builder::new().spawn_scoped(scope, move || {
+                    let result = if world_paused || !scene_active {
+                        Ok(WorkStatus::Complete)
+                    } else {
+                        system.run(&mut SystemContext {
+                            tick,
+                            worlds,
+                            commands: &mut commands,
+                            services,
+                            descriptor,
+                            input,
+                        })
+                    };
+                    (index, commands, result)
+                }) {
+                    Ok(handle) => handles.push((index, handle)),
+                    Err(_) => {
+                        spawn_failed = true;
+                        break;
+                    }
+                }
+            }
+            let mut panic_index = None;
+            for (index, handle) in handles.drain(..) {
+                match handle.join() {
+                    Ok(result) => results.push(result),
+                    Err(_) => {
+                        panic_index.get_or_insert(index);
+                    }
+                };
+            }
+            if spawn_failed {
+                return Err(error(
+                    ErrorCode::CapacityExceeded,
+                    "並列System workerの起動",
+                ));
+            }
+            if let Some(index) = panic_index {
+                let _ = index;
+                return Err(error(ErrorCode::InvalidState, "作者System workerがpanic"));
+            }
+            results.sort_by_key(|(index, _, _)| *index);
+            Ok(())
+        });
+        pending.commands.total = shared_total.load(Ordering::Acquire);
+        scoped_result?;
+
+        let mut runs = Vec::new();
+        runs.try_reserve_exact(count)
+            .map_err(crate::foundation::error::allocation)?;
+        for (index, commands, result) in results {
+            let status = result?;
+            runs.push(HeldSystemRun {
+                index,
+                status,
+                commands,
+            });
+        }
+        Ok(runs)
+    }
     /// 件数予算を追加して同じtickのSystem cursorから再開します。
     pub fn resume(&mut self) -> EngineResult<StepResult> {
         self.healthy()?;
@@ -1365,7 +1543,8 @@ impl Engine {
             .take()
             .ok_or_else(|| error(ErrorCode::InvalidState, "再開するtickがない"))?;
         let result = (|| {
-            for _ in 0..self.work_budget {
+            let mut remaining = self.work_budget;
+            while remaining != 0 {
                 if !pending.scenes_updated
                     && (pending.cursor == self.systems.len()
                         || self.systems[pending.cursor].descriptor.phase
@@ -1376,6 +1555,90 @@ impl Engine {
                 if pending.cursor == self.systems.len() {
                     break;
                 }
+                if pending
+                    .held_runs
+                    .first()
+                    .is_some_and(|run| run.index == pending.cursor)
+                {
+                    let run = pending.held_runs.remove(0);
+                    pending.commands.merge_reserved(run.commands)?;
+                    let descriptor = &self.systems[run.index].descriptor;
+                    if descriptor.barrier_after {
+                        pending.commands.flush(&mut pending.worlds)?;
+                    }
+                    if run.status == WorkStatus::ContinueSameTick {
+                        pending.same_tick_runs =
+                            pending.same_tick_runs.checked_add(1).ok_or_else(|| {
+                                error(ErrorCode::CapacityExceeded, "SameTick継続回数")
+                            })?;
+                        if pending.same_tick_runs >= self.same_tick_limit {
+                            return Err(EngineError::capacity(
+                                "SameTick継続上限",
+                                pending.same_tick_runs.saturating_add(1),
+                                self.same_tick_limit,
+                            ));
+                        }
+                        if !descriptor.barrier_after && !pending.commands.commands.is_empty() {
+                            return Err(error(
+                                ErrorCode::InvalidState,
+                                "SameTickの書込にはbarrierが必要",
+                            ));
+                        }
+                    } else {
+                        pending.finish_system(&self.systems)?;
+                    }
+                    remaining -= 1;
+                    continue;
+                }
+
+                let wave_limit = self
+                    .system_worker_limit()
+                    .min(remaining)
+                    .min(self.systems.len() - pending.cursor);
+                let wave_len = if pending.held_runs.is_empty() {
+                    schedule::independent_wave_len(&self.systems, pending.cursor, wave_limit)
+                } else {
+                    1
+                };
+                if wave_len > 1 {
+                    let mut runs = self.run_parallel_wave(&mut pending, wave_len)?;
+                    let first_continue = runs
+                        .iter()
+                        .position(|run| run.status == WorkStatus::ContinueSameTick);
+                    let process_count = first_continue.map_or(runs.len(), |index| index + 1);
+                    for run in runs.drain(..process_count) {
+                        let descriptor = &self.systems[run.index].descriptor;
+                        pending.commands.merge_reserved(run.commands)?;
+                        if descriptor.barrier_after {
+                            pending.commands.flush(&mut pending.worlds)?;
+                        }
+                        if run.status == WorkStatus::ContinueSameTick {
+                            pending.same_tick_runs =
+                                pending.same_tick_runs.checked_add(1).ok_or_else(|| {
+                                    error(ErrorCode::CapacityExceeded, "SameTick継続回数")
+                                })?;
+                            if pending.same_tick_runs >= self.same_tick_limit {
+                                return Err(EngineError::capacity(
+                                    "SameTick継続上限",
+                                    pending.same_tick_runs.saturating_add(1),
+                                    self.same_tick_limit,
+                                ));
+                            }
+                            if !descriptor.barrier_after && !pending.commands.commands.is_empty() {
+                                return Err(error(
+                                    ErrorCode::InvalidState,
+                                    "SameTickの書込にはbarrierが必要",
+                                ));
+                            }
+                        } else {
+                            pending.finish_system(&self.systems)?;
+                        }
+                    }
+                    pending.held_runs.extend(runs);
+                    remaining -= wave_len;
+                    continue;
+                }
+
                 let entry = &mut self.systems[pending.cursor];
                 if entry.descriptor.world.is_some_and(|key| {
                     pending
@@ -1385,6 +1648,7 @@ impl Engine {
                         .any(|world| world.key == key && world.paused)
                 }) {
                     pending.finish_system(&self.systems)?;
+                    remaining -= 1;
                     continue;
                 }
                 if entry.descriptor.scene.is_some_and(|key| {
@@ -1394,6 +1658,7 @@ impl Engine {
                         .any(|scene| scene.key == key && scene.state == SceneState::Running)
                 }) {
                     pending.finish_system(&self.systems)?;
+                    remaining -= 1;
                     continue;
                 }
                 let status = entry.system.run(&mut SystemContext {
@@ -1428,6 +1693,7 @@ impl Engine {
                 } else {
                     pending.finish_system(&self.systems)?;
                 }
+                remaining -= 1;
             }
             if pending.cursor < self.systems.len() {
                 return Ok(false);

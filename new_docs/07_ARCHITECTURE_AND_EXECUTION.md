@@ -67,7 +67,9 @@ Sceneの`update`は世界のtickに対応するゲーム更新、`render`は表�
 
 世界への正規書き込みはWorldのcommit所有者が行う。workerは資産decode、圧縮、生成候補、読み取り計算を行い、結果にJobIdと入力世代を付ける。到着順ではなく確定した順で取り込む。古い入力への結果は破棄または再計算する。
 
-作者システムは読み書きする型・領域・依存を宣言する。独立性を検証できる仕事だけ並列化し、競合時は安定した直列順に戻す。セルsolverの並列化は候補のread/write setと安定した競合解決を使う。単純なchunkの色分けだけで競合がなくなったとみなさない。
+作者システムは読み書きする型・領域・依存を宣言する。独立性を検証できる仕事だけ並列化し、競合時は安定した直列順に戻す。Runtime Systemは作者が`SystemDescriptor::parallel()`を明示したものだけ、同phase・非競合・非依存の連続waveとして同時に開始する。各SystemはSendを実装し、共有ServiceはSend+Syncでなければならない。各workerは専用command bufferへ書き、実行完了順に関係なくschedule順へ戻してからcommitする。SameTick継続がある場合は後続waveの結果を保留し、cursor順の公開を守る。simulation worker数は実行設定で最大64またはautoを選び、既定1は従来の逐次実行を保つ。worker数・完了順は正規状態へ含めない。
+
+セルsolverの並列化は候補のread/write setと安定した競合解決を使う。単純なchunkの色分けだけで競合がなくなったとみなさない。System workerはthread起動とschedule・command bufferの管理費を伴うため、対象simulation workloadの比較計測なしに高速化を主張しない。
 
 ## 再現性
 

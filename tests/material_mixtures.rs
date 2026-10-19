@@ -1166,3 +1166,108 @@ fn branched_world_cannot_import_uncommitted_history_or_definitions() {
         .validate_world(&world)
         .unwrap();
 }
+
+#[test]
+fn resident_components_preserve_fractional_mixture_and_particle_payload() {
+    let mut world = world();
+    seed(&mut world);
+    let layer = layer(&world);
+    let pure = world
+        .resident_mixture_inventory(layer, config().channel)
+        .unwrap();
+    let initial_water = pure
+        .components
+        .iter()
+        .find(|v| v.material == key("test:water"))
+        .unwrap();
+    let initial_oil = pure
+        .components
+        .iter()
+        .find(|v| v.material == key("test:oil"))
+        .unwrap();
+    assert_eq!(initial_water.total_tokens, MaterialQuantity::ONE);
+    assert_eq!(initial_oil.total_tokens, MaterialQuantity::ONE);
+    assert_eq!(initial_water.mass, MaterialQuantity::new(5, 1).unwrap());
+    assert_eq!(initial_oil.mass, MaterialQuantity::new(3, 1).unwrap());
+
+    let reference = reference(&mut world);
+    mix(&mut world, reference);
+    let mixed = world
+        .resident_mixture_inventory(layer, config().channel)
+        .unwrap();
+    assert_eq!(mixed, pure);
+    // carrierの名目数量が変わっても、成分別の有理数量は保存されます。
+    assert_eq!(
+        world
+            .resident_material_inventory()
+            .unwrap()
+            .materials
+            .iter()
+            .find(|v| v.material == key("test:solution"))
+            .unwrap()
+            .total_tokens,
+        2
+    );
+    let handle = world
+        .edit(|edit| edit.emit_material_particle(layer, p(0, 2), [0, 0]))
+        .unwrap();
+    let airborne = world
+        .resident_mixture_inventory(layer, config().channel)
+        .unwrap();
+    assert_eq!(
+        airborne
+            .components
+            .iter()
+            .find(|v| v.material == key("test:water"))
+            .unwrap()
+            .particle_tokens,
+        MaterialQuantity::new(1, 2).unwrap()
+    );
+    assert_eq!(
+        airborne
+            .components
+            .iter()
+            .find(|v| v.material == key("test:oil"))
+            .unwrap()
+            .particle_tokens,
+        MaterialQuantity::new(1, 2).unwrap()
+    );
+    for (before, after) in mixed.components.iter().zip(&airborne.components) {
+        assert_eq!(before.total_tokens, after.total_tokens);
+        assert_eq!(before.mass, after.mass);
+    }
+    let bytes = world.checkpoint(4_000_000).unwrap();
+    let mut restored = World::restore(
+        &bytes,
+        Arc::clone(world.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    assert_eq!(
+        restored
+            .resident_mixture_inventory(layer, config().channel)
+            .unwrap(),
+        airborne
+    );
+    restored
+        .edit(|edit| edit.land_material_particle(handle))
+        .unwrap();
+    assert_eq!(
+        restored
+            .resident_mixture_inventory(layer, config().channel)
+            .unwrap(),
+        mixed
+    );
+}
+
+#[test]
+fn resident_components_reject_position_fixed_composition_channel() {
+    let world = world();
+    let layer = layer(&world);
+    assert!(
+        world
+            .resident_mixture_inventory(layer, key("test:position-ref"))
+            .is_err()
+    );
+}

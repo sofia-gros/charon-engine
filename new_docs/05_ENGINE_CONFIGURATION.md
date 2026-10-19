@@ -111,6 +111,7 @@ Cargoのfeatureは条件付きコンパイルや任意の依存を扱う仕組�
 | `storage.root` | 設定ファイル基準のパス | `./saves` |
 | `storage.keep_generations` | `3`以上の整数 | `3` |
 | `simulation.step_hz` | 正の`u16`、profileに記録 | `60` |
+| `simulation.system_workers` | `1..=64`または`auto`。並列実行を明示許可した独立Systemの同時worker上限 | `1` |
 | `simulation.gravity` | 有限なcell/秒²の`{x, y}` | `{x: 0.0, y: 627.84}` |
 | `streaming.auto_observer` | bool | `true` |
 | `streaming.active_margin_chunks` | 非負整数 | `1` |

@@ -14,6 +14,7 @@ use crate::foundation::{
     grid::CellPoint,
     id::WorldId,
 };
+use std::mem::size_of;
 
 /// 標準気体proxyの式。実在気体の状態方程式の精度を保証するものではありません。
 #[derive(Clone, Copy, Debug)]
@@ -120,6 +121,32 @@ pub struct PressureJob {
     iteration: u16,
     work: u64,
     report: PressureRelaxationReport,
+}
+
+pub(super) struct PreparedPressureOutputs {
+    pub(super) outputs: Vec<PreparedPressureOutput>,
+    pub(super) reports: Vec<PressureRelaxationReport>,
+    pub(super) validation_work: usize,
+    pub(super) scratch_bytes: usize,
+}
+
+/// 広域圧力を公開した後、新圧力snapshotで始めた押出し探索の結果です。
+pub struct PressureJobPushReport {
+    /// 公開した圧力緩和の診断。
+    pub pressure: PressureRelaxationReport,
+    /// 新しい圧力fieldで進めた探索の状態。
+    pub search_status: super::PressurePushStatus,
+    /// 探索がReadyとなり、この取引内で押出し経路も公開したか。
+    pub published_push: bool,
+    /// 予算内で終わらず次回へ継続する探索。SearchingのときだけSomeです。
+    pub pending_search: Option<super::PressurePushSearch>,
+}
+
+pub(super) struct PreparedPressureOutput {
+    channel: StableKey,
+    first_point: Option<CellPoint>,
+    default: i64,
+    updates: Vec<(CellPoint, i64)>,
 }
 
 impl PressureJob {
@@ -792,46 +819,306 @@ impl WorldEdit<'_> {
         &mut self,
         job: &PressureJob,
     ) -> EngineResult<PressureRelaxationReport> {
+        self.publish_pressure_jobs(std::slice::from_ref(job))?
+            .pop()
+            .ok_or_else(|| invalid("広域圧力Jobの公開結果がない"))
+    }
+
+    /// 同じ初期Worldから完成した複数の広域圧力jobを一候補へ公開します。
+    ///
+    /// 全jobの入力・活動chunk・出力channel容量を最初の書込み前に照合します。
+    /// 同じchannelの同じ座標を複数jobが更新する場合は、入力順で勝者を選ばず全体を
+    /// conflictとして拒否します。異なるchannelまたは異なる出力座標は固定順で適用し、
+    /// 外側のWorldEditと同じrollback境界を共有します。ここで計算済み圧力を再計算したり、
+    /// PressurePushSearchを新しい圧力出力から作り直したりはしません。
+    ///
+    /// job数はWorldLimits.jobs、活動chunk内4096 cellの再採取と保存node照合の合計は
+    /// WorldLimits.job_cells、公開scratch byte数はWorldLimits.job_bytesで制限します。
+    pub fn publish_pressure_jobs(
+        &mut self,
+        jobs: &[PressureJob],
+    ) -> EngineResult<Vec<PressureRelaxationReport>> {
+        if jobs.is_empty() {
+            return Ok(Vec::new());
+        }
         self.run(|editor| {
-            job.validate_context(editor.world)?;
-            if job.status() != PressureJobStatus::Ready {
-                return Err(conflict("未完成の広域圧力"));
-            }
-            let layer = editor.world.content.layer_id(job.layer)?;
-            // 復元を含め入力の完全性を再検査します。保存された数値状態は正規状態として
-            // 継続し、過去の全反復をやり直しません。保存buffer自体の整合は保存層が扱います。
-            let checked = PressureJob::new(editor.world, layer, job.config)?;
-            if checked.nodes.len() != job.nodes.len()
-                || checked
-                    .nodes
-                    .iter()
-                    .zip(&job.nodes)
-                    .any(|(a, b)| a.input != b.input)
-            {
-                return Err(conflict("広域圧力の保存入力が不一致"));
-            }
-            let channel = job.config.relaxation.channel;
-            let origin = editor.world.channel_layout::<i64>(channel)?.origin;
-            let mut updates = Vec::new();
-            updates
-                .try_reserve_exact(job.report.cells)
-                .map_err(allocation)?;
-            for node in &job.nodes {
-                if node.input.kind != 0 {
-                    updates.push((channel_point(node.input.point, origin)?, node.old));
-                }
-            }
-            let default = editor.world.validate_channel_updates(channel, &updates)?;
-            for clearing in [true, false] {
-                for &(point, value) in &updates {
-                    if (value == default) == clearing {
-                        editor.set_channel(channel, point, value)?;
-                    }
-                }
-            }
-            Ok(job.report)
+            let prepared = prepare_pressure_jobs(editor.world, jobs)?;
+            apply_pressure_outputs(editor, prepared)
         })
     }
+
+    /// 圧力jobを公開し、その出力snapshotから押出しを探索して一取引で確定します。
+    ///
+    /// 圧力出力を候補へ適用した後に新しいPressurePushSearchを作るため、探索は旧圧力を
+    /// 読みません。budget内にReadyなら同じWorldEdit内で押出しも公開します。探索が
+    /// Searchingのままなら、公開済み圧力と進捗中searchを成功結果として返します。呼出側は
+    /// pending_searchを同じWorldEditのStateStoreへ保存できます。探索がNoOutletなら圧力
+    /// fieldだけを公開します。圧力公開後の探索・押出しがエラーになれば候補全体を破棄します。
+    pub fn publish_pressure_job_then_search_push(
+        &mut self,
+        pressure_job: &PressureJob,
+        layer: LayerId,
+        source: CellPoint,
+        config: super::PressurePushConfig,
+        budget: usize,
+    ) -> EngineResult<PressureJobPushReport> {
+        self.run(|editor| {
+            if budget == 0 {
+                return Err(invalid("圧力公開後の押出し探索budget"));
+            }
+            if editor.world.limits.jobs < 2 {
+                return Err(EngineError::capacity(
+                    "圧力公開後の連成Job数",
+                    2,
+                    editor.world.limits.jobs.into(),
+                ));
+            }
+            let prepared = prepare_pressure_jobs(editor.world, std::slice::from_ref(pressure_job))?;
+            let active_chunks = editor
+                .world
+                .chunks
+                .values()
+                .filter(|chunk| chunk.active)
+                .count();
+            let search_work = active_chunks
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(budget.min(config.nodes as usize)))
+                .ok_or_else(|| invalid("圧力公開後の探索work量overflow"))?;
+            let validation_work = prepared
+                .validation_work
+                .checked_add(search_work)
+                .ok_or_else(|| invalid("圧力・探索work量overflow"))?;
+            if validation_work > editor.world.limits.job_cells {
+                return Err(EngineError::capacity(
+                    "圧力・押出し連成の検証予算",
+                    validation_work as u64,
+                    editor.world.limits.job_cells as u64,
+                ));
+            }
+            let search_bytes = (config.nodes as usize)
+                .checked_mul(size_of::<(CellPoint, u32)>())
+                .and_then(|value| {
+                    active_chunks
+                        .checked_mul(
+                            size_of::<(ChunkCoord, u64)>() + size_of::<(ChunkCoord, [u64; 64])>(),
+                        )
+                        .and_then(|chunk_bytes| value.checked_add(chunk_bytes))
+                })
+                .ok_or_else(|| invalid("圧力公開後の探索scratch byte数overflow"))?;
+            let scratch_bytes = prepared
+                .scratch_bytes
+                .checked_add(search_bytes)
+                .ok_or_else(|| invalid("圧力・探索scratch byte数overflow"))?;
+            if scratch_bytes > editor.world.limits.job_bytes {
+                return Err(EngineError::capacity(
+                    "圧力・押出し連成scratch byte数",
+                    scratch_bytes as u64,
+                    editor.world.limits.job_bytes as u64,
+                ));
+            }
+            let pressure = apply_pressure_outputs(editor, prepared)?
+                .pop()
+                .ok_or_else(|| invalid("圧力jobの公開結果がない"))?;
+            let mut search = super::PressurePushSearch::new(editor.world, layer, source, config)?;
+            let search_status = search.step(editor.world, budget)?;
+            let published_push = if search_status == super::PressurePushStatus::Ready {
+                editor.publish_pressure_push(&search)?;
+                true
+            } else {
+                false
+            };
+            let pending_search =
+                (search_status == super::PressurePushStatus::Searching).then_some(search);
+            Ok(PressureJobPushReport {
+                pressure,
+                search_status,
+                published_push,
+                pending_search,
+            })
+        })
+    }
+}
+
+pub(super) fn prepare_pressure_jobs(
+    world: &World,
+    jobs: &[PressureJob],
+) -> EngineResult<PreparedPressureOutputs> {
+    let (validation_work, scratch_bytes, output_count) = pressure_jobs_cost(world, jobs)?;
+
+    let mut outputs = Vec::new();
+    outputs.try_reserve_exact(jobs.len()).map_err(allocation)?;
+    let mut write_keys = Vec::new();
+    write_keys
+        .try_reserve_exact(output_count)
+        .map_err(allocation)?;
+    let mut reports = Vec::new();
+    reports.try_reserve_exact(jobs.len()).map_err(allocation)?;
+
+    // 各jobの再採取は未変更World上で終え、公開値と重複検査用keyを作る。
+    for job in jobs {
+        job.validate_context(world)?;
+        if job.status() != PressureJobStatus::Ready {
+            return Err(conflict("未完成の広域圧力"));
+        }
+        let layer = world.content.layer_id(job.layer)?;
+        // 復元を含め入力の完全性を再検査する。保存された途中状態は維持し、
+        // 過去の全反復をやり直さない。
+        let checked = PressureJob::new(world, layer, job.config)?;
+        if checked.nodes.len() != job.nodes.len()
+            || checked
+                .nodes
+                .iter()
+                .zip(&job.nodes)
+                .any(|(a, b)| a.input != b.input)
+        {
+            return Err(conflict("広域圧力の保存入力が不一致"));
+        }
+        let channel = job.config.relaxation.channel;
+        let origin = world.channel_layout::<i64>(channel)?.origin;
+        let mut updates = Vec::new();
+        updates
+            .try_reserve_exact(job.report.cells)
+            .map_err(allocation)?;
+        for node in &job.nodes {
+            if node.input.kind != 0 {
+                let point = channel_point(node.input.point, origin)?;
+                // 参照pressure solverは値が変わらないchannelを書き戻さない。
+                // 同じcheckpointとchunk revisionを保ち、不要なpage確保も避けます。
+                if read(world, channel, node.input.point)? != node.old {
+                    updates.push((point, node.old));
+                }
+                write_keys.push((channel, point.x, point.y));
+            }
+        }
+        let default = world.validate_channel_updates(channel, &updates)?;
+        let first_point = updates
+            .iter()
+            .map(|(point, _)| *point)
+            .min_by_key(|point| (point.x, point.y));
+        outputs.push(PreparedPressureOutput {
+            channel,
+            first_point,
+            default,
+            updates,
+        });
+        reports.push(job.report);
+    }
+
+    write_keys.sort_unstable();
+    if write_keys.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(conflict("広域圧力Job群の出力座標が競合"));
+    }
+    outputs.sort_unstable_by_key(|output| {
+        (
+            output.channel,
+            output.first_point.map_or(i32::MIN, |point| point.x),
+            output.first_point.map_or(i32::MIN, |point| point.y),
+        )
+    });
+    let mut group_start = 0;
+    while group_start < outputs.len() {
+        let channel = outputs[group_start].channel;
+        let mut group_end = group_start + 1;
+        let mut count = outputs[group_start].updates.len();
+        while group_end < outputs.len() && outputs[group_end].channel == channel {
+            count = count
+                .checked_add(outputs[group_end].updates.len())
+                .ok_or_else(|| invalid("広域圧力channel更新数overflow"))?;
+            group_end += 1;
+        }
+        let mut updates = Vec::new();
+        updates.try_reserve_exact(count).map_err(allocation)?;
+        for output in &outputs[group_start..group_end] {
+            updates.extend_from_slice(&output.updates);
+        }
+        // 個別jobの検査だけでは合算後のchannel容量を証明できないため、
+        // channel単位に全出力を合わせてcommit前容量を検証する。
+        world.validate_channel_updates(channel, &updates)?;
+        group_start = group_end;
+    }
+
+    Ok(PreparedPressureOutputs {
+        outputs,
+        reports,
+        validation_work,
+        scratch_bytes,
+    })
+}
+
+pub(super) fn pressure_jobs_cost(
+    world: &World,
+    jobs: &[PressureJob],
+) -> EngineResult<(usize, usize, usize)> {
+    if jobs.is_empty() {
+        return Ok((0, 0, 0));
+    }
+    if jobs.len() > world.limits.jobs as usize {
+        return Err(EngineError::capacity(
+            "広域圧力Job数",
+            jobs.len() as u64,
+            world.limits.jobs.into(),
+        ));
+    }
+    let active_chunks = world.chunks.values().filter(|chunk| chunk.active).count();
+    let input_scan_work = active_chunks
+        .checked_mul(4096)
+        .ok_or_else(|| invalid("広域圧力Jobの活動cell照合量overflow"))?;
+    let mut validation_work = 0usize;
+    let mut output_count = 0usize;
+    for job in jobs {
+        validation_work = validation_work
+            .checked_add(input_scan_work)
+            .and_then(|value| value.checked_add(job.nodes.len()))
+            .ok_or_else(|| invalid("広域圧力Job群の検証量overflow"))?;
+        output_count = output_count
+            .checked_add(job.report.cells)
+            .ok_or_else(|| invalid("広域圧力Job群の出力数overflow"))?;
+    }
+    let per_output_cell = size_of::<(CellPoint, i64)>()
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(size_of::<(StableKey, i32, i32)>()))
+        .ok_or_else(|| invalid("広域圧力scratch byte数overflow"))?;
+    let scratch_bytes = output_count
+        .checked_mul(per_output_cell)
+        .and_then(|value| {
+            jobs.len()
+                .checked_mul(
+                    size_of::<PreparedPressureOutput>() + size_of::<PressureRelaxationReport>(),
+                )
+                .and_then(|job_bytes| value.checked_add(job_bytes))
+        })
+        .ok_or_else(|| invalid("広域圧力scratch byte数overflow"))?;
+    if scratch_bytes > world.limits.job_bytes {
+        return Err(EngineError::capacity(
+            "広域圧力Job群の公開scratch byte数",
+            scratch_bytes as u64,
+            world.limits.job_bytes as u64,
+        ));
+    }
+    if validation_work > world.limits.job_cells {
+        return Err(EngineError::capacity(
+            "広域圧力Job群の検証予算",
+            validation_work as u64,
+            world.limits.job_cells as u64,
+        ));
+    }
+    Ok((validation_work, scratch_bytes, output_count))
+}
+
+pub(super) fn apply_pressure_outputs(
+    editor: &mut WorldEdit<'_>,
+    prepared: PreparedPressureOutputs,
+) -> EngineResult<Vec<PressureRelaxationReport>> {
+    for output in prepared.outputs {
+        for clearing in [true, false] {
+            for &(point, value) in &output.updates {
+                if (value == output.default) == clearing {
+                    editor.set_channel(output.channel, point, value)?;
+                }
+            }
+        }
+    }
+    Ok(prepared.reports)
 }
 
 const NEIGHBORS: [(i32, i32); 4] = [(0, -1), (-1, 0), (1, 0), (0, 1)];

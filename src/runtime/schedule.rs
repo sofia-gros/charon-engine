@@ -57,6 +57,8 @@ pub struct SystemDescriptor {
     pub world: Option<StableKey>,
     /// 終了・継続の各回でcommandを候補内に反映します。
     pub barrier_after: bool,
+    /// 読書宣言が独立した他Systemとworker上で同時実行できるという作者保証です。
+    pub parallel: bool,
 }
 impl SystemDescriptor {
     /// 空の権限から組み立てます。
@@ -71,6 +73,7 @@ impl SystemDescriptor {
             scene: None,
             world: None,
             barrier_after: false,
+            parallel: false,
         }
     }
     /// 依存を追加します。
@@ -108,13 +111,20 @@ impl SystemDescriptor {
         self.barrier_after = true;
         self
     }
+    /// 宣言外の共有状態や外部副作用、呼出順への依存がないことを保証してworker実行を許可します。
+    pub fn parallel(mut self) -> Self {
+        self.parallel = true;
+        self
+    }
     pub(crate) fn allows(&self, key: StableKey, write: bool) -> bool {
         self.writes.contains(&key) || (!write && self.reads.contains(&key))
     }
 }
 
 /// 正規の進捗はWorldのStateStoreに置き、selfには実装や再生成できるcacheを置きます。
-pub trait System: 'static {
+///
+/// `SystemDescriptor::parallel`を指定したSystemはworkerへ移されるため、実装はSendです。
+pub trait System: Send + 'static {
     /// 一回分を進め、同tickでの継続が必要か返します。
     fn run(&mut self, context: &mut SystemContext<'_>) -> EngineResult<WorkStatus>;
 }
@@ -154,6 +164,47 @@ impl SystemContext<'_> {
 pub(crate) struct SystemEntry {
     pub descriptor: SystemDescriptor,
     pub system: Box<dyn System>,
+}
+
+/// 同じpollで独立して開始できる連続System数を求めます。
+///
+/// 順序依存、読書競合、phase境界、明示barrierの手前でwaveを止めます。
+pub(crate) fn independent_wave_len(entries: &[SystemEntry], start: usize, limit: usize) -> usize {
+    if limit <= 1 || start >= entries.len() {
+        return 1;
+    }
+    let first = &entries[start].descriptor;
+    if !first.parallel || first.barrier_after {
+        return 1;
+    }
+    let mut end = start + 1;
+    while end < entries.len() && end - start < limit {
+        let current = &entries[end].descriptor;
+        if current.phase != first.phase {
+            break;
+        }
+        if !current.parallel {
+            break;
+        }
+        let independent = entries[start..end].iter().all(|prior| {
+            let prior = &prior.descriptor;
+            !current.after.contains(&prior.key)
+                && !prior
+                    .writes
+                    .iter()
+                    .any(|key| current.reads.contains(key) || current.writes.contains(key))
+                && !current.writes.iter().any(|key| prior.reads.contains(key))
+                && !prior.barrier_after
+        });
+        if !independent {
+            break;
+        }
+        end += 1;
+        if current.barrier_after {
+            break;
+        }
+    }
+    end - start
 }
 
 pub(crate) fn plan(

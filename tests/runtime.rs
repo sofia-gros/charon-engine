@@ -9,7 +9,7 @@ use charon_engine::{
     runtime::{
         AppBuilder, Engine, FrameContext, Plugin, Scene, SceneContext, SceneState, StepResult,
         StopContext,
-        config::{EngineSettings, EngineSettingsPatch},
+        config::{EngineSettings, EngineSettingsPatch, SimulationPatch, WorkerCount},
         input::{ActionId, InputBinding, InputEvent, InputValue, TickInput},
         schedule::{Phase, System, SystemContext, SystemDescriptor, WorkStatus},
     },
@@ -489,6 +489,20 @@ fn settings_validate_unknown_keys_and_merge_without_resetting_siblings() {
             .build()
             .is_err()
     );
+    for workers in [0_u16, 65] {
+        assert!(
+            Engine::builder()
+                .settings(EngineSettingsPatch {
+                    simulation: Some(SimulationPatch {
+                        system_workers: Some(WorkerCount::Count(workers)),
+                        ..SimulationPatch::default()
+                    }),
+                    ..EngineSettingsPatch::default()
+                })
+                .build()
+                .is_err()
+        );
+    }
     assert!(Engine::builder().work_budget(0).build().is_err());
 }
 
@@ -884,31 +898,31 @@ fn ignored_command_error_discards_the_entire_tick() {
     assert_eq!(engine.tick(), 0);
     assert_eq!(count(&engine), 0);
 }
-struct TraceSystem(Rc<RefCell<Vec<&'static str>>>);
+struct TraceSystem(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
 impl System for TraceSystem {
     fn run(&mut self, ctx: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
         assert_eq!(ctx.input().tick, 1);
-        self.0.borrow_mut().push("before");
+        self.0.lock().unwrap().push("before");
         Ok(WorkStatus::Complete)
     }
 }
-struct TraceScene(Rc<RefCell<Vec<&'static str>>>);
+struct TraceScene(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
 impl Scene for TraceScene {
     fn update(&mut self, _: &mut SceneContext<'_>) -> EngineResult<()> {
-        self.0.borrow_mut().push("scene");
+        self.0.lock().unwrap().push("scene");
         Ok(())
     }
 }
 #[test]
 fn before_scene_phase_is_explicit_and_runs_once_with_a_split_budget() {
-    let trace = Rc::new(RefCell::new(Vec::new()));
+    let trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut engine = Engine::builder()
         .work_budget(1)
         .system(
             SystemDescriptor::new(key("test:before"), Phase::BeforeScenes),
-            TraceSystem(Rc::clone(&trace)),
+            TraceSystem(std::sync::Arc::clone(&trace)),
         )
-        .scene("game", TraceScene(Rc::clone(&trace)))
+        .scene("game", TraceScene(std::sync::Arc::clone(&trace)))
         .start_scene("game")
         .build()
         .unwrap();
@@ -916,7 +930,7 @@ fn before_scene_phase_is_explicit_and_runs_once_with_a_split_budget() {
         engine.step(TickInput::empty(1)).unwrap(),
         StepResult::Complete(1)
     );
-    assert_eq!(&*trace.borrow(), &["before", "scene"]);
+    assert_eq!(&*trace.lock().unwrap(), &["before", "scene"]);
 }
 
 #[test]
@@ -929,10 +943,16 @@ fn conflicting_access_requires_explicit_dependency_and_profile_exposes_order() {
             descriptor
         }
     };
-    let trace = Rc::new(RefCell::new(Vec::new()));
+    let trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let result = Engine::builder()
-        .system(make("test:a", false), TraceSystem(Rc::clone(&trace)))
-        .system(make("test:b", false), TraceSystem(Rc::clone(&trace)))
+        .system(
+            make("test:a", false),
+            TraceSystem(std::sync::Arc::clone(&trace)),
+        )
+        .system(
+            make("test:b", false),
+            TraceSystem(std::sync::Arc::clone(&trace)),
+        )
         .build();
     assert!(matches!(
         result,
@@ -942,7 +962,10 @@ fn conflicting_access_requires_explicit_dependency_and_profile_exposes_order() {
         })
     ));
     let engine = Engine::builder()
-        .system(make("test:b", true), TraceSystem(Rc::clone(&trace)))
+        .system(
+            make("test:b", true),
+            TraceSystem(std::sync::Arc::clone(&trace)),
+        )
         .system(make("test:a", false), TraceSystem(trace))
         .build()
         .unwrap();
@@ -950,6 +973,165 @@ fn conflicting_access_requires_explicit_dependency_and_profile_exposes_order() {
     assert_eq!(profile.systems[0].key, key("test:a"));
     assert_eq!(profile.systems[1].key, key("test:b"));
 }
+
+#[test]
+fn independent_system_workers_one_two_and_four_publish_identical_state() {
+    struct IndependentWriter {
+        record: StableKey,
+        barrier: Option<std::sync::Arc<std::sync::Barrier>>,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        delay: Duration,
+    }
+    impl System for IndependentWriter {
+        fn run(&mut self, context: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(barrier) = &self.barrier {
+                barrier.wait();
+            }
+            std::thread::sleep(self.delay);
+            let mut worlds = context.worlds();
+            let world = worlds.view().id("main")?;
+            worlds.set(world, self.record, key("test:number"), &1_u64)?;
+            Ok(WorkStatus::Complete)
+        }
+    }
+    let system_keys = [
+        "test:writer-a",
+        "test:writer-b",
+        "test:writer-c",
+        "test:writer-d",
+    ];
+    let record_keys = [
+        "test:value-a",
+        "test:value-b",
+        "test:value-c",
+        "test:value-d",
+    ];
+    let mut reference = None;
+    for workers in [1_u16, 2, 4] {
+        let barrier = (workers > 1)
+            .then(|| std::sync::Arc::new(std::sync::Barrier::new(usize::from(workers.min(4)))));
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut builder = Engine::builder()
+            .world("main", state())
+            .settings(EngineSettingsPatch {
+                simulation: Some(SimulationPatch {
+                    system_workers: Some(WorkerCount::Count(workers)),
+                    ..SimulationPatch::default()
+                }),
+                ..EngineSettingsPatch::default()
+            });
+        for index in 0..4 {
+            let record = key(record_keys[index]);
+            builder = builder.system(
+                SystemDescriptor::new(key(system_keys[index]), Phase::Intent)
+                    .write(record)
+                    .parallel(),
+                IndependentWriter {
+                    record,
+                    barrier: barrier.as_ref().map(std::sync::Arc::clone),
+                    calls: std::sync::Arc::clone(&calls),
+                    delay: Duration::from_millis(u64::from(4 - index as u8) * 5),
+                },
+            );
+        }
+        let mut engine = builder.build().unwrap();
+        assert_eq!(
+            engine.step(TickInput::empty(1)).unwrap(),
+            StepResult::Complete(1)
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 4);
+        let world = engine.worlds().id("main").unwrap();
+        let checkpoint = engine.worlds().checkpoint(world).unwrap();
+        if let Some(expected) = &reference {
+            assert_eq!(
+                &checkpoint, expected,
+                "worker数{workers}でも公開状態が一致する"
+            );
+        } else {
+            reference = Some(checkpoint);
+        }
+    }
+}
+
+#[test]
+fn parallel_later_system_result_waits_for_same_tick_continuation_order() {
+    struct ContinueOnce {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl System for ContinueOnce {
+        fn run(&mut self, _: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
+            let call = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(if call == 0 {
+                WorkStatus::ContinueSameTick
+            } else {
+                WorkStatus::Complete
+            })
+        }
+    }
+    struct WriteAfterContinue {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl System for WriteAfterContinue {
+        fn run(&mut self, context: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut worlds = context.worlds();
+            let world = worlds.view().id("main")?;
+            worlds.set(world, key("test:after"), key("test:number"), &1_u64)?;
+            Ok(WorkStatus::Complete)
+        }
+    }
+    let mut checkpoints = Vec::new();
+    for workers in [1_u16, 2] {
+        let first_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let second_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let patch = EngineSettingsPatch {
+            simulation: Some(SimulationPatch {
+                system_workers: Some(WorkerCount::Count(workers)),
+                ..SimulationPatch::default()
+            }),
+            ..EngineSettingsPatch::default()
+        };
+        let mut engine = Engine::builder()
+            .world("main", state())
+            .settings(patch)
+            .work_budget(2)
+            .system(
+                SystemDescriptor::new(key("test:continue"), Phase::Intent).parallel(),
+                ContinueOnce {
+                    calls: std::sync::Arc::clone(&first_calls),
+                },
+            )
+            .system(
+                SystemDescriptor::new(key("test:later-write"), Phase::Intent)
+                    .write(key("test:after"))
+                    .parallel(),
+                WriteAfterContinue {
+                    calls: std::sync::Arc::clone(&second_calls),
+                },
+            )
+            .build()
+            .unwrap();
+        assert_eq!(
+            engine.step(TickInput::empty(1)).unwrap(),
+            StepResult::Pending(1)
+        );
+        assert_eq!(engine.tick(), 0, "未完了SystemのWorld候補は公開しない");
+        assert_eq!(engine.resume().unwrap(), StepResult::Complete(1));
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let world = engine.worlds().id("main").unwrap();
+        let value: u64 = engine.worlds().get(world, key("test:after")).unwrap();
+        assert_eq!(value, 1);
+        checkpoints.push(engine.worlds().checkpoint(world).unwrap());
+    }
+    assert_eq!(checkpoints[0], checkpoints[1]);
+}
+
 struct DeferredSystem;
 impl System for DeferredSystem {
     fn run(&mut self, ctx: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {

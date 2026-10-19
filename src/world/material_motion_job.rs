@@ -40,11 +40,49 @@ pub struct MaterialMotionJobReport {
     pub waiting_for_region: bool,
 }
 
+/// 同じtick候補で確定した広域移動Job群の診断です。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterialMotionBatchReport {
+    /// 原子的に公開した移動Job数。
+    pub jobs: usize,
+    /// 1cell以上の経路を持ち、carrierを移動したJob数。
+    pub moved_jobs: usize,
+    /// 公開した全経路の交差cell数。
+    pub crossed_cells: usize,
+    /// 原子的に公開した圧力押出し探索数。
+    pub pressure_pushes: usize,
+}
+
+enum PreparedMaterialJob<'a> {
+    Motion(&'a MaterialMotionJob),
+    PressurePush(&'a super::PressurePushSearch, Option<Vec<CellPoint>>),
+}
+
+impl PreparedMaterialJob<'_> {
+    fn layer(&self) -> StableKey {
+        match self {
+            Self::Motion(job) => job.layer,
+            Self::PressurePush(search, _) => search.batch_order_key().0,
+        }
+    }
+
+    fn order_key(&self) -> (StableKey, i32, i32, u8, Option<StableKey>) {
+        match self {
+            Self::Motion(job) => (job.layer, job.source.y, job.source.x, 0, Some(job.channel)),
+            Self::PressurePush(search, _) => {
+                let (layer, y, x) = search.batch_order_key();
+                (layer, y, x, 1, None)
+            }
+        }
+    }
+}
+
 /// 正規状態へ保存できる、特定cellに所属する広域DDA進捗。
 ///
-/// 他の物質との交換・複数候補の競合は扱わず、単一トークンの空cell経路を
-/// 原子移動する。複数Jobを同時公開するときは呼出側の順序と失効を確認する。
-/// 限定的な仕事量を同じ呼出で終了したと偽らず、budget一単位を一交差で数える。
+/// 他の物質との交換や複数候補間の優先順位は決めず、単一トークンの空cell経路を
+/// 原子移動する。複数Jobは `WorldEdit::publish_material_motion_and_pressure_pushes` で
+/// 競合を検査し、経路が重なる場合は全体を拒否する。固定budget一単位を一交差で数え、
+/// 限定した仕事量を超えて同じ呼出で終了したと報告しない。
 #[derive(Clone, Debug)]
 pub struct MaterialMotionJob {
     world: WorldId,
@@ -278,25 +316,32 @@ impl MaterialMotionJob {
             if !self.finished {
                 return Err(conflict("広域移動Jobが未完成"));
             }
-            let layer = edit.world.content.layer_id(self.layer)?;
-            if self.path.len() > 1 {
-                let mut reversed = Vec::new();
-                reversed
-                    .try_reserve_exact(self.path.len())
-                    .map_err(allocation)?;
-                reversed.extend(self.path.iter().rev().copied());
-                edit.transport_path(layer, &reversed)?;
-            }
-            if self.after != self.before {
-                let origin = edit
-                    .world
-                    .channel_layout::<MaterialMotion>(self.channel)?
-                    .origin;
-                let target = *self.path.last().expect("始点を含む経路");
-                edit.set_channel(self.channel, channel_point(target, origin)?, self.after)?;
-            }
-            Ok(self.report())
+            self.publish_validated(edit)
         })
+    }
+
+    fn publish_validated(
+        &self,
+        editor: &mut WorldEdit<'_>,
+    ) -> EngineResult<MaterialMotionJobReport> {
+        let layer = editor.world.content.layer_id(self.layer)?;
+        if self.path.len() > 1 {
+            let mut reversed = Vec::new();
+            reversed
+                .try_reserve_exact(self.path.len())
+                .map_err(allocation)?;
+            reversed.extend(self.path.iter().rev().copied());
+            editor.transport_path(layer, &reversed)?;
+        }
+        if self.after != self.before {
+            let origin = editor
+                .world
+                .channel_layout::<MaterialMotion>(self.channel)?
+                .origin;
+            let target = *self.path.last().expect("始点を含む経路");
+            editor.set_channel(self.channel, channel_point(target, origin)?, self.after)?;
+        }
+        Ok(self.report())
     }
 
     fn validate_context(&self, world: &World) -> EngineResult<()> {
@@ -397,6 +442,510 @@ impl MaterialMotionJob {
         }
         Ok(())
     }
+}
+
+impl WorldEdit<'_> {
+    /// 同じ初期Worldから計算した広域移動Jobを、衝突検査後に一括公開します。
+    ///
+    /// 全Jobの入力revision・source・速度・進捗を、最初の書込みより前に照合します。
+    /// 同一layer内で経路、source/destination、斜めDDAの角検査cellが重なるJobは
+    /// conflictとして拒否します。候補順に依存した勝者選択はせず、衝突があれば全件を
+    /// rollbackします。互いに独立したJobはlayer・source座標・channelの固定順で公開し、
+    /// 成功時は一つのWorldEdit候補として確定できます。
+    ///
+    /// 同時件数はWorldLimits.jobs、active chunk入力照合・保存node・経路検査の合計は
+    /// WorldLimits.job_cells、経路Vec・bitset予約・順序VecのscratchはWorldLimits.job_bytes
+    /// で制限します。検査用予約は活動chunk数に比例するbitsetを一layerずつ保持します。
+    /// 計算中の進捗stepは各Jobで事前にbudget分割してください。
+    pub fn publish_material_motion_jobs(
+        &mut self,
+        jobs: &[MaterialMotionJob],
+    ) -> EngineResult<MaterialMotionBatchReport> {
+        self.publish_material_motion_and_pressure_pushes(jobs, &[])
+    }
+
+    /// 広域DDA移動と圧力押出し探索を同じ予約・原子取引で公開します。
+    ///
+    /// 両種別の全入力を未変更Worldから事前検証し、同一layer上で経路・角確認点が重なる
+    /// 場合は全体を拒否します。失敗した探索や一方だけの公開は残りません。圧力押出しの
+    /// 探索条件はすでに完成したPressurePushSearchの入力snapshotに基づきます。この入口は
+    /// 圧力緩和のPressureJobを同時実行したり、そこで更新する圧力値から押出し探索を作り直す
+    /// 機能ではありません。
+    pub fn publish_material_motion_and_pressure_pushes(
+        &mut self,
+        motion_jobs: &[MaterialMotionJob],
+        pressure_pushes: &[super::PressurePushSearch],
+    ) -> EngineResult<MaterialMotionBatchReport> {
+        self.run(|editor| {
+            let item_count = motion_jobs
+                .len()
+                .checked_add(pressure_pushes.len())
+                .ok_or_else(|| invalid("広域移動Job数overflow"))?;
+            if item_count > editor.world.limits.jobs as usize {
+                return Err(EngineError::capacity(
+                    "広域移動Job数",
+                    item_count as u64,
+                    editor.world.limits.jobs.into(),
+                ));
+            }
+            let active_chunks = editor
+                .world
+                .chunks
+                .values()
+                .filter(|chunk| chunk.active)
+                .count();
+            let mut validation_work = motion_jobs
+                .len()
+                .checked_mul(active_chunks)
+                .ok_or_else(|| invalid("広域移動Jobの入力検証量overflow"))?;
+            for job in motion_jobs {
+                let path_work = job
+                    .path
+                    .len()
+                    .checked_mul(8)
+                    .ok_or_else(|| invalid("広域移動Jobの経路検証量overflow"))?;
+                validation_work = validation_work
+                    .checked_add(path_work)
+                    .ok_or_else(|| invalid("広域移動Jobの検証量overflow"))?;
+            }
+            for search in pressure_pushes {
+                let search_work = search
+                    .node_count()
+                    .checked_mul(8)
+                    .ok_or_else(|| invalid("圧力押出しJobの検証量overflow"))?;
+                validation_work = validation_work
+                    .checked_add(search_work)
+                    .ok_or_else(|| invalid("圧力押出しJob群の検証量overflow"))?;
+            }
+            if validation_work > editor.world.limits.job_cells {
+                return Err(EngineError::capacity(
+                    "広域移動Job群の検証予算",
+                    validation_work as u64,
+                    editor.world.limits.job_cells as u64,
+                ));
+            }
+            let prepared_path_points =
+                pressure_pushes.iter().try_fold(0usize, |total, search| {
+                    total
+                        .checked_add(search.node_count())
+                        .ok_or_else(|| invalid("圧力押出し経路scratch数overflow"))
+                })?;
+            let path_scratch_bytes = prepared_path_points
+                .checked_mul(std::mem::size_of::<CellPoint>())
+                .ok_or_else(|| invalid("圧力押出し経路scratch byte数overflow"))?;
+            let reservation_scratch_bytes = if item_count == 0 {
+                0
+            } else {
+                active_chunks
+                    .checked_mul(std::mem::size_of::<(ChunkCoord, [u64; 64])>())
+                    .ok_or_else(|| invalid("広域移動予約scratch byte数overflow"))?
+            };
+            let scratch_bytes = item_count
+                .checked_mul(std::mem::size_of::<PreparedMaterialJob<'_>>())
+                .and_then(|value| value.checked_add(path_scratch_bytes))
+                .and_then(|value| value.checked_add(reservation_scratch_bytes))
+                .ok_or_else(|| invalid("広域移動Job scratch byte数overflow"))?;
+            if scratch_bytes > editor.world.limits.job_bytes {
+                return Err(EngineError::capacity(
+                    "広域移動Job群のscratch byte数",
+                    scratch_bytes as u64,
+                    editor.world.limits.job_bytes as u64,
+                ));
+            }
+            let mut ordered = Vec::new();
+            ordered.try_reserve_exact(item_count).map_err(allocation)?;
+            ordered.extend(motion_jobs.iter().map(PreparedMaterialJob::Motion));
+
+            // すべてのJobは同じ未変更候補に対して検査する。公開開始後にrevisionが
+            // 進んでも残りのJobの有効性を失わないよう、照合を先に完了させる。
+            for job in motion_jobs {
+                job.validate_progress()?;
+                job.validate_context(editor.world)?;
+                if !job.finished {
+                    return Err(conflict("広域移動Job群に未完成Jobがある"));
+                }
+            }
+            for search in pressure_pushes {
+                ordered.push(PreparedMaterialJob::PressurePush(search, None));
+            }
+            ordered.sort_by_key(PreparedMaterialJob::order_key);
+
+            let mut report = MaterialMotionBatchReport {
+                jobs: motion_jobs.len(),
+                pressure_pushes: pressure_pushes.len(),
+                ..MaterialMotionBatchReport::default()
+            };
+            let mut reservations: Option<(StableKey, super::transport::CellReservations)> = None;
+            for job in &mut ordered {
+                let layer = job.layer();
+                let is_motion = matches!(job, PreparedMaterialJob::Motion(_));
+                if reservations
+                    .as_ref()
+                    .is_none_or(|(current, _)| *current != layer)
+                {
+                    // 次layerの予約scratchを確保する前に前layer分を解放し、
+                    // 活動chunk数に比例するbitsetが一時的に二重化するのを防ぐ。
+                    drop(reservations.take());
+                    reservations = Some((
+                        layer,
+                        super::transport::CellReservations::new(editor.world)?,
+                    ));
+                }
+                let scratch = &mut reservations.as_mut().expect("予約scratchを作成済み").1;
+                let path = match job {
+                    PreparedMaterialJob::Motion(motion) => &motion.path,
+                    PreparedMaterialJob::PressurePush(search, stored_path) => {
+                        let (verified_layer, path) = search.prepared_publish_path(editor.world)?;
+                        if verified_layer != search.batch_order_key().0 {
+                            return Err(conflict("圧力押出しJobのlayerが変化"));
+                        }
+                        *stored_path = Some(path);
+                        stored_path.as_ref().expect("経路を準備済み")
+                    }
+                };
+                for &point in path {
+                    reserve_batch_point(scratch, point)?;
+                }
+                for pair in path.windows(2) {
+                    let dx = pair[1].x - pair[0].x;
+                    let dy = pair[1].y - pair[0].y;
+                    if is_motion && dx != 0 && dy != 0 {
+                        reserve_batch_point(scratch, offset(pair[0], dx, 0)?)?;
+                        reserve_batch_point(scratch, offset(pair[0], 0, dy)?)?;
+                    }
+                }
+                if is_motion {
+                    report.crossed_cells = report
+                        .crossed_cells
+                        .checked_add(path.len() - 1)
+                        .ok_or_else(|| invalid("広域移動Job群の交差数overflow"))?;
+                }
+                report.moved_jobs += usize::from(path.len() > 1);
+            }
+
+            for job in ordered {
+                match job {
+                    PreparedMaterialJob::Motion(job) => {
+                        job.publish_validated(editor)?;
+                    }
+                    PreparedMaterialJob::PressurePush(search, Some(path)) => {
+                        let layer = search.batch_order_key().0;
+                        editor.transport_path(editor.world.content.layer_id(layer)?, &path)?;
+                    }
+                    PreparedMaterialJob::PressurePush(_, None) => {
+                        return Err(invalid("圧力押出しJobの経路予約がない"));
+                    }
+                }
+            }
+            Ok(report)
+        })
+    }
+
+    /// PressureJob、広域DDA、圧力押出しを一つのWorldEdit候補へ確定します。
+    ///
+    /// 三種の入力と経路をすべて最初の書込み前に準備し、job件数と検証workの合計を
+    /// WorldLimitsで制限します。移動/押出しを固定順で適用した後、位置固定の圧力出力を
+    /// 公開します。scratch byte数もWorldLimits.job_bytes以下にします。
+    /// PressurePushSearchは保存時点の圧力snapshotで作られた経路を使い、
+    /// このPressureJobの出力から再探索はしません。圧力出力は位置固定channelなので、
+    /// 物質輸送のpayloadには含まれません。
+    pub fn publish_material_motion_pressure_jobs_and_pushes(
+        &mut self,
+        motion_jobs: &[MaterialMotionJob],
+        pressure_pushes: &[super::PressurePushSearch],
+        pressure_jobs: &[super::PressureJob],
+    ) -> EngineResult<(
+        MaterialMotionBatchReport,
+        Vec<super::PressureRelaxationReport>,
+    )> {
+        self.run(|editor| {
+            let count = motion_jobs
+                .len()
+                .checked_add(pressure_pushes.len())
+                .and_then(|value| value.checked_add(pressure_jobs.len()))
+                .ok_or_else(|| invalid("E05広域Job件数overflow"))?;
+            if count > editor.world.limits.jobs as usize {
+                return Err(EngineError::capacity(
+                    "E05広域Job数",
+                    count as u64,
+                    editor.world.limits.jobs.into(),
+                ));
+            }
+
+            // 全jobを同じ初期Worldで準備し、異種batchの合計予算も書込み前に確認する。
+            let prepared_pressure =
+                super::pressure_job::prepare_pressure_jobs(editor.world, pressure_jobs)?;
+            let active_chunks = editor
+                .world
+                .chunks
+                .values()
+                .filter(|chunk| chunk.active)
+                .count();
+            let mut motion_work = motion_jobs
+                .len()
+                .checked_mul(active_chunks)
+                .ok_or_else(|| invalid("E05移動Jobの入力検証量overflow"))?;
+            for job in motion_jobs {
+                motion_work = motion_work
+                    .checked_add(
+                        job.path
+                            .len()
+                            .checked_mul(8)
+                            .ok_or_else(|| invalid("E05移動Jobの経路検証量overflow"))?,
+                    )
+                    .ok_or_else(|| invalid("E05移動Jobの検証量overflow"))?;
+            }
+            for search in pressure_pushes {
+                motion_work = motion_work
+                    .checked_add(
+                        search
+                            .node_count()
+                            .checked_mul(8)
+                            .ok_or_else(|| invalid("E05押出しJobの検証量overflow"))?,
+                    )
+                    .ok_or_else(|| invalid("E05広域Jobの検証量overflow"))?;
+            }
+            let total_work = motion_work
+                .checked_add(prepared_pressure.validation_work)
+                .ok_or_else(|| invalid("E05広域Jobの検証量overflow"))?;
+            if total_work > editor.world.limits.job_cells {
+                return Err(EngineError::capacity(
+                    "E05異種Job群の検証予算",
+                    total_work as u64,
+                    editor.world.limits.job_cells as u64,
+                ));
+            }
+            let prepared_path_points =
+                pressure_pushes.iter().try_fold(0usize, |total, search| {
+                    total
+                        .checked_add(search.node_count())
+                        .ok_or_else(|| invalid("E05押出し経路scratch数overflow"))
+                })?;
+            let movement_items = motion_jobs
+                .len()
+                .checked_add(pressure_pushes.len())
+                .ok_or_else(|| invalid("E05移動Job数overflow"))?;
+            let path_scratch_bytes = prepared_path_points
+                .checked_mul(std::mem::size_of::<CellPoint>())
+                .ok_or_else(|| invalid("E05経路scratch byte数overflow"))?;
+            let reservation_scratch_bytes = if movement_items == 0 {
+                0
+            } else {
+                active_chunks
+                    .checked_mul(std::mem::size_of::<(ChunkCoord, [u64; 64])>())
+                    .ok_or_else(|| invalid("E05予約scratch byte数overflow"))?
+            };
+            let movement_scratch_bytes = movement_items
+                .checked_mul(std::mem::size_of::<PreparedMaterialJob<'_>>())
+                .and_then(|value| value.checked_add(path_scratch_bytes))
+                .and_then(|value| value.checked_add(reservation_scratch_bytes))
+                .ok_or_else(|| invalid("E05移動scratch byte数overflow"))?;
+            let scratch_bytes = prepared_pressure
+                .scratch_bytes
+                .checked_add(movement_scratch_bytes)
+                .ok_or_else(|| invalid("E05異種Job scratch byte数overflow"))?;
+            if scratch_bytes > editor.world.limits.job_bytes {
+                return Err(EngineError::capacity(
+                    "E05異種Job群のscratch byte数",
+                    scratch_bytes as u64,
+                    editor.world.limits.job_bytes as u64,
+                ));
+            }
+
+            // 既存の移動batchは経路競合を検査して一候補へ公開する。PressureJob出力は
+            // 位置固定channelのため、輸送後のchannel状態へ原子的に適用できる。
+            let motion_report =
+                editor.publish_material_motion_and_pressure_pushes(motion_jobs, pressure_pushes)?;
+            let pressure_reports =
+                super::pressure_job::apply_pressure_outputs(editor, prepared_pressure)?;
+            Ok((motion_report, pressure_reports))
+        })
+    }
+}
+
+/// MaterialPhaseと同じtickに公開する広域Jobの経路を、標準solverより先に予約します。
+///
+/// Job batch本体も公開前に同じ入力を検証するため、この関数は追加の検証仕事量を返します。
+/// 統合入口は二重検証を含めてWorldLimits.job_cellsへ収めてから呼び出します。
+pub(super) fn reserve_material_job_paths(
+    world: &World,
+    motion_jobs: &[MaterialMotionJob],
+    pressure_pushes: &[super::PressurePushSearch],
+    layer: StableKey,
+    reservations: &mut super::transport::CellReservations,
+) -> EngineResult<(usize, bool)> {
+    let active_chunks = world.chunks.values().filter(|chunk| chunk.active).count();
+    let mut validation_work = motion_jobs
+        .len()
+        .checked_mul(active_chunks)
+        .ok_or_else(|| invalid("MaterialPhase広域Job検証量overflow"))?;
+    let mut has_reservations = false;
+    for job in motion_jobs {
+        job.validate_progress()?;
+        job.validate_context(world)?;
+        if !job.finished {
+            return Err(conflict("MaterialPhaseに未完成の広域移動Jobがある"));
+        }
+        let path_work = job
+            .path
+            .len()
+            .checked_mul(8)
+            .ok_or_else(|| invalid("MaterialPhase経路検証量overflow"))?;
+        validation_work = validation_work
+            .checked_add(path_work)
+            .ok_or_else(|| invalid("MaterialPhase広域Job検証量overflow"))?;
+        if job.layer != layer {
+            continue;
+        }
+        reserve_material_job_path(reservations, &job.path, true)?;
+        has_reservations |= !job.path.is_empty();
+    }
+    for search in pressure_pushes {
+        let path_work = search
+            .node_count()
+            .checked_mul(8)
+            .ok_or_else(|| invalid("MaterialPhase押出し検証量overflow"))?;
+        validation_work = validation_work
+            .checked_add(path_work)
+            .ok_or_else(|| invalid("MaterialPhase広域Job検証量overflow"))?;
+        let (search_layer, path) = search.prepared_publish_path(world)?;
+        if search_layer == layer {
+            reserve_material_job_path(reservations, &path, false)?;
+            has_reservations |= !path.is_empty();
+        }
+    }
+    Ok((validation_work, has_reservations))
+}
+
+fn reserve_material_job_path(
+    reservations: &mut super::transport::CellReservations,
+    path: &[CellPoint],
+    reserve_diagonal_corners: bool,
+) -> EngineResult<()> {
+    for &point in path {
+        reserve_batch_point(reservations, point)?;
+    }
+    if reserve_diagonal_corners {
+        for pair in path.windows(2) {
+            let dx = pair[1].x - pair[0].x;
+            let dy = pair[1].y - pair[0].y;
+            if dx != 0 && dy != 0 {
+                reserve_batch_point(reservations, offset(pair[0], dx, 0)?)?;
+                reserve_batch_point(reservations, offset(pair[0], 0, dy)?)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn material_job_validation_work(
+    world: &World,
+    motion_jobs: &[MaterialMotionJob],
+    pressure_pushes: &[super::PressurePushSearch],
+) -> EngineResult<usize> {
+    let active_chunks = world.chunks.values().filter(|chunk| chunk.active).count();
+    let mut work = motion_jobs
+        .len()
+        .checked_mul(active_chunks)
+        .ok_or_else(|| invalid("MaterialPhase広域Job検証量overflow"))?;
+    for job in motion_jobs {
+        work = work
+            .checked_add(
+                job.path
+                    .len()
+                    .checked_mul(8)
+                    .ok_or_else(|| invalid("MaterialPhase経路検証量overflow"))?,
+            )
+            .ok_or_else(|| invalid("MaterialPhase広域Job検証量overflow"))?;
+    }
+    for search in pressure_pushes {
+        work = work
+            .checked_add(
+                search
+                    .node_count()
+                    .checked_mul(8)
+                    .ok_or_else(|| invalid("MaterialPhase押出し検証量overflow"))?,
+            )
+            .ok_or_else(|| invalid("MaterialPhase広域Job検証量overflow"))?;
+    }
+    Ok(work)
+}
+
+/// 統合phaseの予約bitsetを加えたJob batch scratchの事前見積りです。
+pub(super) fn integrated_material_job_scratch_bytes(
+    world: &World,
+    motion_jobs: &[MaterialMotionJob],
+    pressure_pushes: &[super::PressurePushSearch],
+    reserve_phase_cells: bool,
+) -> EngineResult<usize> {
+    let path_points = pressure_pushes.iter().try_fold(0usize, |total, search| {
+        total
+            .checked_add(search.node_count())
+            .ok_or_else(|| invalid("MaterialPhase経路scratch数overflow"))
+    })?;
+    integrated_material_job_scratch_bytes_bounded(
+        world,
+        motion_jobs,
+        pressure_pushes.len(),
+        path_points,
+        reserve_phase_cells,
+    )
+}
+
+pub(super) fn integrated_material_job_scratch_bytes_bounded(
+    world: &World,
+    motion_jobs: &[MaterialMotionJob],
+    pressure_push_count: usize,
+    pressure_push_path_points: usize,
+    reserve_phase_cells: bool,
+) -> EngineResult<usize> {
+    let items = motion_jobs
+        .len()
+        .checked_add(pressure_push_count)
+        .ok_or_else(|| invalid("MaterialPhase広域Job数overflow"))?;
+    let active_chunks = world.chunks.values().filter(|chunk| chunk.active).count();
+    let batch_reservations = if items == 0 {
+        0
+    } else {
+        active_chunks
+            .checked_mul(std::mem::size_of::<(ChunkCoord, [u64; 64])>())
+            .ok_or_else(|| invalid("MaterialPhase batch予約byte数overflow"))?
+    };
+    let phase_reservations = if reserve_phase_cells && items != 0 {
+        active_chunks
+            .checked_mul(std::mem::size_of::<(ChunkCoord, [u64; 64])>())
+            .ok_or_else(|| invalid("MaterialPhase共有予約byte数overflow"))?
+    } else {
+        0
+    };
+    let motion_path_points =
+        motion_jobs
+            .iter()
+            .try_fold(pressure_push_path_points, |total, job| {
+                total
+                    .checked_add(job.path.len())
+                    .ok_or_else(|| invalid("MaterialPhase経路scratch数overflow"))
+            })?;
+    items
+        .checked_mul(std::mem::size_of::<PreparedMaterialJob<'_>>())
+        .and_then(|bytes| {
+            motion_path_points
+                .checked_mul(std::mem::size_of::<CellPoint>())
+                .and_then(|path_bytes| bytes.checked_add(path_bytes))
+        })
+        .and_then(|bytes| bytes.checked_add(batch_reservations))
+        .and_then(|bytes| bytes.checked_add(phase_reservations))
+        .ok_or_else(|| invalid("MaterialPhase統合Job scratch byte数overflow"))
+}
+
+fn reserve_batch_point(
+    reservations: &mut super::transport::CellReservations,
+    point: CellPoint,
+) -> EngineResult<()> {
+    if reservations.contains(point) {
+        return Err(conflict("同tick広域移動Jobの経路予約が競合"));
+    }
+    reservations.insert(point)
 }
 
 fn offset(point: CellPoint, dx: i32, dy: i32) -> EngineResult<CellPoint> {
