@@ -39,6 +39,7 @@ mod snapshot;
 mod state;
 mod storage;
 mod terrain;
+mod thermal_reactions;
 mod transport;
 
 pub use activity::*;
@@ -74,6 +75,7 @@ pub use remap::*;
 pub use scalar_transport::*;
 pub use storage::*;
 pub use terrain::*;
+pub use thermal_reactions::*;
 
 use crate::foundation::{EngineError, ErrorCode};
 

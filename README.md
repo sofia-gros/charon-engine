@@ -24,6 +24,7 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 | E03：資産と基本表示 | VFSとpack、PNG・WAV/Ogg・fontのimport、共有cache、解放・世代差し替え、sprite、camera、描画adapter | [実装・検証記録](new_docs/evidence/E03/README.md) |
 | E04：世界と保存基盤 | 多layer・素材寸法・個体・部分生成・lease・独自channel・区域退避・世代保存 | [実装・検証記録](new_docs/evidence/E04/README.md) |
 | E05：セルと流体（ローカル完了、PR open・未マージ） | 物質状態の一括輸送、局所移動、cell変更の理由付きreceipt、混合・分離、圧力・押出し、正規物質粒子、全表現監査、保存可能Job、保守的なsleep/wake、Runtime barrier、原子的Materials phase。Q04の全体テスト、E05総合検査、ローカル総合レビューが完了。2件のP1と2件のP2を修正し、最新head `87edd16`のGitHub CI 10件が成功 | [契約と残る制約](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
+| E06：熱と反応（ローカル完了、PR未提出） | 整数enthalpy曲線、断熱4近傍熱移動、cell/particle反応出力、Deferred/SameTick policy、保存可能なWorldEdit取引を実装。全target・check・clippy・docとローカル総合レビューが完了。WorldEdit込み性能は未計測 | [Q05設計](new_docs/45_HEAT_AND_REACTION_Q05.md)・[検証・レビュー証拠](new_docs/evidence/E06/README.md) |
 
 ### E05の現在地（2026-10-19）
 

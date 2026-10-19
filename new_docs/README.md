@@ -55,6 +55,7 @@ Cargoはビルドへ含める実装と依存を選び、YAMLはエンジンの�
 | [42_Q04_CROSS_REPRESENTATION.md](42_Q04_CROSS_REPRESENTATION.md) | 実装中のQ04：混合有理量・粒子・archive・Runtimeの原子的な連鎖検証 |
 | [43_MATERIAL_PHASE_PIPELINE.md](43_MATERIAL_PHASE_PIPELINE.md) | 実装中のE05：圧力・Q16力学・scalar・正規粒子の単一Materials原子取引 |
 | [44_MATERIAL_LEGACY_DIAGNOSTICS.md](44_MATERIAL_LEGACY_DIAGNOSTICS.md) | 実装中のE05：PR #11〜#13の出所別診断APIと一様力Provider互換 |
+| [45_HEAT_AND_REACTION_Q05.md](45_HEAT_AND_REACTION_Q05.md) | E06/Q05：整数enthalpy、material追従energy、位置固定辺端数、保存可能な反応transaction |
 | [34_MATERIAL_MIXTURES.md](34_MATERIAL_MIXTURES.md) | 実装中のE05：整数比率の共有組成、正確な成分量、混合・分離とreceiptの取引 |
 | [33_WIDE_PRESSURE.md](33_WIDE_PRESSURE.md) | 実装中のE05：気体の温度・連結容積と保存可能な広域圧力job |
 | [32_MATERIAL_RECEIPTS.md](32_MATERIAL_RECEIPTS.md) | 実装中のE05：cell変更と理由付きreceiptの原子的保存 |
@@ -95,3 +96,4 @@ TerrariaとNoitaは完全クローンの制作可能性を判定する対象で�
 
 - [E04：世界と保存基盤](evidence/E04/README.md)
 - [E05：セルと流体（実装中）](evidence/E05/README.md)
+- [E06：熱と反応（ローカル完了・PR未提出）](evidence/E06/README.md)
