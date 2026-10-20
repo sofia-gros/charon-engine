@@ -2833,14 +2833,15 @@ impl CraftSession {
         if self.container.revision != expected_container_revision {
             return Err(ItemError::StaleRevision);
         }
+        let mut candidate = try_clone_container(&self.container)?;
+        let inputs = remove_craft_inputs(&mut candidate, &recipe.inputs)?;
+        // 材料を消費した後の候補に対してtoolを検証し、同じ個体を入力とtoolの両方へ
+        // 二重計上しません。失敗時は候補だけを破棄するため、sessionは変更されません。
         for tool in &recipe.tools {
-            if query_item_count(&self.container, tool.item, catalog)? < u64::from(tool.count) {
+            if query_item_count(&candidate, tool.item, catalog)? < u64::from(tool.count) {
                 return Err(ItemError::MissingTool(Box::new(tool.item)));
             }
         }
-
-        let mut candidate = try_clone_container(&self.container)?;
-        let inputs = remove_craft_inputs(&mut candidate, &recipe.inputs)?;
         let mut output_preflight = try_clone_container(&candidate)?;
         insert_stack_batch(
             &mut output_preflight,
@@ -2901,7 +2902,8 @@ impl CraftSession {
         )
     }
 
-    /// 同じjobをtick差分だけ進めます。station/World条件が外れたtickは進捗しません。
+    /// 同じjobをtick差分だけ進めます。station/World条件が外れたtickは進捗せず、
+    /// `last_tick`をそのtickへ移して停止中の時間が再開時に加算されないようにします。
     pub fn advance_to(
         &mut self,
         recipe: &CraftRecipe,
@@ -2911,6 +2913,9 @@ impl CraftSession {
     ) -> Result<CraftProgress, ItemError> {
         let job = self.job.as_mut().ok_or(ItemError::CraftNotReady)?;
         validate_job_recipe(job, recipe, catalog)?;
+        if tick < job.last_tick {
+            return Err(ItemError::StaleCraftTick);
+        }
         if job
             .station
             .is_some_and(|station| context.station != Some(station))
@@ -2918,10 +2923,8 @@ impl CraftSession {
                 .world_revision
                 .is_some_and(|revision| context.world_revision != revision)
         {
+            job.last_tick = tick;
             return Err(ItemError::InvalidCraftContext);
-        }
-        if tick < job.last_tick {
-            return Err(ItemError::StaleCraftTick);
         }
         let elapsed = tick - job.last_tick;
         job.work_ticks_remaining = job.work_ticks_remaining.saturating_sub(elapsed);
@@ -3829,6 +3832,52 @@ mod tests {
     }
 
     #[test]
+    fn craft_start_does_not_double_count_consumed_items_as_tools() {
+        let items = catalog();
+        let recipe = CraftRecipe::new(
+            key("test:ore-with-ore-tool"),
+            1,
+            vec![CraftRequirement {
+                item: key("test:ore"),
+                count: 2,
+            }],
+            vec![CraftRequirement {
+                item: key("test:ore"),
+                count: 1,
+            }],
+            key("test:ore"),
+            1,
+            2,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut container = ItemContainer::new(key("test:ore-only-bag"), limits(2, 100)).unwrap();
+        container.slots[0] = Some(ItemLot::Stack {
+            item: key("test:ore"),
+            count: 2,
+        });
+        let mut session = CraftSession::new(container, &items, 8).unwrap();
+        let before = session.clone();
+
+        assert_eq!(
+            session.start(
+                &recipe,
+                key("test:missing-ore-tool-receipt"),
+                0,
+                CraftContext {
+                    station: None,
+                    world_revision: 0,
+                },
+                0,
+                &items,
+            ),
+            Err(ItemError::MissingTool(Box::new(key("test:ore"))))
+        );
+        assert_eq!(session, before);
+    }
+
+    #[test]
     fn registered_craft_catalog_resolves_versions_across_saved_work() {
         let items = catalog();
         let recipe = craft_recipe(2);
@@ -3911,6 +3960,44 @@ mod tests {
         assert!(session.contains_receipt(receipt));
         assert_eq!(session.progress(), None);
         session.validate(&catalog).unwrap();
+    }
+
+    #[test]
+    fn unavailable_craft_context_time_is_not_counted_after_resume() {
+        let items = catalog();
+        let recipe = craft_recipe(5);
+        let mut session = craft_session(&items);
+        let receipt = key("test:craft-paused-context");
+        session
+            .start(&recipe, receipt, 1, context(), 0, &items)
+            .unwrap();
+
+        let unavailable = CraftContext {
+            station: Some(key("test:wrong-forge")),
+            world_revision: 77,
+        };
+        assert_eq!(
+            session.advance_to(&recipe, 8, unavailable, &items),
+            Err(ItemError::InvalidCraftContext)
+        );
+        assert_eq!(
+            session.progress(),
+            Some(CraftProgress::Running { remaining_ticks: 5 })
+        );
+        let mut encoded = Encoder::new(32_768);
+        session.encode(&mut encoded).unwrap();
+        let bytes = encoded.finish();
+        let mut decoder = Decoder::new(&bytes, 32_768).unwrap();
+        let mut session = CraftSession::decode(&mut decoder).unwrap();
+        decoder.finish().unwrap();
+        assert_eq!(
+            session.advance_to(&recipe, 9, context(), &items),
+            Ok(CraftProgress::Running { remaining_ticks: 4 })
+        );
+        assert_eq!(
+            session.advance_to(&recipe, 10, context(), &items),
+            Ok(CraftProgress::Running { remaining_ticks: 3 })
+        );
     }
 
     #[test]

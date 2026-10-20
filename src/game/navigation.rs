@@ -447,6 +447,9 @@ impl NavigationJob {
     /// 変更後のqueryで全ての確定済み展開が有効だとproviderが証明できる場合にrevisionを更新します。
     ///
     /// 途中で一つでも無効または未判定の区間があればjobは変更せず`StaleInput`を返します。
+    /// 有効性が確認できた場合もfrontier各nodeのheuristicを再取得し、現在のqueryに合う
+    /// 優先度へ組み直します。地形revision変更後に旧heuristicを使い続けると、旧cost下界が
+    /// 新しい経路では下界でなくなり、最短でないgoalを確定する恐れがあるためです。
     pub fn revalidate(&mut self, query: &impl NavigationQuery) -> Result<(), NavigationError> {
         if self.finished {
             return Err(NavigationError::InvalidState);
@@ -467,9 +470,44 @@ impl NavigationJob {
                 return Err(NavigationError::StaleInput);
             }
         }
+        let mut refreshed = Vec::new();
+        refreshed
+            .try_reserve_exact(self.open.len())
+            .map_err(|_| NavigationError::AllocationFailed)?;
+        let mut new_open = BTreeSet::new();
+        for (_, _, node) in &self.open {
+            let score = *self.scores.get(node).ok_or(NavigationError::InvalidState)?;
+            let heuristic = match self.profile_version {
+                Some(version) => {
+                    let profile = query
+                        .agent_profile(self.profile)?
+                        .filter(|profile| profile.version() == version)
+                        .ok_or(NavigationError::StaleInput)?;
+                    query.heuristic_with_profile(profile, *node, self.goal)?
+                }
+                None => query.heuristic(self.profile, *node, self.goal)?,
+            };
+            if query.revision() != new_revision
+                || query
+                    .agent_profile(self.profile)?
+                    .map(NavigationAgentProfile::version)
+                    != self.profile_version
+            {
+                return Err(NavigationError::StaleInput);
+            }
+            let estimate = score
+                .checked_add(heuristic)
+                .ok_or(NavigationError::CostOverflow)?;
+            new_open.insert((estimate, heuristic, *node));
+            refreshed.push((*node, heuristic));
+        }
         if query.revision() != new_revision {
             return Err(NavigationError::StaleInput);
         }
+        for (node, heuristic) in refreshed {
+            self.estimates.insert(node, heuristic);
+        }
+        self.open = new_open;
         self.input_revision = new_revision;
         Ok(())
     }
@@ -1162,6 +1200,55 @@ mod tests {
                 1
             ),
             Err(NavigationError::InvalidState)
+        );
+    }
+
+    struct RevisionHeuristicGraph(u64);
+    impl NavigationQuery for RevisionHeuristicGraph {
+        fn revision(&self) -> u64 {
+            self.0
+        }
+        fn can_reuse_expansion(
+            &self,
+            _: StableKey,
+            _: u64,
+            _: u64,
+        ) -> Result<bool, NavigationError> {
+            Ok(true)
+        }
+        fn neighbors(
+            &self,
+            _: StableKey,
+            node: u64,
+        ) -> Result<NavigationExpansion, NavigationError> {
+            let edges = match node {
+                1 => vec![edge(2, 1), edge(3, 2)],
+                2 => vec![edge(4, 8)],
+                3 => vec![edge(4, if self.0 == 1 { 10 } else { 1 })],
+                _ => Vec::new(),
+            };
+            Ok(NavigationExpansion::Ready(edges))
+        }
+        fn heuristic(&self, _: StableKey, node: u64, _: u64) -> Result<u64, NavigationError> {
+            Ok(match (self.0, node) {
+                (1, 3) => 8,
+                _ => 0,
+            })
+        }
+    }
+
+    #[test]
+    fn revalidation_rebuilds_frontier_priority_from_current_heuristics() {
+        let old = RevisionHeuristicGraph(1);
+        let profile = StableKey::parse("test:walker").unwrap();
+        let mut job = NavigationJob::new(&old, profile, 1, 4, limits(16)).unwrap();
+        assert_eq!(job.poll(&old, 1).unwrap(), NavigationStatus::Continue);
+
+        let changed = RevisionHeuristicGraph(2);
+        job.revalidate(&changed).unwrap();
+        assert_eq!(
+            job.poll(&changed, 16).unwrap(),
+            NavigationStatus::Complete(path(&[1, 3, 4]))
         );
     }
 

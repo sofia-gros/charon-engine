@@ -127,3 +127,11 @@ E08/Q07の機能受け入れ経路は6/6検証済み。工程完了の判定はE
 2026-10-20追記：Q07統合確認後、E08出口として全target検査を実施した。`cargo check --locked --jobs 1`成功。`cargo test --locked --jobs 1 --quiet`で194 lib unit testsと全integration/doc test suiteが成功し、既存の手動performance benchmark 12件は設計どおりignoreのまま。navigation provider CustomSweep fixture追加後も`cargo test --locked --test game_services --jobs 1`は36件成功。`cargo clippy --all-targets --locked --jobs 1 -- -D warnings`、`RUSTDOCFLAGS='-D warnings' cargo doc --locked --lib --no-deps --jobs 1`、`cargo fmt --all -- --check`、`git diff --check`成功。
 
 local E08 reviewでは、combat/event/effect/item/Signalsのcandidate publication境界とQ07 checkpoint/replay fixtureを再照合した。WorldとStateStoreを跨ぐ更新は外部World確定前にStateStore候補を検証し、失敗fixtureでqueue、inventory、progression、controller、World channelの部分公開がないことを確認している。navigationではprofile-aware heuristicがlegacy callbackへ落ちる欠落とprofile lookup error時のfrontier消失経路を見つけて修正し、再検査を通した。A* node/edge上限、hazard配列byte上限、shape providerのHit/NoHit/Incomplete/Unsupported分岐も確認した。各domainの追加処理は登録・transaction・query境界の対象数に比例し、全World走査や毎tick完全収支再集計を追加していない。全domainの代表ワークロードP50/P95/P99は未計測であり、E08 PRでは性能改善や144 FPS達成を主張しない。Q07の6サービス受け入れ経路は検証済み。E08 full test/check/Clippy/rustdoc/format/local reviewの出口条件を満たした。
+
+2026-10-20 PR #26 review修正：
+
+- NavigationJobのrevision再検証時に、providerが再利用を証明したclosed nodeの展開だけでなく、開いたfrontier全nodeのheuristicを現queryから取得し直し、`g + h`順へ優先度を再構築するようにした。旧revisionのheuristicにより新しい近道が探索から遅れ、より高コストのgoalを先に確定する問題を回帰fixtureで確認した。`cargo test --locked --lib game::navigation::tests --jobs 1`成功（9件）。
+- craftのstation/World条件が外れたときは、進捗を変更せずともjobの`last_tick`を現在tickへ保存し、停止期間を復帰後の作業時間へ含めないようにした。条件不成立後のcheckpoint復元を含む`cargo test --locked --lib game::items::tests --jobs 1`成功（13件）。APIは条件エラーを返すが、再開基準tickを更新する。これは停止期間を除外するための意図したjob状態更新。
+- craft開始時のtool数量は材料消費後のcandidate containerで検査し、同一item keyの入力材料をtoolとして二重充足しないようにした。失敗時にsessionが不変であるunit testも追加。
+- `cargo test --locked --test game_services --jobs 1`成功（36件）、`cargo clippy --locked --lib --test game_services --jobs 1 -- -D warnings`成功、`cargo fmt --all -- --check`と`git diff --check`成功。PR修正後の全target検査は今回再実行していない。E08全体の先行検査は上段に記載した。
+- ローカルレビューでは再検証失敗時にfrontier/revisionを変更しないこと、revalidationを明示境界に限定し毎tickの全node処理を追加していないこと、craft処理が候補container上で数量を検証し失敗時に正規状態を公開しないことを確認した。性能値は未計測。
