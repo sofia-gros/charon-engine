@@ -14,13 +14,32 @@ use crate::foundation::{
     grid::{CellPoint, GridValue},
     id::WorldId,
 };
+use serde::{Deserialize, Serialize, de::Error as DeserializeError};
 
 /// 約分した非負の有理数量。混合cellの成分tokenを整数へ丸めません。
 /// 中間積もu128の範囲を要求し、超過時は切捨てず取引を拒否します。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct MaterialQuantity {
     numerator: u128,
     denominator: u128,
+}
+impl<'de> Deserialize<'de> for MaterialQuantity {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawQuantity {
+            numerator: u128,
+            denominator: u128,
+        }
+        let raw = RawQuantity::deserialize(deserializer)?;
+        let normalized = Self::new(raw.numerator, raw.denominator).map_err(D::Error::custom)?;
+        if normalized.numerator != raw.numerator || normalized.denominator != raw.denominator {
+            return Err(D::Error::custom("material quantity must be reduced"));
+        }
+        Ok(normalized)
+    }
 }
 impl MaterialQuantity {
     /// 量0の一意な表現。

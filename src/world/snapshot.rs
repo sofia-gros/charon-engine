@@ -394,7 +394,7 @@ impl World {
     }
 
     fn encode_checkpoint(&self, out: &mut Encoder, byte_limit: usize) -> EngineResult<()> {
-        out.raw(b"CHWORLD2")?;
+        out.raw(b"CHWORLD3")?;
         self.id.encode(out)?;
         out.u64(self.seed)?;
         out.u64(self.tick)?;
@@ -460,6 +460,17 @@ impl World {
         } else {
             out.bytes(&self.particles.checkpoint(byte_limit)?)?;
         }
+        match &self.body_physics {
+            Some(physics) => {
+                out.u8(1)?;
+                if out.is_measuring() {
+                    out.measure_bytes(physics.snapshot_limit()?)?;
+                } else {
+                    out.bytes(&physics.snapshot()?)?;
+                }
+            }
+            None => out.u8(0)?,
+        }
         Ok(())
     }
     /// 必須定義と各容量を確認し、完全な候補だけを返します。既存Worldの書換えは行いません。
@@ -471,7 +482,8 @@ impl World {
     ) -> EngineResult<Self> {
         let mut input = Decoder::new(bytes, byte_limit)?;
         let format = input.raw(8)?;
-        let with_particles = format == b"CHWORLD2";
+        let with_particles = format == b"CHWORLD2" || format == b"CHWORLD3";
+        let with_physics = format == b"CHWORLD3";
         if !with_particles && format != b"CHWORLD1" {
             return Err(invalid("World保存形式"));
         }
@@ -581,6 +593,17 @@ impl World {
             world.particles =
                 Arena::restore(input.bytes(byte_limit)?, world.limits.particles, byte_limit)?;
         }
+        if with_physics {
+            world.body_physics = match input.u8()? {
+                0 => None,
+                1 => Some(super::BodyPhysics::restore_with_limit(
+                    input.bytes(byte_limit)?,
+                    byte_limit,
+                )?),
+                _ => return Err(invalid("保存BodyPhysics flag")),
+            };
+        }
+        world.apply_body_material_remaps()?;
         input.finish()?;
         world.connect_block_states()?;
         world.validate()?;

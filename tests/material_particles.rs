@@ -613,7 +613,8 @@ fn old_world_format_migrates_without_inventing_particles() {
             .unwrap()
             .checkpoint(8_000_000)
             .unwrap();
-    bytes.truncate(bytes.len() - arena.len() - 16);
+    // CHWORLD3ではparticle recordに加えてPhysics flagが末尾にあるため、旧形式fixtureから双方を外します。
+    bytes.truncate(bytes.len() - arena.len() - 17);
     bytes[..8].copy_from_slice(b"CHWORLD1");
     let migrated = World::restore(
         &bytes,

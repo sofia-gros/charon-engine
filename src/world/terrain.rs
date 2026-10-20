@@ -12,7 +12,7 @@ use crate::foundation::{
     codec::{Decoder, Encoder, StateCodec},
     error::allocation,
     grid::CellPoint,
-    id::{Arena, Id, WorldId},
+    id::{Arena, BodyId, Id, WorldId},
     transaction::CandidateState,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -245,6 +245,46 @@ impl BlockInstance {
     pub fn remaining_cells(&self) -> usize {
         self.remaining.len()
     }
+    /// 現在の残存mask indexをblock定義順で返します。
+    pub fn remaining_mask(&self) -> &[u32] {
+        &self.remaining
+    }
+    /// 作者StateStoreが復元済みの場合、その不変参照を返します。
+    pub fn properties(&self) -> Option<&crate::foundation::state::StateStore> {
+        self.properties.as_ref()
+    }
+    /// 破砕後の一fragmentに属するmaskと、作者が変換した状態から新しい個体を作ります。
+    ///
+    /// 元個体のmaterial・layer・配置metadataを引き継ぎます。maskは元の残存maskの非空部分集合で、
+    /// 昇順かつ重複なしでなければなりません。作者StateStoreはfragmentごとに渡し直すため、
+    /// 呼出側が状態を複製・分割・集約する規則を選びます。状態を落とす場合も明示的に`None`を渡します。
+    pub fn with_fragment_state(
+        &self,
+        remaining: Vec<u32>,
+        properties: Option<crate::foundation::state::StateStore>,
+    ) -> EngineResult<Self> {
+        if remaining.is_empty()
+            || remaining.windows(2).any(|pair| pair[0] >= pair[1])
+            || remaining
+                .iter()
+                .any(|index| self.remaining.binary_search(index).is_err())
+        {
+            return Err(invalid("fragment block残存mask"));
+        }
+        let fragment = Self {
+            material: self.material,
+            layer: self.layer,
+            anchor: self.anchor,
+            orientation: self.orientation,
+            remaining,
+            epoch: self.epoch,
+            dormant: None,
+            properties,
+            pending_properties: Vec::new(),
+        };
+        fragment.validate()?;
+        Ok(fragment)
+    }
     pub(crate) fn point(&self, index: u32, size: [u16; 2]) -> EngineResult<CellPoint> {
         let x = (index % u32::from(size[0])) as u16;
         let y = (index / u32::from(size[0])) as u16;
@@ -459,6 +499,8 @@ pub struct World {
     pub(crate) jobs: Arena<super::TerrainJob, super::TerrainJobKind>,
     pub(crate) changes: super::WorldChanges,
     pub(crate) particles: Arena<super::MaterialParticle, super::MaterialParticleKind>,
+    /// E07の正規backend状態。未使用Worldでは未確保のままにします。
+    pub(crate) body_physics: Option<super::BodyPhysics>,
 }
 impl World {
     /// 定義を共有して空のWorldを作ります。論理世界全体のcellを確保しません。
@@ -504,6 +546,7 @@ impl World {
             changes: super::WorldChanges::empty(),
             channels,
             particles: Arena::new(limits.particles)?,
+            body_physics: None,
         })
     }
     /// 所属ID。描画側のScene IDとは別です。
@@ -591,6 +634,14 @@ impl World {
                 .map(|id| BlockRef { world: self.id, id }),
         }))
     }
+
+    pub(crate) fn is_cell_in_bounds(&self, point: CellPoint) -> bool {
+        self.bounds.contains(point)
+    }
+
+    pub(crate) fn is_chunk_resident(&self, coord: ChunkCoord) -> bool {
+        self.chunks.contains_key(&coord)
+    }
     /// 生存・世代・World所属が一致する個体だけを返します。
     pub fn block(&self, reference: BlockRef) -> EngineResult<&BlockInstance> {
         if reference.world != self.id {
@@ -632,12 +683,613 @@ impl World {
         if !candidate.changes.chunks.is_empty() {
             candidate.cache_generation = Arc::new(());
         }
+        if let (Some(source), Some(target)) =
+            (self.body_physics.as_mut(), candidate.body_physics.as_mut())
+        {
+            target.inherit_step_scratch(source);
+        }
         *self = candidate;
         Ok(result)
     }
+
+    /// Worldが所有する正規の剛体状態を読み取ります。未使用WorldではNoneです。
+    pub fn body_physics(&self) -> Option<&super::BodyPhysics> {
+        self.body_physics.as_ref()
+    }
+
+    pub(crate) fn apply_body_material_remaps(&mut self) -> EngineResult<()> {
+        if let Some(physics) = &mut self.body_physics {
+            physics.apply_material_remaps(&self.remaps, &self.content, self.limits)?;
+            physics.validate_content(&self.content, self.limits)?;
+            physics.sync_material_mass_properties(&self.content)?;
+        }
+        Ok(())
+    }
+
+    /// 保存可能な標準剛体providerを初期化します。設定後のWorldは再設定できません。
+    pub fn configure_body_physics(
+        &mut self,
+        settings: super::BodyPhysicsSettings,
+    ) -> EngineResult<()> {
+        if self.body_physics.is_some() {
+            return Err(EngineError::new(
+                ErrorCode::InvalidState,
+                "BodyPhysicsは初期化済みです",
+            ));
+        }
+        let candidate = super::BodyPhysics::new(settings)?;
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| invalid("World revisionの上限"))?;
+        self.body_physics = Some(candidate);
+        self.revision = revision;
+        Ok(())
+    }
+
+    /// 剛体・jointの変更を独立候補で検証し、Worldへ原子的に公開します。
+    pub fn edit_bodies<R>(
+        &mut self,
+        action: impl FnOnce(&mut super::BodyPhysics) -> EngineResult<R>,
+    ) -> EngineResult<R> {
+        let mut candidate = match &self.body_physics {
+            Some(physics) => physics.try_copy()?,
+            None => super::BodyPhysics::new(Default::default())?,
+        };
+        let result = action(&mut candidate)?;
+        candidate.apply_material_remaps(&self.remaps, &self.content, self.limits)?;
+        candidate.validate_content(&self.content, self.limits)?;
+        candidate.sync_material_mass_properties(&self.content)?;
+        if let Some(source) = self.body_physics.as_mut() {
+            candidate.inherit_step_scratch(source);
+        }
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| invalid("World revisionの上限"))?;
+        self.body_physics = Some(candidate);
+        self.revision = revision;
+        Ok(result)
+    }
+
+    /// 独立したCollisionQueries providerでread-onlyのWorld/physics候補をqueryします。
+    ///
+    /// queryはWorldを変更せず、未対応shapeと未準備regionを`Unsupported`/`Incomplete`として
+    /// 呼出側へ返します。結果の有限値・coverage・hit上限を検証し、stable orderを要求した場合は
+    /// 決定順へ整列します。provider identityと読取revisionをreportへ含めます。
+    pub fn query_body_collisions(
+        &self,
+        request: &super::CollisionQueryRequest,
+        provider: &dyn super::CollisionQueriesProvider,
+    ) -> EngineResult<super::CollisionQueryReport> {
+        super::validate_collision_query_request(request)?;
+        self.content.layer(request.layer)?;
+        let stamp = super::CollisionQueryProviderStamp {
+            key: provider.key(),
+            version: provider.version(),
+        };
+        if stamp.version == 0 {
+            return Err(invalid("CollisionQueries provider version"));
+        }
+        let mut result = provider.query(self, self.body_physics.as_ref(), request)?;
+        super::validate_collision_query(self, self.body_physics.as_ref(), request, &mut result)?;
+        Ok(super::CollisionQueryReport {
+            provider: stamp,
+            world_revision: self.revision,
+            body_step: self
+                .body_physics
+                .as_ref()
+                .map_or(0, super::BodyPhysics::step_index),
+            result,
+        })
+    }
+
+    /// resident terrainを同期し、指定policyを満たすbody teleportを原子的に確定します。
+    ///
+    /// `Check`はRapier/Parryの回転を含むshape castで経路上のsolid colliderを調べます。
+    /// `Ignore`は移動途中を調べず到着poseだけを検査します。到着重なりを許す場合は
+    /// `overlap: Allow`を指定します。未読込chunkへの経路・到着、shape cast未対応、
+    /// overlap拒否、容量・Content不整合のどれかで失敗した場合はWorldとphysicsを保ちます。
+    /// 成功時も速度、蓄積force/torque、joint接続は保持します。移動前にactiveだったcontactは
+    /// `BodyContactExitReason::Teleported`としてこの編集境界で通知し、次のfixed stepでは重複通知しません。
+    /// 候補physicsの複製を要するため、
+    /// この操作は明示的な低頻度移動向けであり、毎tickの通常移動経路には使いません。
+    pub fn teleport_body(
+        &mut self,
+        body: BodyId,
+        destination: super::BodyPose,
+        collision_layer: LayerId,
+        world_units_per_cell: f64,
+        options: super::BodyTeleportOptions,
+    ) -> EngineResult<super::BodyTeleportReport> {
+        self.teleport_body_inner(
+            body,
+            destination,
+            collision_layer,
+            world_units_per_cell,
+            options,
+            None,
+        )
+    }
+
+    /// `CollisionQueries`を作者providerへ置換したbody teleportを原子的に確定します。
+    ///
+    /// providerのClear判定は指定されたpath/overlap optionsを満たす責務を持ちます。
+    /// Engineはresident region、body pose、physics state、World commitを検証し、
+    /// reportへprovider key/versionを残します。Blocked/Incomplete/Unsupportedは失敗し、
+    /// Worldとphysics候補を公開しません。
+    pub fn teleport_body_with_provider(
+        &mut self,
+        body: BodyId,
+        destination: super::BodyPose,
+        collision_layer: LayerId,
+        world_units_per_cell: f64,
+        options: super::BodyTeleportOptions,
+        provider: &dyn super::BodyTeleportQueryProvider,
+    ) -> EngineResult<super::BodyTeleportReport> {
+        self.teleport_body_inner(
+            body,
+            destination,
+            collision_layer,
+            world_units_per_cell,
+            options,
+            Some(provider),
+        )
+    }
+
+    fn teleport_body_inner(
+        &mut self,
+        body: BodyId,
+        destination: super::BodyPose,
+        collision_layer: LayerId,
+        world_units_per_cell: f64,
+        options: super::BodyTeleportOptions,
+        query_provider: Option<&dyn super::BodyTeleportQueryProvider>,
+    ) -> EngineResult<super::BodyTeleportReport> {
+        let source = self
+            .body_physics
+            .as_ref()
+            .ok_or_else(|| EngineError::new(ErrorCode::InvalidState, "BodyPhysics未初期化"))?;
+        let mut candidate = source.try_copy()?;
+        candidate.sync_solid_terrain_for_step(self, collision_layer, world_units_per_cell)?;
+        let report = candidate.teleport_in_world(
+            source,
+            body,
+            destination,
+            self,
+            world_units_per_cell,
+            options,
+            query_provider,
+        )?;
+        candidate.apply_material_remaps(&self.remaps, &self.content, self.limits)?;
+        candidate.validate_content(&self.content, self.limits)?;
+        candidate.sync_material_mass_properties(&self.content)?;
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| invalid("World revisionの上限"))?;
+        candidate.acknowledge_world_revision(revision);
+        self.body_physics = Some(candidate);
+        self.revision = revision;
+        Ok(report)
+    }
+
+    /// Worldを変更せず、resident solid colliderと所有剛体fixed stepを原子的に更新します。
+    ///
+    /// fluid接触がないstepではWorld chunk/channel/block arenaを複製しません。fluidとの
+    /// 重なりまたは境界接触がある場合だけ、world/physicsを同時rollbackできるWorld候補を作成します。
+    /// stepが失敗した場合は独立したBodyPhysics候補を破棄します。terrain変更と同じcommitに
+    /// する場合は`edit_and_step_bodies`を使います。固定step内では物体の予測移動と実測移動が
+    /// 選択済みの移動profileを守るsubstep数を選び、`BodyPhysicsSettings::max_substeps`を超える場合は拒否します。
+    pub fn step_bodies(
+        &mut self,
+        collision_layer: LayerId,
+        world_units_per_cell: f64,
+    ) -> EngineResult<super::BodyStepReport> {
+        let mut candidate = match self.body_physics.as_ref() {
+            Some(physics) => physics.try_copy()?,
+            None => super::BodyPhysics::new(Default::default())?,
+        };
+        candidate.sync_solid_terrain_for_step(self, collision_layer, world_units_per_cell)?;
+        if let Some(source) = self.body_physics.as_mut() {
+            candidate.inherit_step_scratch(source);
+        }
+        let report = match self.body_physics.as_ref() {
+            Some(physics) => {
+                candidate.step_isolated_in_world(physics, self, world_units_per_cell)?
+            }
+            None => candidate.step_in_world(self, world_units_per_cell)?,
+        };
+        if candidate.has_fluid_contact(self, collision_layer)?
+            || candidate.has_releasable_exclusion_reservoir(self, collision_layer)?
+        {
+            let mut world_candidate = self.try_copy_with_body_physics(Some(candidate))?;
+            let mut fluid_editor = WorldEdit {
+                world: &mut world_candidate,
+                error: None,
+                writes: 0,
+            };
+            fluid_editor.apply_body_fluid_coupling(collision_layer, world_units_per_cell)?;
+            fluid_editor.displace_body_fluid_overlaps(
+                collision_layer,
+                world_units_per_cell,
+                None,
+            )?;
+            if let Some(error) = fluid_editor.error.clone() {
+                return Err(error);
+            }
+            let fluid_writes = fluid_editor.writes;
+            drop(fluid_editor);
+            if fluid_writes != 0 {
+                world_candidate.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("World revisionの上限"))?;
+                world_candidate.validate()?;
+                world_candidate.changes = super::WorldChanges::between(self, &world_candidate)?;
+                if !world_candidate.changes.chunks.is_empty() {
+                    world_candidate.cache_generation = Arc::new(());
+                }
+                if let Some(physics) = world_candidate.body_physics.as_mut() {
+                    physics.acknowledge_world_revision(world_candidate.revision);
+                }
+            }
+            *self = world_candidate;
+        } else {
+            self.body_physics = Some(candidate);
+        }
+        Ok(report)
+    }
+
+    /// 作者BodyPhysics solverで固定stepし、World・physics・fluid連成を同時にcommitします。
+    ///
+    /// providerは候補pose/velocityとBodyPhysics snapshotに保存する作者stateを更新します。
+    /// Engineは候補terrain colliderを同期し、数値・resident sweep・fluid displacement・World容量を検査します。
+    /// fluid変更がない場合はWorld全体を複製せずphysics候補だけをcommitします。callbackが失敗しても
+    /// WorldとBodyPhysicsを保持します。標準Rapier経路は呼び出しません。
+    pub fn step_bodies_with_provider(
+        &mut self,
+        collision_layer: LayerId,
+        world_units_per_cell: f64,
+        provider: &dyn super::BodyPhysicsStepProvider,
+    ) -> EngineResult<super::BodyStepReport> {
+        if !world_units_per_cell.is_finite() || world_units_per_cell <= 0.0 {
+            return Err(invalid("作者剛体solverのWorld cell size"));
+        }
+        let default_before = if self.body_physics.is_none() {
+            Some(super::BodyPhysics::new(Default::default())?)
+        } else {
+            None
+        };
+        let mut physics = match self.body_physics.as_ref() {
+            Some(source) => source.try_copy()?,
+            None => super::BodyPhysics::new(Default::default())?,
+        };
+        if let Some(source) = self.body_physics.as_mut() {
+            physics.inherit_step_scratch(source);
+        }
+        let before = self
+            .body_physics
+            .as_ref()
+            .or(default_before.as_ref())
+            .ok_or_else(|| invalid("作者剛体solverのstep前state"))?;
+        physics.sync_solid_terrain(self, collision_layer, world_units_per_cell)?;
+        let report = physics.step_with_provider(before, self, world_units_per_cell, provider)?;
+        physics.validate_content(&self.content, self.limits)?;
+        physics.sync_material_mass_properties(&self.content)?;
+        let has_fluid_work = physics.has_fluid_contact(self, collision_layer)?
+            || physics.has_releasable_exclusion_reservoir(self, collision_layer)?;
+        if has_fluid_work {
+            let mut candidate = self.try_copy_with_body_physics(Some(physics))?;
+            let mut editor = WorldEdit {
+                world: &mut candidate,
+                error: None,
+                writes: 0,
+            };
+            editor.apply_body_fluid_coupling(collision_layer, world_units_per_cell)?;
+            editor.displace_body_fluid_overlaps(collision_layer, world_units_per_cell, None)?;
+            if let Some(error) = editor.error.clone() {
+                return Err(error);
+            }
+            let writes = editor.writes;
+            drop(editor);
+            if writes != 0 {
+                candidate.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("World revisionの上限"))?;
+            }
+            candidate.validate()?;
+            if writes != 0 {
+                candidate.changes = super::WorldChanges::between(self, &candidate)?;
+                if !candidate.changes.chunks.is_empty() {
+                    candidate.cache_generation = Arc::new(());
+                }
+            }
+            if let Some(physics) = candidate.body_physics.as_mut() {
+                physics.acknowledge_world_revision(candidate.revision);
+            }
+            *self = candidate;
+        } else {
+            physics.acknowledge_world_revision(self.revision);
+            self.body_physics = Some(physics);
+        }
+        Ok(report)
+    }
+
+    /// 標準Rapier fixed stepの後、指定CouplingProviderで流体接触を更新します。
+    ///
+    /// callbackへ渡すWorld viewはstep開始時の読取専用snapshotです。現在のbody pose/velocityは
+    /// `BodyCouplingContext`から渡し、fluid/material照会はこのsnapshotへ行います。物理step、
+    /// provider state、流体更新、重なり排除は一つの候補でcommitし、provider選択後は標準経路
+    /// から連成則を暗黙に切り替えられません。
+    pub fn step_bodies_with_coupling_provider(
+        &mut self,
+        collision_layer: LayerId,
+        world_units_per_cell: f64,
+        provider: &dyn super::CouplingProvider,
+    ) -> EngineResult<super::BodyStepReport> {
+        if !world_units_per_cell.is_finite() || world_units_per_cell <= 0.0 {
+            return Err(invalid("CouplingProviderのWorld cell size"));
+        }
+        let mut candidate = match self.body_physics.as_ref() {
+            Some(physics) => physics.try_copy()?,
+            None => super::BodyPhysics::new(Default::default())?,
+        };
+        if let Some(source) = self.body_physics.as_mut() {
+            candidate.inherit_step_scratch(source);
+        }
+        let selected = candidate.prepare_coupling_step();
+        candidate.sync_solid_terrain_for_step(self, collision_layer, world_units_per_cell)?;
+        let before = self.body_physics.as_ref();
+        let mut report = match before {
+            Some(physics) => {
+                candidate.step_isolated_in_world(physics, self, world_units_per_cell)?
+            }
+            None => candidate.step_in_world(self, world_units_per_cell)?,
+        };
+        let stamp = super::BodyCouplingProviderStamp {
+            key: provider.key(),
+            version: provider.version(),
+        };
+        candidate.select_coupling_provider(stamp)?;
+        if let Some(previous) = selected
+            && previous != stamp
+        {
+            return Err(EngineError::new(
+                ErrorCode::Conflict,
+                "保存済みCouplingProviderとkey/versionが一致しません",
+            ));
+        }
+        report.coupling_provider = Some(stamp);
+
+        let custom_fluid_contacts = provider.fluid_contacts(
+            &candidate,
+            self,
+            collision_layer,
+            world_units_per_cell,
+            self.limits.job_cells,
+        )?;
+        if let Some(contacts) = &custom_fluid_contacts
+            && contacts.len() > self.limits.job_cells
+        {
+            return Err(EngineError::capacity(
+                "CouplingProvider fluid contacts",
+                contacts.len() as u64,
+                self.limits.job_cells as u64,
+            ));
+        }
+        let custom_fluid_occupancy = provider.fluid_occupancy(
+            &candidate,
+            self,
+            collision_layer,
+            world_units_per_cell,
+            self.limits.job_cells,
+        )?;
+        if let Some(occupancy) = &custom_fluid_occupancy
+            && occupancy.len() > self.limits.job_cells
+        {
+            return Err(EngineError::capacity(
+                "CouplingProvider fluid occupancy",
+                occupancy.len() as u64,
+                self.limits.job_cells as u64,
+            ));
+        }
+        let prepared_custom_occupancy = custom_fluid_occupancy
+            .map(|occupancy| {
+                super::prepare_body_fluid_occupancy(&candidate, self, collision_layer, occupancy)
+            })
+            .transpose()?;
+        let has_fluid_boundary_work = match &custom_fluid_contacts {
+            Some(contacts) => !contacts.is_empty(),
+            None => candidate.has_fluid_contact(self, collision_layer)?,
+        };
+        let has_fluid_work = has_fluid_boundary_work
+            || prepared_custom_occupancy
+                .as_ref()
+                .is_some_and(|prepared| !prepared.overlaps.is_empty())
+            || candidate.has_releasable_exclusion_reservoir(self, collision_layer)?;
+        if has_fluid_work {
+            let mut world_candidate = self.try_copy_with_body_physics(Some(candidate))?;
+            let mut editor = WorldEdit {
+                world: &mut world_candidate,
+                error: None,
+                writes: 0,
+            };
+            editor.apply_body_fluid_coupling_with_provider(
+                collision_layer,
+                world_units_per_cell,
+                provider,
+                self,
+                custom_fluid_contacts,
+            )?;
+            editor.displace_body_fluid_overlaps(
+                collision_layer,
+                world_units_per_cell,
+                prepared_custom_occupancy,
+            )?;
+            if let Some(error) = editor.error.clone() {
+                return Err(error);
+            }
+            let writes = editor.writes;
+            drop(editor);
+            if writes != 0 {
+                world_candidate.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("World revisionの上限"))?;
+                world_candidate.changes = super::WorldChanges::between(self, &world_candidate)?;
+                if !world_candidate.changes.chunks.is_empty() {
+                    world_candidate.cache_generation = Arc::new(());
+                }
+            }
+            world_candidate.validate()?;
+            if let Some(physics) = world_candidate.body_physics.as_mut() {
+                physics.acknowledge_world_revision(world_candidate.revision);
+            }
+            *self = world_candidate;
+        } else {
+            candidate.acknowledge_world_revision(self.revision);
+            self.body_physics = Some(candidate);
+        }
+        Ok(report)
+    }
+
+    /// World edit、resident solid collider更新、剛体fixed stepを一つのcommitにします。
+    ///
+    /// World候補またはBodyPhysics候補のどの段階で失敗しても、呼出元のWorldと物理状態を
+    /// ともに保持します。描画周期や外部clockは参照せず、物理stepはBodyPhysicsの固定dtです。
+    /// 固定stepは`BodyPhysicsSettings::max_substep_displacement_cells`の移動予算からsubstep数を選び、callbackがWorldを書き換えないstepでは
+    /// World revisionを進めず、物理状態だけを更新します。
+    pub fn edit_and_step_bodies<R>(
+        &mut self,
+        collision_layer: LayerId,
+        world_units_per_cell: f64,
+        action: impl FnOnce(&mut WorldEdit<'_>) -> EngineResult<R>,
+    ) -> EngineResult<(R, super::BodyStepReport)> {
+        self.edit_and_step_bodies_with_post_step(
+            collision_layer,
+            world_units_per_cell,
+            action,
+            |_| Ok(()),
+        )
+        .map(|(result, (), report)| (result, report))
+    }
+
+    /// World edit、resident terrain・fluid連成、剛体fixed step、step後処理を一つの候補で確定します。
+    ///
+    /// `action`はfixed step前、`post_step`は物理・流体連成後に実行されます。後処理が反応や
+    /// 接触結果を読む必要がある場合に使い、いずれかの段階で失敗した候補は公開しません。
+    pub fn edit_and_step_bodies_with_post_step<R, P>(
+        &mut self,
+        collision_layer: LayerId,
+        world_units_per_cell: f64,
+        action: impl FnOnce(&mut WorldEdit<'_>) -> EngineResult<R>,
+        post_step: impl FnOnce(&mut WorldEdit<'_>) -> EngineResult<P>,
+    ) -> EngineResult<(R, P, super::BodyStepReport)> {
+        let mut candidate = self.try_copy()?;
+        let mut editor = WorldEdit {
+            world: &mut candidate,
+            error: None,
+            writes: 0,
+        };
+        let result = action(&mut editor)?;
+        if let Some(error) = editor.error {
+            return Err(error);
+        }
+        let writes = editor.writes;
+        drop(editor);
+        if writes != 0 {
+            candidate.revision = self
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| invalid("World revisionの上限"))?;
+            candidate.validate()?;
+            candidate.changes = super::WorldChanges::between(self, &candidate)?;
+            if !candidate.changes.chunks.is_empty() {
+                candidate.cache_generation = Arc::new(());
+            }
+        }
+
+        let mut candidate_physics = match candidate.body_physics.take() {
+            Some(physics) => physics,
+            None => super::BodyPhysics::new(Default::default())?,
+        };
+        candidate_physics.sync_solid_terrain_for_step(
+            &candidate,
+            collision_layer,
+            world_units_per_cell,
+        )?;
+        if let Some(source) = self.body_physics.as_mut() {
+            candidate_physics.inherit_step_scratch(source);
+        }
+        let report = match self.body_physics.as_ref() {
+            Some(physics) => candidate_physics.step_isolated_in_world(
+                physics,
+                &candidate,
+                world_units_per_cell,
+            )?,
+            None => candidate_physics.step_in_world(&candidate, world_units_per_cell)?,
+        };
+        candidate.body_physics = Some(candidate_physics);
+        let has_fluid_contact = candidate
+            .body_physics
+            .as_ref()
+            .ok_or_else(|| invalid("BodyPhysics candidate is missing"))?
+            .has_fluid_contact(&candidate, collision_layer)?;
+        let mut fluid_editor = WorldEdit {
+            world: &mut candidate,
+            error: None,
+            writes,
+        };
+        if has_fluid_contact {
+            fluid_editor.apply_body_fluid_coupling(collision_layer, world_units_per_cell)?;
+        }
+        fluid_editor.displace_body_fluid_overlaps(collision_layer, world_units_per_cell, None)?;
+        if let Some(error) = fluid_editor.error.clone() {
+            return Err(error);
+        }
+        let fluid_writes = fluid_editor.writes.saturating_sub(writes);
+        drop(fluid_editor);
+
+        let mut post_editor = WorldEdit {
+            world: &mut candidate,
+            error: None,
+            writes: writes.saturating_add(fluid_writes),
+        };
+        let post_result = post_step(&mut post_editor)?;
+        if let Some(error) = post_editor.error {
+            return Err(error);
+        }
+        let total_writes = post_editor.writes;
+        drop(post_editor);
+
+        if total_writes != 0 {
+            if writes == 0 {
+                candidate.revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("World revisionの上限"))?;
+            }
+            candidate.validate()?;
+            candidate.changes = super::WorldChanges::between(self, &candidate)?;
+            if !candidate.changes.chunks.is_empty() {
+                candidate.cache_generation = Arc::new(());
+            }
+            if let Some(physics) = candidate.body_physics.as_mut() {
+                physics.acknowledge_world_revision(candidate.revision);
+            }
+        }
+        *self = candidate;
+        Ok((result, post_result, report))
+    }
 }
-impl CandidateState for World {
-    fn try_copy(&self) -> EngineResult<Self> {
+impl World {
+    /// callerが物理候補を既に作成した場合、旧BodyPhysicsを複製せずWorld候補へ差し込みます。
+    fn try_copy_with_body_physics(
+        &self,
+        body_physics: Option<super::BodyPhysics>,
+    ) -> EngineResult<Self> {
         let mut chunks = BTreeMap::new();
         for (key, value) in &self.chunks {
             chunks.insert(*key, value.try_copy()?);
@@ -669,7 +1321,18 @@ impl CandidateState for World {
             changes: self.changes.try_copy()?,
             particles: self.particles.try_copy()?,
             channels,
+            body_physics,
         })
+    }
+}
+impl CandidateState for World {
+    fn try_copy(&self) -> EngineResult<Self> {
+        let body_physics = self
+            .body_physics
+            .as_ref()
+            .map(super::BodyPhysics::try_copy)
+            .transpose()?;
+        self.try_copy_with_body_physics(body_physics)
     }
     fn validate(&self) -> EngineResult<()> {
         self.validate_particles()?;
@@ -814,6 +1477,11 @@ pub struct WorldEdit<'a> {
     writes: usize,
 }
 impl WorldEdit<'_> {
+    /// 候補Worldのcellを読みます。作者physics solverはこのviewからterrain inputを参照できます。
+    pub fn cell(&self, layer: LayerId, point: CellPoint) -> EngineResult<CellQuery> {
+        self.world.cell(layer, point)
+    }
+
     pub(super) fn run<R>(
         &mut self,
         action: impl FnOnce(&mut Self) -> EngineResult<R>,
@@ -1000,6 +1668,30 @@ impl WorldEdit<'_> {
                 return Err(conflict("block個体のあるcellへの直接書込"));
             }
             editor.write(layer, point, core, None)
+        })
+    }
+    /// World編集と同じ候補内で剛体・jointを編集します。
+    ///
+    /// bodyのlocal gridと地形・channelを一つのWorldEditで移動する作者処理に使います。
+    /// callback内のエラーは`?`で返してください。World候補と物理候補のどちらかが失敗した
+    /// 場合、外側の`edit_and_step_bodies`は両方を公開しません。Contentに対するlocal cellと
+    /// sidecarの検証、および変更されたgridの質量特性再計算はこの境界で行います。
+    pub fn edit_bodies<R>(
+        &mut self,
+        action: impl FnOnce(&mut super::BodyPhysics) -> EngineResult<R>,
+    ) -> EngineResult<R> {
+        self.run(|editor| {
+            if editor.world.body_physics.is_none() {
+                editor.world.body_physics = Some(super::BodyPhysics::new(Default::default())?);
+            }
+            let physics = editor
+                .world
+                .body_physics
+                .as_mut()
+                .ok_or_else(|| invalid("BodyPhysics候補の初期化失敗"))?;
+            let result = action(physics)?;
+            editor.world.apply_body_material_remaps()?;
+            Ok(result)
         })
     }
     /// footprintと形状を検証し、全cellと個体IDを一括で作成します。

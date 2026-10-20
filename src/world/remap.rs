@@ -353,6 +353,9 @@ impl World {
                 .ok_or_else(|| invalid("remapによるchunk revision上限"))?;
             chunk.edited = true;
         }
+        if let Some(physics) = &mut self.body_physics {
+            physics.apply_material_remaps(&self.remaps, &self.content, self.limits)?;
+        }
         // 素材が空へ変わると、そのcellが所有していた組成・作者の追従値も
         // 所有者を失います。素材IDだけを空にすると旧MixtureRefが残り、
         // 次の収支監査や区域の退避・復帰で幽霊の成分を数えてしまいます。

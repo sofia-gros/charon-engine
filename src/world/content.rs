@@ -765,6 +765,30 @@ impl Content {
             .get(id.0 as usize)
             .ok_or_else(|| EngineError::new(ErrorCode::MissingKey, "layer ID"))
     }
+    pub(crate) fn validate_body_sidecar(
+        &self,
+        layer: StableKey,
+        key: StableKey,
+        version: u32,
+        payload: &[u8],
+    ) -> EngineResult<()> {
+        let factory = self
+            .channels
+            .binary_search_by_key(&key, |factory| factory.key())
+            .ok()
+            .and_then(|index| self.channels.get(index))
+            .ok_or_else(|| EngineError::new(ErrorCode::MissingKey, "body sidecar channel"))?;
+        if factory.material_layer() != Some(layer) || factory.version() != version {
+            return Err(EngineError::new(
+                ErrorCode::SchemaMismatch,
+                "body sidecar channel owner or version",
+            ));
+        }
+        self.schemas
+            .get(factory.value_schema())?
+            .validate(payload)?;
+        factory.validate_payload(payload)
+    }
     /// 素材を安定キー順に走査します。空は暗黙の予約値です。
     pub fn materials(&self) -> impl Iterator<Item = (MaterialId, &MaterialDef)> {
         self.materials

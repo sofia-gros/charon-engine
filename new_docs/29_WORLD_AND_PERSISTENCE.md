@@ -54,7 +54,7 @@ worker再開には`restart_generation`を使います。要求IDの世代に加�
 
 退避は`prepare_eviction`→`EvictionTask::store`→`finish_eviction`です。保存の再読込照合が成功したreceiptだけを受け付けます。保存中に対象区域が変われば拒否し、無関係な区域の編集は許容します。跨chunk個体は全所属chunkをまとめ、leaseと作業中Jobの予約を破りません。RAMのpage、個体mask、個体状態、channel部分を解放し、個体allocatorの休止slotと小さいarchive indexを残します。
 
-復帰は`region_load_task`→`load`→`restore_region`です。個体ID、独自状態、channel、生成baseを戻し、現行material epochとの差を適用してから公開します。容量不足や破損で部分復元しません。E07/E08以降のbody・Entity・AI等は、各工程で同じ区域の保存契約へ接続します。
+復帰は`region_load_task`→`load`→`restore_region`です。個体ID、独自状態、channel、生成baseを戻し、現行material epochとの差を適用してから公開します。容量不足や破損で部分復元しません。E07のBodyPhysicsとjoint graphは跨region接続を保つためCHWORLD3 World rootへ保存し、region別CHREGN02 payloadにはterrain等を保存します。`World::save/load`はWorld rootと参照region archiveを一つの保存世代に結び、bodyのcollision sweepはresident chunkだけを通し、跨region更新前にcallerがleaseを確保します。E07のWorld保存・region復帰と事前lease経路を[E07検証記録](evidence/E07/README.md)で検証します。E08以降のEntity/AI等は、各工程の所有単位と同じ保存契約への接続を定義します。
 
 ## 独自channel、remap、Job
 
