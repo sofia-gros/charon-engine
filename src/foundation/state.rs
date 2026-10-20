@@ -423,15 +423,25 @@ impl Transaction<'_> {
         Ok(())
     }
 
+    /// 候補がcommit可能かを先に確認します。成功後は追加書込を行わずにcommitできます。
+    ///
+    /// 外部World候補と複数状態を同じ成功境界で公開する呼出側が、外部候補を確定する前に
+    /// transactionの失敗状態を検出するために使います。可変borrowを保持する限り、確認後に
+    /// poison状態が変わることはありません。
+    pub fn validate_ready(&self) -> EngineResult<()> {
+        match &self.failed {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
     /// 全候補を一括公開します。この操作は追加確保・codec・作者callbackを呼びません。
     ///
     /// 可変借用が他の更新を防ぎ、候補作成時にrevision上限も確認済みです。
     /// 書込失敗を一つでも含む候補は、呼出側がエラーを無視しても公開しません。
     /// ここでの失敗確認後は、代入だけで全変更を公開します。
     pub fn commit(mut self) -> EngineResult<u64> {
-        if let Some(error) = self.failed {
-            return Err(error);
-        }
+        self.validate_ready()?;
         self.candidate.revision += 1;
         let revision = self.candidate.revision;
         *self.target = self.candidate;
