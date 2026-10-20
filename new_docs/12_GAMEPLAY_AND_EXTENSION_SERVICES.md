@@ -22,9 +22,15 @@ Recipeは入力条件、出力、作業条件、時間、作業状態を持つ�
 
 採掘はdamageの蓄積、対象のBreakMode、tool条件、drop ruleを評価する。ブロック単位とセル単位の破壊を選び、採掘可能かどうかを固定の素材名で判断しない。
 
+採掘報酬はWorld素材のstable keyから作者登録ruleで解決し、inventoryを先に、容量不足時はWorld drop containerを候補にします。item所有索引とWorld破壊を同一成功境界で確定し、報酬先が満杯、revision不一致、World編集失敗のいずれでも素材だけを失わないようにします。`WorldDropStore`はWorld scope、drop位置、保存可能containerを同一checkpoint resourceに保持し、pickupでinventory・drop・ItemInstance owner索引を一取引として更新します。`drop_inventory_at`は作者が決めた死亡位置へ、stackと状態付き個体をowner索引ごと一括移送します。drop位置の選択や死亡時にこの取引を呼ぶ条件は作者規則です。tool条件とdamage/採掘可否もcreator側のゲーム規則です。
+
 ## Combatと状態
 
 AttackId、source、hit group、shape、duration、対象条件、damage/effect recordを登録する。近接はtickで変化するhitbox、遠隔はCCD付きの物体またはray/sweep、継続効果はtimerとmodifierで表す。
+
+攻撃定義はstable keyとversionを持つcatalogへ登録する。shape geometry byte数、登録数、一回のquery hit数にはcreatorが上限を設定する。`AttackSpatialQuery`は正確なshape/cell接触と遮蔽・owner・対象条件を提供し、Engineはprovider key/version、有限impulse、hit数、target/substep一意性を検証して安定順の`CombatHit`を作る。結果statusはHit/NoHit/Incomplete/Unsupportedを保持し、不完全・未対応の接触を確定hitへ昇格しない。標準World adapterはCircle/Aabb/Capsule overlapを`CollisionQueries`へ接続し、作者のtarget resolverがWorld hitをgame entity IDとimpulseへ解決する。独自shape、sweep/beam、遮蔽やpenetrationの作者規則には作者`AttackSpatialQuery`を使う。
+
+`CombatCandidate::commit_with_world_and_state`は候補combat state、作者が追加するreceipt/event resource、World commandを一つの成功境界へ接続する。候補StateStoreを先に検証し、World候補が成功した後だけcombatとresourceを公開する。攻撃結果からeffect、死亡、drop等へどう変換するかは作者callbackで決め、外部globalやI/O副作用はこのtransactionのrollback外とする。
 
 同じ攻撃による重複命中は`AttackId × target × hit_window`で管理する。遮蔽query、penetration、反射、属性耐性、knockback、owner判定を独立した部品にする。HP・mana等は登録済みAttributeKeyとして扱い、作者が独自属性を追加できる。
 
@@ -36,6 +42,14 @@ EffectProgramは生成、移動、属性変更、world操作、条件分岐、�
 
 programを型付きの中間形式へcompileし、参照、値域、生成量、必要サービスを検証する。進行にはprogram key/version、命令位置、局所値、対象、source、乱数tuple、予約とreceiptを保持する。
 
+標準compilerは登録済みnode key、分岐位置、command・state・receiptの上限を検証し、標準evaluatorは明示branch、ordered command、複数tickのtimer waitを実行する。wait nodeは1 tick以上を受け付け、次命令がないprogramではcompileを拒否する。EffectJobは既存の`resume_tick`へ再開tickを保存し、作者Systemは`resume_tick()`を見て待機中のpollを省略できる。creatorはcommand handlerとEffectEvaluatorを置換できる。jobはtick内の命令・spawn・cell書込数を保存し、SameTick予算超過では候補tickをDeferredへすり替えずjob/commandを未公開のまま停止する。Deferredの再開位置・乱数cursor・receiptとtick予算はcheckpointへ含める。
+
+別program呼出しはstable key/versionを持つ`EffectProgramCatalog`で静的参照解決し、未知の呼出先やversion不一致を登録時に拒否する。`EffectJob`は呼出元のprogram/version、復帰命令、node stateをbounded call stackへ保存する。calleeのReturnまたは末尾到達でcallerを復元し、末尾の呼出しなら親programの完了まで戻る。SameTick/Deferred scheduleは呼出しと復帰にも適用し、呼出深度上限は`EffectLimits`で作者が設定する（既定16）。共有receipt、乱数cursor、命令/spawn/cell予算をnested program間で維持し、CHREFF03へstackを保存する。CHREFF01/02のjobは空stackとして復元する。
+
+`EffectCandidate`は今回新規発行したreceipt IDをStateStore更新callbackへ渡す。作者は同じresource transactionへreceipt付きmana/item予約を記録し、Deferred再開や再試行で既存receiptを二重消費しないようにできる。effect job、resource record、World commandの確定は同じ候補commit境界を使う。標準item/mana resource handlerの登録は作者が行う。
+
+Runtimeでは作者SystemがStateStoreからEffectJobを読み、`prepare`で候補命令を評価します。`EffectCandidate::commit_with`のcallbackからjob state・作者resource・commandをWorld候補へ提出し、SystemDescriptorのbarrierでまとめて確定します。`ContinueSameTick`はbarrier後の同tick再poll、`Deferred`は次のlogical tickで保存jobを読み直して再開します。Runtimeへの接続は作者Systemで行い、Engine coreが固定handlerを暗黙に実行しません。
+
 ループや再帰的triggerは実装可能とし、命令数・spawn数・書き込みcell数予算で区切る。Deferredは継続Jobを保存して次tickへ送り、SameTickは候補tickを進めず継続する。選択は[25](25_OPEN_EXTENSION_AND_COLLISION_CONTRACTS.md)に従う。容量失敗と予算待機を区別し、再開でmanaやitemを二度消費しない。作者は独自評価器へ置き換え、deck/discard、draw、shuffle、modifierの適用順と副作用を独自stateへ保持できる。
 
 呪文のcard順、同時発射、遅延、散布、修飾、triggerを、この汎用programと作者の評価規則で構成できるようにする。特定の武器や杖をエンジンの唯一の魔法方式にしない。
@@ -46,7 +60,7 @@ programを型付きの中間形式へcompileし、参照、値域、生成量、
 
 作者はstate machine、behavior treeまたは独自systemを登録する。blackboard、target、timer、行動の進捗はcomponentとして保存する。AI更新は安定したEntityId順と件数予算を使う。
 
-navigationはcoarseなregion接続とlocalな精密shape queryを組み合わせる。歩行、jump、fall、swim、fly、地形通過などの移動profileを登録できる。A*の優先順位は`f,h,node_key`で固定し、frontier、visited、入力revisionをJobへ保存する。
+navigationはcoarseなregion接続とlocalな精密shape queryを組み合わせる。`NavigationAgentProfile`は安定key/version、作者所有の`CollisionQueryShapeRef`、footprint、step/jump/fall範囲、swim/fly能力、collision group、hazard costを持つ。作者`NavigationQuery`はprofile-aware callbackでこれらを使って移動edgeを生成し、正確なshape/cell判定とtimed link規則を所有する。A*の優先順位は`f,h,node_key`で固定し、frontier、visited、入力revision、profile versionをJobへ保存する。profile versionやWorld入力が変わった保存Jobは再利用条件を満たさなければstaleとして再探索する。
 
 地形や動く物体で経路が変わったらaffected revisionを検証し、無効区間だけ再探索する。未読み込みのregionは`WaitingForRegion`としてleaseを要求する。敵の全探索を描画フレームの余り時間へ依存させない。
 
@@ -54,13 +68,19 @@ navigationはcoarseなregion接続とlocalな精密shape queryを組み合わせ
 
 配線はWorld layer上の接続graph、信号は型付きのpayload、装置はportとcomponentを持つ。複数の接続種、交差、遅延、論理条件、作業queueを作れる。変更範囲のgraphをrevision付きで再構築する。
 
-標準Deferredの信号はsourceとsequence順に処理し、新しい信号は次tickのqueueへ送る。同tickの伝播順が必要ならSignals providerとSameTick queueで処理する。ループ、訪問済み集合、信号の消費、進行状態を保存する。電気や液体等の追加相互作用は素材・効果のAPIへ接続する。
+標準Deferredの信号はsourceとsequence順に処理し、新しい信号は次tickのqueueへ送る。同tickの伝播順が必要ならSignals providerとSameTick queueで処理する。ループ、訪問済み集合、信号の消費、進行状態を保存する。device handlerは入力と保存stateから次state・port emission候補を作り、graph配送・device state・signal queueを同一transaction境界で公開する。失敗時にdeviceだけが進行したり、配送だけが二重化したりしない。電気や液体等の追加相互作用は素材・効果のAPIへ接続する。
+
+作者deviceは`WireDeviceCandidate::commit_with`から信号payloadを解釈し、StateStore上のdevice state・配送queueとWorld `GridChannel`の更新を同じcommit境界へ接続できる。World編集の失敗時はstateとqueueも公開しない。payloadの意味、channelへの対応、液体量や物質収支の規則は作者providerが定義する。例えばu8 channel値をsourceからtargetへ移す作者solverは、両セル更新を一つのWorld editで確定できる。作者が`MaterialInventoryProvider`で保存StateStore上の実物質tokenを列挙すれば、Signals device候補から`World::edit_material_accounted`へ接続してtoken移動と全表現収支を同じWorld取引で検証できる。物質の型・数量channelとの対応や、material owner別のremap解釈は作者providerが明示し、自動推測されない。
 
 装置はSimulate leaseによってカメラから離れても動作できる。recipe作業、ポンプ、運搬、保管を通常の取引APIで構成し、sample専用のWorld直書きを使わない。
 
 ## 生成・進行・環境
 
 時刻、天候、biome、spawn rule、住居や施設の条件、進行flag、world eventを型付きresourceとして登録する。世界の一部が別のbiomeへ変化する処理も、広域Jobとmaterial変換で作れる。
+
+`TransactionalWorldEventProvider`はeventから安定順の次配送、ProgressionChange、World commandの有無を返します。`WorldEventQueue::poll_transactionally`はreceipt新規eventのWorld callback、ProgressionState、queueをStateStoreと同じ成功境界で確定し、callback失敗時はすべて候補を破棄します。重複receiptや現在tickに処理可能なeventがない場合はWorld revisionを進めません。commandの内容とpayload解釈は作者が実装し、callbackは渡されたWorld編集候補以外へ副作用を出しません。
+
+作者は`poll_transactionally_with_state`のStateStore callbackで、新規event receiptからEffectJobや独自trigger recordを作れます。event queue、ProgressionState、trigger対象record、World commandは一つの成功境界を共有し、World編集失敗後の再試行でEffectJobだけが先行登録されません。登録されたjobは作者SystemからRuntime barrierへ提出して続行します。event keyからprogramを選ぶ規則や対象/sourceの解決は作者が所有します。
 
 ボスのphase、攻撃予告、部位、NPCの会話や仕事は、Entity、属性、AI、UI、効果を組み合わせる作例として示す。一般の作者に公開されていない専用権限を与えない。
 

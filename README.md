@@ -17,6 +17,7 @@ Rustの構造体とトレイトでSceneや独自システムを実装し、型�
 - **世界と保存**：多層の疎なworld、chunk活動域、block個体、原子的編集、世代保存と復元
 - **サンドボックスsimulation**：粉体・液体・気体の輸送、圧力、混合、物質粒子、物性と力、保存可能な処理Job、熱輸送、相変化、反応
 - **剛体と破壊**：回転body、衝突、流体・熱との連成、物質を持つ破壊可能bodyを提供します（E07/Q06実装済み。検証範囲は[検証記録](new_docs/evidence/E07/README.md)を参照）。
+- **ゲーム共通サービス**：Item/craft/装備取引、作者定義の死亡処理に使える位置付きWorld drop、作者進行resource、combat attribute/hit解決とCircle/Aabb/CapsuleのWorld overlap query、combat/effect/resource/Worldをつなぐ原子的commit、receipt連携・複数tick timer wait・保存可能な別program呼出し付き継続effect、shape/footprint/移動能力を持つversion付きAI navigation profile、Signals deviceからの作者material token移送と収支監査、World commandと進行stateを連結するevent APIを利用できます。Q07の公開API受け入れとE08検証範囲は[サービス仕様](new_docs/12_GAMEPLAY_AND_EXTENSION_SERVICES.md)と[検証記録](new_docs/evidence/E08/README.md)を参照してください。
 
 製品の設計目標、公開APIの方針、機能ごとの仕様は [`new_docs/README.md`](new_docs/README.md) から参照できます。設計上の目標と、現在コードから利用できる機能は各設計・検証資料で区別しています。
 

@@ -211,7 +211,13 @@ fn fixture_with_profile(
             simulated: true,
         })
         .unwrap();
-    for (name, mass) in [("test:a", 5), ("test:b", 3), ("test:carrier", 4)] {
+    for (name, mass) in [
+        ("test:a", 5),
+        ("test:b", 3),
+        ("test:c", 5),
+        ("test:d", 3),
+        ("test:carrier", 4),
+    ] {
         registry
             .register(
                 MaterialBuilder::new(name, MaterialBase::Liquid)
@@ -223,6 +229,14 @@ fn fixture_with_profile(
     registry
         .register(
             MaterialBuilder::new("test:chest", MaterialBase::Solid)
+                .unwrap()
+                .block_size(2, 1)
+                .mass_per_cell(10),
+        )
+        .unwrap();
+    registry
+        .register(
+            MaterialBuilder::new("test:chest-remapped", MaterialBase::Solid)
                 .unwrap()
                 .block_size(2, 1)
                 .mass_per_cell(10),
@@ -309,6 +323,7 @@ fn profile(version: u32, atoms: usize) -> MaterialInventoryProfile {
                 block: true,
                 version,
             }),
+            Arc::new(BodyLocalGridInventoryProvider::new().unwrap()),
             Arc::new(FaultGuardProvider),
         ],
         MaterialInventoryLimits {
@@ -386,7 +401,7 @@ fn total(report: &MaterialInventoryReport, name: &str) -> MaterialQuantity {
 }
 
 #[test]
-fn all_real_representations_and_multichunk_archive_are_counted_once() {
+fn all_real_representations_and_multichunk_archive_are_counted_once_and_remapped() {
     let (mut world, layer, profile, mut storage) = fixture(1_000_000);
     let a = cell(&world, "test:a");
     let b = cell(&world, "test:b");
@@ -419,6 +434,37 @@ fn all_real_representations_and_multichunk_archive_are_counted_once() {
             )
         })
         .unwrap();
+    let mut body_grid = BodyLocalGrid::new(
+        1,
+        1,
+        1.0,
+        [0.5, 0.5],
+        0,
+        BodyLocalGridLimits {
+            cells: 1,
+            geometry_cells: 1,
+            sidecar_bytes: 128,
+        },
+    )
+    .unwrap();
+    body_grid
+        .set_cell(
+            0,
+            0,
+            BodyLocalCell::new(key("test:layer"), key("test:a"), 0, 0, 0, Vec::new())
+                .unwrap()
+                .with_tokens(MaterialQuantity::new(2, 1).unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+    world
+        .edit_bodies(|physics| {
+            physics.insert_with_local_grid(
+                BodyDef::dynamic(ColliderShape::Circle { radius: 0.25 }),
+                body_grid,
+            )
+        })
+        .unwrap();
     let cache = world
         .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
         .unwrap();
@@ -428,7 +474,7 @@ fn all_real_representations_and_multichunk_archive_are_counted_once() {
         .unwrap();
     assert_eq!(
         total(&baseline, "test:a"),
-        MaterialQuantity::new(3, 1).unwrap()
+        MaterialQuantity::new(5, 1).unwrap()
     );
     assert_eq!(
         total(&baseline, "test:b"),
@@ -458,31 +504,98 @@ fn all_real_representations_and_multichunk_archive_are_counted_once() {
                 .unwrap(),
         )
         .unwrap();
-    world = restore(&world);
-    let cache = world
-        .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
+    let before_remap = world
+        .verify_material_accounting(&profile, &cache, key("test:balance"))
         .unwrap();
-    baseline
-        .verify_conserved(
-            &world
-                .verify_material_accounting(&profile, &cache, key("test:balance"))
-                .unwrap(),
+    world
+        .edit_material_accounted(
+            &profile,
+            &cache,
+            key("test:balance"),
+            key("test:balance-schema"),
+            Some(reason(MaterialReceiptKind::Conversion)),
+            |edit| {
+                edit.remap_materials(MaterialRemap {
+                    owner: key("engine:terrain"),
+                    layers: Vec::new(),
+                    mappings: vec![
+                        (MaterialHandle(key("test:a")), MaterialHandle(key("test:c"))),
+                        (MaterialHandle(key("test:b")), MaterialHandle(key("test:d"))),
+                    ],
+                })?;
+                edit.remap_materials(MaterialRemap {
+                    owner: key("engine:blocks"),
+                    layers: Vec::new(),
+                    mappings: vec![(
+                        MaterialHandle(key("test:chest")),
+                        MaterialHandle(key("test:chest-remapped")),
+                    )],
+                })?;
+                edit.remap_materials(MaterialRemap {
+                    owner: key("engine:particles"),
+                    layers: Vec::new(),
+                    mappings: vec![(MaterialHandle(key("test:b")), MaterialHandle(key("test:d")))],
+                })?;
+                edit.remap_materials(MaterialRemap {
+                    owner: key("test:body-provider"),
+                    layers: Vec::new(),
+                    mappings: vec![(MaterialHandle(key("test:a")), MaterialHandle(key("test:c")))],
+                })?;
+                edit.remap_materials(MaterialRemap {
+                    owner: key("engine:body-local-grid-inventory"),
+                    layers: Vec::new(),
+                    mappings: vec![(MaterialHandle(key("test:a")), MaterialHandle(key("test:c")))],
+                })?;
+                edit.remap_materials(MaterialRemap {
+                    owner: key("test:distinct-reservoir-provider"),
+                    layers: Vec::new(),
+                    mappings: vec![(MaterialHandle(key("test:b")), MaterialHandle(key("test:d")))],
+                })?;
+                edit.remap_materials(MaterialRemap {
+                    owner: key("test:block-provider"),
+                    layers: Vec::new(),
+                    mappings: vec![(MaterialHandle(key("test:a")), MaterialHandle(key("test:c")))],
+                })
+            },
         )
         .unwrap();
-    let loaded = world
+    let remapped = world
+        .verify_material_accounting(&profile, &cache, key("test:balance"))
+        .unwrap();
+    assert_eq!(total(&remapped, "test:a"), MaterialQuantity::ZERO);
+    assert_eq!(total(&remapped, "test:b"), MaterialQuantity::ZERO);
+    assert_eq!(total(&remapped, "test:chest"), MaterialQuantity::ZERO);
+    assert_eq!(total(&remapped, "test:c"), total(&before_remap, "test:a"));
+    assert_eq!(total(&remapped, "test:d"), total(&before_remap, "test:b"));
+    assert_eq!(
+        total(&remapped, "test:chest-remapped"),
+        total(&before_remap, "test:chest")
+    );
+    let mut restored = restore(&world);
+    let restored_archives = restored
+        .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
+        .unwrap();
+    assert_eq!(
+        restored
+            .verify_material_accounting(&profile, &restored_archives, key("test:balance"))
+            .unwrap(),
+        remapped
+    );
+    let loaded = restored
         .region_load_task(ChunkCoord::new(0, 0).unwrap(), 8_000_000)
         .unwrap()
         .load(&mut storage)
         .unwrap();
-    world.edit(|edit| edit.restore_region(loaded)).unwrap();
-    // 復帰後はcacheの余分な旧groupを足さず、residentの実データだけを数えます。
-    baseline
-        .verify_conserved(
-            &world
-                .verify_material_accounting(&profile, &cache, key("test:balance"))
-                .unwrap(),
-        )
+    restored.edit(|edit| edit.restore_region(loaded)).unwrap();
+    let resident_archive_inventory = restored
+        .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
         .unwrap();
+    assert_eq!(
+        restored
+            .verify_material_accounting(&profile, &resident_archive_inventory, key("test:balance"),)
+            .unwrap(),
+        remapped
+    );
 }
 
 #[test]
