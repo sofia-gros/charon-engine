@@ -1,6 +1,6 @@
 //! RuntimeがWorld IDを割り当ててから地形を構築する型付きbuilder。
 
-use super::{Content, World, WorldBounds, WorldLimits};
+use super::{BodyPhysicsSettings, Content, World, WorldBounds, WorldLimits};
 use crate::foundation::{EngineError, EngineResult, ErrorCode, id::WorldId};
 use std::sync::Arc;
 
@@ -11,6 +11,7 @@ pub struct WorldBuilder {
     seed: u64,
     bounds: WorldBounds,
     limits: WorldLimits,
+    body_physics: Option<BodyPhysicsSettings>,
     initializers: Vec<Initializer>,
     restored: Option<World>,
 }
@@ -22,6 +23,7 @@ impl WorldBuilder {
             seed: 0,
             bounds: WorldBounds::expandable(),
             limits: WorldLimits::default(),
+            body_physics: None,
             initializers: Vec::new(),
             restored: None,
         }
@@ -41,6 +43,11 @@ impl WorldBuilder {
         self.limits = limits;
         self
     }
+    /// 標準Rapier剛体providerの容量と固定step設定。
+    pub fn body_physics(mut self, settings: BodyPhysicsSettings) -> Self {
+        self.body_physics = Some(settings);
+        self
+    }
     /// 起動時の初期地形等を設定します。失敗したWorldはRuntimeへ公開しません。
     pub fn initialize(
         mut self,
@@ -57,6 +64,7 @@ impl WorldBuilder {
     }
     /// 割当済みのWorld IDで構築します。通常はEngineBuilderが呼びます。
     pub fn build(self, id: WorldId) -> EngineResult<World> {
+        let was_restored = self.restored.is_some();
         let mut world = match self.restored {
             Some(world) => {
                 if world.id() != id {
@@ -69,6 +77,15 @@ impl WorldBuilder {
             }
             None => World::new(id, self.seed, self.bounds, self.content, self.limits)?,
         };
+        if let Some(settings) = self.body_physics {
+            if was_restored {
+                return Err(EngineError::new(
+                    ErrorCode::InvalidState,
+                    "復元Worldへ新しいBodyPhysics設定を上書きできません",
+                ));
+            }
+            world.configure_body_physics(settings)?;
+        }
         for initialize in self.initializers {
             initialize(&mut world)?;
         }

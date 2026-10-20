@@ -33,7 +33,10 @@ pub struct ChannelDefinition<T: GridValue> {
 }
 pub(crate) trait ChannelFactory: Send + Sync {
     fn key(&self) -> StableKey;
+    fn version(&self) -> u32;
+    fn material_layer(&self) -> Option<StableKey>;
     fn value_schema(&self) -> StableKey;
+    fn validate_payload(&self, bytes: &[u8]) -> EngineResult<()>;
     fn descriptor(&self, limit: usize) -> EngineResult<Vec<u8>>;
     fn create(&self) -> EngineResult<Box<dyn ChannelState>>;
     fn restore(&self, bytes: &[u8]) -> EngineResult<Box<dyn ChannelState>>;
@@ -45,6 +48,10 @@ pub(crate) trait ChannelFactory: Send + Sync {
 pub(crate) trait ChannelState: Send + Sync {
     fn key(&self) -> StableKey;
     fn material_layer(&self) -> Option<StableKey>;
+    /// material-following grid cellが指定World cellと一対一対応するか検査します。
+    fn material_cell_is_exact(&self, point: CellPoint) -> EngineResult<bool>;
+    /// 標準enthalpy値のchannelならそのenergyを返し、別型ならSchemaMismatchにします。
+    fn thermal_energy(&self, point: CellPoint) -> EngineResult<i64>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn try_copy(&self) -> EngineResult<Box<dyn ChannelState>>;
@@ -111,8 +118,20 @@ impl<T: GridValue + Send + Sync + 'static> ChannelFactory for Factory<T> {
     fn key(&self) -> StableKey {
         self.0.key
     }
+    fn version(&self) -> u32 {
+        self.0.version
+    }
+    fn material_layer(&self) -> Option<StableKey> {
+        self.1
+    }
     fn value_schema(&self) -> StableKey {
         self.0.value_schema
+    }
+    fn validate_payload(&self, bytes: &[u8]) -> EngineResult<()> {
+        let mut input = Decoder::new(bytes, self.0.limits.checkpoint_bytes)?;
+        let value = T::decode(&mut input)?;
+        input.finish()?;
+        value.validate()
     }
     fn descriptor(&self, limit: usize) -> EngineResult<Vec<u8>> {
         let mut out = Encoder::new(limit);
@@ -269,6 +288,21 @@ impl<T: GridValue + Send + Sync + 'static> Storage<T> {
     }
 }
 impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
+    fn material_cell_is_exact(&self, point: CellPoint) -> EngineResult<bool> {
+        let coordinate = self.transport_coordinate(point)?;
+        let (min, max) = cell_bounds(self.grid.layout(), coordinate, 1)?;
+        Ok(min == [i64::from(point.x), i64::from(point.y)]
+            && max == [i64::from(point.x) + 1, i64::from(point.y) + 1])
+    }
+
+    fn thermal_energy(&self, point: CellPoint) -> EngineResult<i64> {
+        let value = self.grid.get(self.transport_coordinate(point)?);
+        (&value as &dyn Any)
+            .downcast_ref::<super::ThermalCellState>()
+            .map(|state| state.energy)
+            .ok_or_else(|| EngineError::new(ErrorCode::SchemaMismatch, "剛体移送の熱channel型"))
+    }
+
     fn mixture_reference(&self, point: CellPoint) -> EngineResult<super::MixtureRef> {
         let value = self.grid.get(self.transport_coordinate(point)?);
         (&value as &dyn Any)

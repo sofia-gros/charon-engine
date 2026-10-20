@@ -89,6 +89,14 @@ impl StateStore {
         self.payload_bytes
     }
 
+    /// 同じscope・schema・容量を持つ独立したStore候補を作ります。
+    ///
+    /// 作者状態migrationなどで既存recordを元に候補を再構成し、変更後も通常のschema検証とtransactionを
+    /// 使うための明示的な複製です。record数とpayload合計byte数に比例する確保が発生します。
+    pub fn fork(&self) -> EngineResult<Self> {
+        self.try_copy()
+    }
+
     /// 安定キー順の不変recordを公開します。制作ツールだけのprivate権限を不要にします。
     pub fn records(&self) -> impl Iterator<Item = StateRecordView<'_>> {
         self.records.iter().map(|record| StateRecordView {

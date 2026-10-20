@@ -11,6 +11,7 @@ use crate::foundation::{
     grid::CellPoint,
     grid::GridValue,
 };
+use serde::{Deserialize, Serialize};
 
 /// 一つのenthalpy区間。energy範囲は`[energy_start, energy_end)`です。
 ///
@@ -142,6 +143,14 @@ impl EnthalpyFamily {
         self.key
     }
 
+    /// familyが受け付ける半開energy範囲を返します。下端は含み、上端は含みません。
+    pub fn energy_bounds(&self) -> (i64, i64) {
+        (
+            self.bands.first().expect("非空family").energy_bounds().0,
+            self.bands.last().expect("非空family").energy_bounds().1,
+        )
+    }
+
     /// family内で熱状態として参照できる全material keyを調べます。
     pub fn contains_material(&self, material: StableKey) -> bool {
         self.bands.iter().any(|band| match *band {
@@ -151,7 +160,7 @@ impl EnthalpyFamily {
     }
 
     /// energyを一度だけ区間検索し、温度・相・潜熱の進捗へ写像します。
-    fn state_and_band(&self, energy: i64) -> EngineResult<(EnthalpyState, usize)> {
+    pub(super) fn state_and_band(&self, energy: i64) -> EngineResult<(EnthalpyState, usize)> {
         let index = self
             .bands
             .partition_point(|band| band.energy_bounds().1 <= energy);
@@ -237,7 +246,7 @@ impl EnthalpyFamily {
         })
     }
 
-    fn equilibrium_transfer(
+    pub(super) fn equilibrium_transfer(
         &self,
         hot_energy: i64,
         cold_energy: i64,
@@ -325,7 +334,7 @@ impl GridValue for ThermalCellState {
 }
 
 /// 正方向格子辺(+x,+y)が所有する伝導端数。座標固定channelへ保存します。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThermalEdgeState {
     /// +x辺のconductance分母に対する符号付き余り。
     pub residual_x: i64,
@@ -725,6 +734,16 @@ impl ReactionRuleSet {
             .map(|index| &self.rules[index])
     }
 
+    pub(crate) fn family(&self) -> &EnthalpyFamily {
+        &self.family
+    }
+
+    pub(crate) fn candidate_storage_bytes(&self, candidate_limit: usize) -> EngineResult<usize> {
+        candidate_limit
+            .checked_mul(std::mem::size_of::<ReactionCandidate>())
+            .ok_or_else(|| invalid("reaction candidate storage size overflow"))
+    }
+
     fn can_chain_from(&self, material: StableKey) -> bool {
         self.chain_inputs.binary_search(&material).is_ok()
     }
@@ -740,16 +759,20 @@ impl ReactionRuleSet {
     }
 }
 
-/// 反応に伴う個体sidecarの所有権移行規則。
+/// 反応に伴うReactionSidecarとbody作者状態の所有権移行規則。
+///
+/// BodyLocalGridの反応ではflags、variation、ReactionSidecar以外のopaque sidecarにも同じ方針を
+/// 適用します。MigrateToOutputは作者状態を反応outputへ一度だけ移し、Drop/Consumeはruleが
+/// 明示的に破棄を選びます。BodyLocalGrid側はoutput material/channelのContent検証後に公開します。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReactionStateTransfer {
-    /// sourceに数量が残る場合だけ成立し、出力へ状態を複製しません。
+    /// sourceに数量が残る場合だけ成立し、ReactionSidecarと作者状態をsourceへ保ち出力へ複製しません。
     RetainSource,
-    /// source全量を消費し、進捗状態を出力へ移します。
+    /// source全量を消費し、ReactionSidecarと作者状態を出力へ移します。
     MigrateToOutput,
-    /// source全量を消費し、進捗状態を明示的に破棄します。
+    /// source全量を消費し、reaction progressと作者状態を明示的に破棄します。
     Drop,
-    /// 進捗状態も入力と一緒に消費し、出力へ移しません。
+    /// reaction progressと作者状態を入力と一緒に消費し、出力へ移しません。
     Consume,
 }
 impl StateCodec for ReactionStateTransfer {
@@ -836,6 +859,8 @@ pub struct ReactionJob {
 pub struct ReactionStepReport {
     /// 新たに確定した反応件数。
     pub committed: u32,
+    /// commitしたreaction ruleが宣言したenergy deltaの合計。
+    pub declared_energy_delta: i128,
     /// 出力空間・pool・条件が足りず次回へ残した件数。
     pub deferred: u32,
     /// cursorが進んだ候補数。
@@ -972,7 +997,7 @@ impl ReactionJob {
         self.candidates.len() - self.cursor
     }
 
-    fn try_copy(&self) -> EngineResult<Self> {
+    pub(crate) fn try_copy(&self) -> EngineResult<Self> {
         let mut candidates = Vec::new();
         candidates
             .try_reserve_exact(self.candidates.len())
@@ -982,6 +1007,23 @@ impl ReactionJob {
             candidates,
             cursor: self.cursor,
             same_tick_chain_pending: self.same_tick_chain_pending,
+        })
+    }
+
+    pub(crate) fn candidate_count(&self) -> usize {
+        self.candidates.len()
+    }
+
+    pub(crate) fn candidates(&self) -> &[ReactionCandidate] {
+        &self.candidates[self.cursor..]
+    }
+
+    pub(crate) fn destinations_within(&self, width: usize, height: usize) -> bool {
+        self.candidates.iter().skip(self.cursor).all(|candidate| {
+            candidate.destination[0] >= 0
+                && candidate.destination[1] >= 0
+                && (candidate.destination[0] as usize) < width
+                && (candidate.destination[1] as usize) < height
         })
     }
 
@@ -1001,7 +1043,28 @@ impl ReactionJob {
         self.step_with_particle_outputs(cells, rules, occupied, max_cells, budget, None)
     }
 
-    fn step_with_particle_outputs(
+    pub(super) fn step_with_particle_outputs(
+        &mut self,
+        cells: &mut Vec<ReactionCell>,
+        rules: &ReactionRuleSet,
+        occupied: &[[i32; 2]],
+        max_cells: usize,
+        budget: usize,
+        particle_outputs: Option<&mut Vec<([i32; 2], [i64; 2])>>,
+    ) -> EngineResult<ReactionStepReport> {
+        self.step_with_particle_outputs_and_transitions(
+            cells,
+            rules,
+            occupied,
+            max_cells,
+            budget,
+            particle_outputs,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn step_with_particle_outputs_and_transitions(
         &mut self,
         cells: &mut Vec<ReactionCell>,
         rules: &ReactionRuleSet,
@@ -1009,6 +1072,7 @@ impl ReactionJob {
         max_cells: usize,
         budget: usize,
         mut particle_outputs: Option<&mut Vec<([i32; 2], [i64; 2])>>,
+        mut committed_candidates: Option<&mut Vec<ReactionCandidate>>,
     ) -> EngineResult<ReactionStepReport> {
         validate_reaction_cells(cells)?;
         let family = &rules.family;
@@ -1136,6 +1200,16 @@ impl ReactionJob {
                 .corrosion
                 .checked_add(candidate.corrosion_delta)
                 .ok_or_else(|| invalid("reaction corrosion overflow"))?;
+            let declared_energy_delta = report
+                .declared_energy_delta
+                .checked_add(i128::from(candidate.energy_delta))
+                .ok_or_else(|| invalid("reaction energy delta overflow"))?;
+            if let Some(committed) = committed_candidates.as_deref_mut() {
+                committed
+                    .try_reserve(1)
+                    .map_err(crate::foundation::error::allocation)?;
+                committed.push(candidate);
+            }
             // 失敗し得る算術をすべて終えてからsourceと出力を一括して変更します。
             if source_quantity == 0 {
                 cells.remove(source_index);
@@ -1201,6 +1275,7 @@ impl ReactionJob {
             }
             self.cursor += 1;
             report.committed += 1;
+            report.declared_energy_delta = declared_energy_delta;
         }
         Ok(report)
     }
@@ -1488,17 +1563,14 @@ impl WorldEdit<'_> {
             let work = area
                 .checked_mul(rules.len())
                 .ok_or_else(|| invalid("reaction候補work overflow"))?;
+            let candidate_bytes = rules.candidate_storage_bytes(candidate_limit)?;
             let scratch = area
                 .checked_mul(
                     std::mem::size_of::<ReactionCell>() * 2
                         + std::mem::size_of::<[i32; 2]>()
                         + std::mem::size_of::<bool>(),
                 )
-                .and_then(|bytes| {
-                    bytes.checked_add(
-                        candidate_limit.checked_mul(std::mem::size_of::<ReactionCandidate>())?,
-                    )
-                })
+                .and_then(|bytes| bytes.checked_add(candidate_bytes))
                 .ok_or_else(|| invalid("reaction scratch byte数overflow"))?;
             let max_write_work = budget
                 .checked_mul(8)

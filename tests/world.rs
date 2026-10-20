@@ -2303,6 +2303,21 @@ fn a_world_save_contains_all_archives_and_can_restore_them_into_a_fresh_paging_s
     world
         .edit(|edit| edit.set_block_state(block, key("game:items"), key("game:number"), &67u32))
         .unwrap();
+    world
+        .configure_body_physics(BodyPhysicsSettings {
+            gravity: [0.0, 0.0],
+            ..BodyPhysicsSettings::default()
+        })
+        .unwrap();
+    let mut body_definition = BodyDef::dynamic(ColliderShape::Circle { radius: 0.25 });
+    body_definition.pose = BodyPose {
+        x: 50.0,
+        y: 50.0,
+        angle: 0.0,
+    };
+    let body = world
+        .edit_bodies(|physics| physics.insert(body_definition))
+        .unwrap();
     let paging = SaveDirectory::new();
     let mut archives = DirectoryArchives::new(&paging.0).unwrap();
     let region = ChunkRegion::single(ChunkCoord::new(0, 0).unwrap()).unwrap();
@@ -2312,6 +2327,14 @@ fn a_world_save_contains_all_archives_and_can_restore_them_into_a_fresh_paging_s
         .store(&mut archives)
         .unwrap();
     world.edit(|edit| edit.finish_eviction(stored)).unwrap();
+    assert_eq!(
+        world.body_physics().unwrap().state(body).unwrap().pose,
+        BodyPose {
+            x: 50.0,
+            y: 50.0,
+            angle: 0.0,
+        }
+    );
     let backup = SaveDirectory::new();
     let mut repository = SaveRepository::new(
         DirectoryStorage::new(&backup.0).unwrap(),
@@ -2340,6 +2363,14 @@ fn a_world_save_contains_all_archives_and_can_restore_them_into_a_fresh_paging_s
         2_000_000,
     )
     .unwrap();
+    assert_eq!(
+        restored.body_physics().unwrap().state(body).unwrap().pose,
+        BodyPose {
+            x: 50.0,
+            y: 50.0,
+            angle: 0.0,
+        }
+    );
     let loaded = restored
         .region_load_task(ChunkCoord::new(0, 0).unwrap(), 2_000_000)
         .unwrap()
@@ -2352,6 +2383,15 @@ fn a_world_save_contains_all_archives_and_can_restore_them_into_a_fresh_paging_s
             .unwrap(),
         67
     );
+    assert_eq!(
+        restored.body_physics().unwrap().state(body).unwrap().pose,
+        BodyPose {
+            x: 50.0,
+            y: 50.0,
+            angle: 0.0,
+        }
+    );
+    restored.step_bodies(front, 1.0).unwrap();
 }
 #[test]
 fn an_archive_stream_failure_never_publishes_an_incomplete_world_root() {

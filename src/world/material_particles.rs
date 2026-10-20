@@ -24,6 +24,16 @@ pub struct MaterialParticleHandle {
     world: WorldId,
     id: Id<MaterialParticleKind>,
 }
+
+/// Worldの物質cellを正規物質粒子へ移す入力です。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaterialParticleEmission {
+    /// 粒子を生成するWorld cell座標。移動開始位置はそのcellの中心です。
+    pub point: CellPoint,
+    /// 符号付きQ16 cell/tickの初速度。
+    pub velocity_q16: [i64; 2],
+}
+
 impl MaterialParticleHandle {
     /// 所属World。
     pub fn world(self) -> WorldId {
@@ -426,32 +436,104 @@ impl WorldEdit<'_> {
         point: CellPoint,
         velocity_q16: [i64; 2],
     ) -> EngineResult<MaterialParticleHandle> {
+        let emission = [MaterialParticleEmission {
+            point,
+            velocity_q16,
+        }];
+        self.emit_material_particles_batch(layer, &emission)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| invalid("単一粒子発行結果がありません"))
+    }
+
+    /// cellと全material-following channelを、一つのWorldEditで複数の粒子へ移します。
+    ///
+    /// 出力先の重複・既存粒子・cell占有・粒子slot・総payload byte・編集cell数を先に検査します。
+    /// 全particle payloadを一度のpool走査で計数し、容量不足ではcell・channel・粒子のいずれも
+    /// 変更しません。入力順でhandleを返します。
+    pub fn emit_material_particles_batch(
+        &mut self,
+        layer: LayerId,
+        emissions: &[MaterialParticleEmission],
+    ) -> EngineResult<Vec<MaterialParticleHandle>> {
         self.run(|editor| {
-            let cell = editor.loaded(layer, point)?;
-            if cell.block.is_some() || cell.core.material == MaterialId::AIR {
-                return Err(conflict("粒子へ移すcellが空またはblock個体"));
+            if emissions.is_empty() {
+                return Err(invalid("空の物質粒子batch"));
+            }
+            let particle_count = editor
+                .world
+                .particles
+                .len()
+                .checked_add(emissions.len())
+                .ok_or_else(|| invalid("物質粒子slot数overflow"))?;
+            if particle_count > editor.world.limits.particles as usize {
+                return Err(EngineError::capacity(
+                    "物質粒子slot数",
+                    particle_count as u64,
+                    editor.world.limits.particles.into(),
+                ));
+            }
+
+            let mut ordered = Vec::new();
+            ordered
+                .try_reserve_exact(emissions.len())
+                .map_err(allocation)?;
+            ordered.extend(emissions.iter().copied().enumerate());
+            ordered.sort_unstable_by_key(|(_, emission)| (emission.point.y, emission.point.x));
+            if ordered
+                .windows(2)
+                .any(|pair| pair[0].1.point == pair[1].1.point)
+            {
+                return Err(conflict("物質粒子batchの出力先重複"));
+            }
+
+            let layer_key = editor.world.content.layer(layer)?.key;
+            let mut cores = Vec::new();
+            cores.try_reserve_exact(ordered.len()).map_err(allocation)?;
+            for (_, emission) in &ordered {
+                let cell = editor.loaded(layer, emission.point)?;
+                if cell.block.is_some() || cell.core.material == MaterialId::AIR {
+                    return Err(conflict("粒子へ移すcellが空またはblock個体"));
+                }
+                cores.push(cell.core);
             }
             if editor.world.particles.iter().any(|(_, particle)| {
-                !particle.is_archived() && particle.layer == layer && particle.cell() == point
+                if particle.is_archived() || particle.layer != layer {
+                    return false;
+                }
+                let point = particle.cell();
+                ordered
+                    .binary_search_by_key(&(point.y, point.x), |(_, emission)| {
+                        (emission.point.y, emission.point.x)
+                    })
+                    .is_ok()
             }) {
                 return Err(conflict("放出先に別の物質粒子が存在"));
             }
-            let layer_key = editor.world.content.layer(layer)?.key;
-            let channels = editor
+
+            let channels_per_particle = editor
                 .world
                 .channels
                 .iter()
-                .filter(|channel| channel.material_layer() == Some(layer_key));
-            let mut payload = Vec::new();
-            let count = channels.clone().count();
-            payload.try_reserve_exact(count).map_err(allocation)?;
+                .filter(|channel| channel.material_layer() == Some(layer_key))
+                .count();
+            let channel_writes = channels_per_particle
+                .checked_mul(ordered.len())
+                .ok_or_else(|| invalid("物質粒子channel書込数overflow"))?;
+            let write_count = ordered
+                .len()
+                .checked_mul(2)
+                .and_then(|count| count.checked_add(channel_writes))
+                .ok_or_else(|| invalid("物質粒子編集数overflow"))?;
+            editor.reserve_writes(write_count)?;
+
             let used = editor
                 .world
                 .particles
                 .iter()
-                .try_fold(0usize, |total, (_, p)| {
+                .try_fold(0usize, |total, (_, particle)| {
                     total
-                        .checked_add(p.payload_bytes()?)
+                        .checked_add(particle.payload_bytes()?)
                         .ok_or_else(|| invalid("粒子byte数overflow"))
                 })?;
             let mut remaining = editor
@@ -460,41 +542,82 @@ impl WorldEdit<'_> {
                 .particle_bytes
                 .checked_sub(used)
                 .ok_or_else(|| invalid("粒子byte容量"))?;
-            for channel in channels {
-                let overhead = channel.key().as_str().len() + 8;
-                remaining = remaining.checked_sub(overhead).ok_or_else(|| {
-                    EngineError::capacity(
-                        "粒子channel辞書byte数",
-                        overhead as u64,
-                        remaining as u64,
-                    )
-                })?;
-                let bytes = channel.material_payload(point, remaining)?;
-                remaining -= bytes.len();
-                payload.push((channel.key(), bytes));
+            let mut payloads = Vec::new();
+            payloads
+                .try_reserve_exact(ordered.len())
+                .map_err(allocation)?;
+            for (_, emission) in &ordered {
+                let mut payload = Vec::new();
+                payload
+                    .try_reserve_exact(channels_per_particle)
+                    .map_err(allocation)?;
+                for channel in editor
+                    .world
+                    .channels
+                    .iter()
+                    .filter(|channel| channel.material_layer() == Some(layer_key))
+                {
+                    let overhead = channel.key().as_str().len() + 8;
+                    remaining = remaining.checked_sub(overhead).ok_or_else(|| {
+                        EngineError::capacity(
+                            "粒子channel辞書byte数",
+                            overhead as u64,
+                            remaining as u64,
+                        )
+                    })?;
+                    let bytes = channel.material_payload(emission.point, remaining)?;
+                    remaining -= bytes.len();
+                    payload.push((channel.key(), bytes));
+                }
+                payloads.push(payload);
             }
-            editor.reserve_writes(count + 2)?;
-            let particle = MaterialParticle {
-                layer,
-                core: cell.core,
-                epoch: editor.world.remaps.epoch(),
-                position: [
-                    i64::from(point.x) * SCALE + SCALE / 2,
-                    i64::from(point.y) * SCALE + SCALE / 2,
-                ],
-                velocity: velocity_q16,
-                dormant: None,
-                payload,
-            };
-            let id = editor.world.particles.insert(particle)?;
+
+            let mut handles = Vec::new();
+            handles
+                .try_reserve_exact(ordered.len())
+                .map_err(allocation)?;
+            handles.resize_with(ordered.len(), || None);
+            let mut points = Vec::new();
+            points
+                .try_reserve_exact(ordered.len())
+                .map_err(allocation)?;
+            for (((original_index, emission), core), payload) in
+                ordered.into_iter().zip(cores).zip(payloads)
+            {
+                let point = emission.point;
+                let particle = MaterialParticle {
+                    layer,
+                    core,
+                    epoch: editor.world.remaps.epoch(),
+                    position: [
+                        i64::from(point.x) * SCALE + SCALE / 2,
+                        i64::from(point.y) * SCALE + SCALE / 2,
+                    ],
+                    velocity: emission.velocity_q16,
+                    dormant: None,
+                    payload,
+                };
+                let id = editor.world.particles.insert(particle)?;
+                handles[original_index] = Some(MaterialParticleHandle {
+                    world: editor.world.id,
+                    id,
+                });
+                points.push(point);
+            }
             for channel in &mut editor.world.channels {
-                channel.reset_material(layer_key, &[point])?;
+                channel.reset_material(layer_key, &points)?;
             }
-            editor.write(layer, point, CellCore::AIR, None)?;
-            Ok(MaterialParticleHandle {
-                world: editor.world.id,
-                id,
-            })
+            for point in points {
+                editor.write(layer, point, CellCore::AIR, None)?;
+            }
+            let mut result = Vec::new();
+            result
+                .try_reserve_exact(handles.len())
+                .map_err(allocation)?;
+            for handle in handles {
+                result.push(handle.ok_or_else(|| invalid("物質粒子batch handle欠落"))?);
+            }
+            Ok(result)
         })
     }
 
@@ -535,7 +658,10 @@ impl WorldEdit<'_> {
 
     // 公開入口では他粒子を走査し、phase内では開始位置の索引と経路予約で同じ条件を保証します。
     // phaseの全着地でpool全体を再走査する二乗費用を避け、payload検査と原子的変更は共用します。
-    fn land_uncontested_particle(&mut self, handle: MaterialParticleHandle) -> EngineResult<()> {
+    pub(super) fn land_uncontested_particle(
+        &mut self,
+        handle: MaterialParticleHandle,
+    ) -> EngineResult<()> {
         self.run(|editor| {
             let particle = editor.world.material_particle(handle)?.try_copy()?;
             if particle.dormant.is_some() {

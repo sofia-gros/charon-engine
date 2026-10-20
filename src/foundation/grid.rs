@@ -6,6 +6,7 @@
 use super::codec::{Decoder, Encoder, StateCodec, invalid};
 use super::error::{EngineError, EngineResult, ErrorCode, allocation};
 use super::key::StableKey;
+use std::sync::Arc;
 
 /// 一つのchunkの辺長。負座標にもEuclidean除算を適用します。
 pub const CHUNK_SIDE: i32 = 64;
@@ -159,7 +160,7 @@ pub struct GridLimits {
 
 struct Chunk<T> {
     coordinate: (i32, i32),
-    values: Vec<T>,
+    values: Arc<Vec<T>>,
     non_default: u16,
 }
 
@@ -257,13 +258,20 @@ impl<T: GridValue> GridChannel<T> {
         match location {
             Ok(chunk) => {
                 let chunk_data = &mut self.chunks[chunk];
+                if Arc::strong_count(&chunk_data.values) > 1 {
+                    let mut values = Vec::new();
+                    values.try_reserve_exact(CELLS).map_err(allocation)?;
+                    values.extend_from_slice(&chunk_data.values);
+                    chunk_data.values = Arc::new(values);
+                }
                 if old.same(self.default) {
                     chunk_data.non_default += 1;
                 }
                 if value.same(self.default) {
                     chunk_data.non_default -= 1;
                 }
-                chunk_data.values[index] = value;
+                Arc::get_mut(&mut chunk_data.values).expect("共有channel chunkを編集前に分離")
+                    [index] = value;
                 if chunk_data.non_default == 0 {
                     self.chunks.remove(chunk);
                 }
@@ -285,7 +293,7 @@ impl<T: GridValue> GridChannel<T> {
                     position,
                     Chunk {
                         coordinate,
-                        values,
+                        values: Arc::new(values),
                         non_default: 1,
                     },
                 );
@@ -368,7 +376,7 @@ impl<T: GridValue> GridChannel<T> {
             Ok(index) => {
                 self.chunks[index] = Chunk {
                     coordinate,
-                    values: candidate,
+                    values: Arc::new(candidate),
                     non_default: count,
                 }
             }
@@ -376,7 +384,7 @@ impl<T: GridValue> GridChannel<T> {
                 index,
                 Chunk {
                     coordinate,
-                    values: candidate,
+                    values: Arc::new(candidate),
                     non_default: count,
                 },
             ),
@@ -386,7 +394,8 @@ impl<T: GridValue> GridChannel<T> {
         Ok(())
     }
 
-    /// 候補用の独立した複製です。いずれかの確保に失敗したら全候補を破棄します。
+    /// 候補用の複製です。chunk値は共有し、変更するchunkだけを確保失敗を返せる方式で分離します。
+    /// 分離用配列の確保に失敗した場合、共有している元の値を変更しません。
     pub fn try_copy(&self) -> EngineResult<Self> {
         let mut candidate = Self::new(
             self.key,
@@ -400,12 +409,9 @@ impl<T: GridValue> GridChannel<T> {
             .try_reserve_exact(self.chunks.len())
             .map_err(allocation)?;
         for chunk in &self.chunks {
-            let mut values = Vec::new();
-            values.try_reserve_exact(CELLS).map_err(allocation)?;
-            values.extend_from_slice(&chunk.values);
             candidate.chunks.push(Chunk {
                 coordinate: chunk.coordinate,
-                values,
+                values: Arc::clone(&chunk.values),
                 non_default: chunk.non_default,
             });
         }
@@ -426,7 +432,7 @@ impl<T: GridValue> super::transaction::CandidateState for GridChannel<T> {
     fn validate(&self) -> EngineResult<()> {
         self.default.validate()?;
         for chunk in &self.chunks {
-            for value in &chunk.values {
+            for value in chunk.values.iter() {
                 value.validate()?;
             }
         }
@@ -524,5 +530,49 @@ impl<T: GridValue> GridChannel<T> {
         input.finish()?;
         candidate.revision = revision;
         Ok(candidate)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CellPoint, GridChannel, GridLayout, GridLimits, GridScale};
+    use crate::foundation::StableKey;
+    use std::sync::Arc;
+
+    #[test]
+    fn candidate_copy_shares_grid_chunk_until_candidate_write() {
+        let key = StableKey::parse("test:copy-on-write-grid").unwrap();
+        let layout = GridLayout {
+            origin: CellPoint { x: 0, y: 0 },
+            x_scale: GridScale::new(1, 1).unwrap(),
+            y_scale: GridScale::new(1, 1).unwrap(),
+        };
+        let limits = GridLimits {
+            chunks: 4,
+            checkpoint_bytes: 4096,
+        };
+        let original_point = CellPoint { x: 2, y: 3 };
+        let changed_point = CellPoint { x: 4, y: 3 };
+        let mut original = GridChannel::new(key, 1, layout, 0_u32, limits).unwrap();
+        original.set(original_point, 7).unwrap();
+
+        let mut candidate = original.try_copy().unwrap();
+        assert!(Arc::ptr_eq(
+            &original.chunks[0].values,
+            &candidate.chunks[0].values
+        ));
+
+        candidate.set(changed_point, 9).unwrap();
+
+        assert!(!Arc::ptr_eq(
+            &original.chunks[0].values,
+            &candidate.chunks[0].values
+        ));
+        assert_eq!(original.get(original_point), 7);
+        assert_eq!(original.get(changed_point), 0);
+        assert_eq!(candidate.get(original_point), 7);
+        assert_eq!(candidate.get(changed_point), 9);
+        assert_eq!(original.allocated_chunks(), 1);
+        assert_eq!(candidate.allocated_chunks(), 1);
     }
 }
