@@ -2,7 +2,7 @@
 
 ## 状態
 
-E07/Q06は**未完了**です。Unavailable/lease境界、collision query、custom shape候補stepは個別・結合testで確認しました。`BodyThermalBoundaryProvider`と`CouplingProvider::fluid_contacts`でcustom shapeの標準heat/fluid contact response経路を追加しました。`CouplingProvider::fluid_occupancy`でbody占有cellを差し替えられるようにしました。World候補と再利用double-buffer基準の逐tick一致、およびworker数・遅延順を変えた独立Worldの一致を検証しました。設計18がscalar参照を求めるセル・熱・反応・dirty/sleepと、設計11が剛体候補の基準とする再利用double-bufferをそれぞれ比較し、別scalar rigid-body solverを工程条件へ加えていません。sidecar・mixture・phase移行とQ06最終reviewは完了し、性能出口は部分完了です。E07総合test/review/PR順の確定が残っています。個別testの成功を工程出口へ読み替えず、設計条件と証拠を下表で管理します。コードは`codex/e07-rigid-bodies`作業ツリーにあります。このREADMEを現行状態の正本とし、履歴は[HISTORY.md](HISTORY.md)へ保全します。
+E07/Q06は**実装・検証・総合reviewを完了し、PR #25を提出済み**です。PRはmainをbaseとし、現在open・未mergeです。Unavailable/lease境界、collision query、custom shape候補step、`BodyThermalBoundaryProvider`、`CouplingProvider::fluid_contacts`/`fluid_occupancy`、逐tick基準比較を受け入れtestで確認しました。sidecar・mixture・phase移行、Q06最終review、影響workload性能評価、全体unit/integration/doc test、all-target Clippy、rustdocとformat検査を完了しました。設計18がscalar参照を求めるセル・熱・反応・dirty/sleep、および設計11が剛体候補の基準とする再利用double-bufferを比較し、別scalar rigid-body solverは工程条件へ加えていません。E13のB03最大負荷profileは後続工程です。コードと証拠は`codex/e07-rigid-bodies`にあり、このREADMEを現行状態の正本、[HISTORY.md](HISTORY.md)を経過記録とします。
 
 実装にはRapier f64 backend、World所有の`BodyPhysics`、回転可能なBodyStencilとcompound collider、joint、materialに基づく質量・重心・慣性、body-local grid、物質・流体・熱・反応・粒子連成、破砕・再固定、作者fixed-step/query/coupling provider、原子的なWorld編集とcheckpoint復元が含まれます。BodyPhysics snapshotはCHBODY12、World checkpointはCHWORLD3です。Q06の機能・検証を確認し、E07出口の測定・総合検査と区別します。
 
@@ -100,9 +100,9 @@ E07/Q06は**未完了**です。Unavailable/lease境界、collision query、cust
 | 4 | Q06出口レビュー | 上記残件を閉じた状態でQ06 acceptance matrixを再照合し、狭い関連suiteと一回のローカルレビューを記録 | 完了：設計11/18の受け入れ行を機能・検証記録と逐行照合し、thin wall/回転/fluid、moving platform、熱反応・破砕・粒子化・再開、joint/attachment/capacity、custom query/contact/geometry、Unavailable lease、sidecar/mixture/phase、基準比較の証拠を確認。`rigid_bodies` 117件、Clippy、rustdoc、formatが成功。局所reviewでprovider境界の古い説明を修正し、破砕経路も契約とrollback testsに照合した。E07性能出口は独立した作業単位5で追跡する |
 | 5 | E07性能出口 | 影響workloadで同一条件profile/比較を行い、P50/P95/P99・allocation/bytes・tailを記録し、対象workloadの限界を判定 | 完了：body reaction 128 sourceと16 thermal chunk COWの同条件before/afterを記録。Releaseで256 body no-contactと64 joint有無を比較し、16 body fluid row、custom occupancy preflight、stencil sweep、collision queryを測定。profileごとの範囲・割当量・tail・限定事項を上節へ記録した。初回実装前の物理値がないためWorld候補と再利用double-bufferの現行cost比較を示し、全World tickや60Hz達成とは主張しない。B03全負荷は設計18どおりE13で計測する |
 | 6 | Q06基準実装との並列一致 | 設計11/18のQ06候補処理について、worker数または実行順を変えた並列候補評価とscalar/reference経路の正規World状態を比較する | 完了：World所有候補と再利用double-buffer基準のbody state/event/step番号が8 tick一致。worker数1/2/4・遅延順変更時の候補結果も一致。fluid/heat/particle conservation、破砕linear/angular momentum、snapshot継続は各Q06 acceptance testで個別・統合検証済み。設計にない別scalar rigid-body solverは追加条件としない |
-| 7 | E07工程出口 | Q06の全出口条件後、E07対象検査・総合レビューを一度だけ実施し、採用PRと依存順を証拠付きで確定 | 全体`cargo check`/`cargo test`/all-target Clippyとformat検査は成功。残りは採用差分の総合ローカルreview、PR内容とbase/依存確認、PR作成 |
+| 7 | E07工程出口 | Q06の全出口条件後、E07対象検査・総合レビューを一度だけ実施し、採用PRと依存順を証拠付きで確定 | 完了：`cargo check`/`cargo test`/all-target Clippy/rustdoc/format、差分review、base `main`/依存を確認し[PR #25](https://github.com/sofia-gros/charon-engine/pull/25)を作成。PRはopen・未merge。採用PRは#25の1件で追加依存なし |
 
-**進捗数え方：** 7作業単位のうち完了6、部分完了0、未完了/未着手1です。混合phase 2件、反応8件、GridChannel unit 1件、ReactionJob unit 18件、BodyPhysics unit 16件、foundation 20件、World 51件を過去に実行しました。`rigid_bodies` targetは比較fixture追加後の117件を全件実行済みです。Q06受け入れ、並列/reference比較、局所review、E07対象workloadの性能出口を記録しました。残る作業はE07全体検査・総合review・採用PR順確定です。
+**進捗数え方：** 7作業単位のうち完了7、部分完了0、未完了/未着手0です。混合phase 2件、反応8件、GridChannel unit 1件、ReactionJob unit 18件、BodyPhysics unit 16件、foundation 20件、World 51件の過去実行記録に加え、現行全体`cargo test`も成功しました。Q06受け入れ、並列/reference比較、性能出口、E07総合reviewと[PR #25](https://github.com/sofia-gros/charon-engine/pull/25)提出を完了しました。PRはopen・未mergeです。E13のB03負荷profileは後続工程です。
 
 ## 開発効率の運用
 
