@@ -4890,13 +4890,19 @@ pub struct BodyContactEvent {
     pub second: BodyContactTarget,
     /// 接触の開始、継続、終了。
     pub phase: BodyContactPhase,
+    /// どちらかのcolliderがsensorで、solver応答なしの重なりを示す場合はtrueです。
+    ///
+    /// sensor eventのpointは二つのcollider中心の中点、normalはfirstからsecondへの中心方向、
+    /// impulseは常にゼロです。中心が一致する場合normalは安定した[1, 0]になります。
+    pub sensor: bool,
     /// 終了eventの場合、その原因です。開始・継続では`None`です。
     pub exit_reason: Option<BodyContactExitReason>,
-    /// first/second collider上の接触点を結ぶ線分の中点（World物理単位）。
+    /// solid接触ではfirst/second collider上の接触点を結ぶ線分の中点です。
+    /// sensor交差では二つのcollider中心の中点（World物理単位）です。
     pub point: [f64; 2],
-    /// firstからsecondへ向く単位normal。
+    /// firstからsecondへ向く単位normal。sensor交差では中心間方向を示します。
     pub normal: [f64; 2],
-    /// firstへsolverが加えた総力積（World物理単位）。secondには反対符号が加わります。
+    /// firstへsolverが加えた総力積（World物理単位）。sensor交差はsolverへ参加せずゼロです。
     pub impulse: [f64; 2],
     /// 接触を検出したstepまたは編集境界でのfirst側開始速度。地形側はNoneです。
     pub first_pre_velocity: Option<BodyVelocity>,
@@ -9278,6 +9284,7 @@ struct ContactObservation {
     normal: [f64; 2],
     impulse: [f64; 2],
     penetration: f64,
+    sensor: bool,
     first_collider: rapier2d_f64::geometry::ColliderHandle,
     second_collider: rapier2d_f64::geometry::ColliderHandle,
 }
@@ -9473,6 +9480,7 @@ fn collect_contact_observations(
                 [impulse.x, impulse.y]
             },
             penetration,
+            sensor: false,
             first_collider: if reverse {
                 pair.collider2
             } else {
@@ -9483,6 +9491,81 @@ fn collect_contact_observations(
             } else {
                 pair.collider2
             },
+        });
+    }
+    // Rapierはsensorをcontact graphではなくintersection graphに置くため、
+    // 通常pairの走査後にsensorの有効な交差だけを同じ観測列へ加えます。
+    for (collider1_handle, collider2_handle, intersecting) in
+        backend.narrow_phase.intersection_pairs()
+    {
+        if !intersecting {
+            continue;
+        }
+        let (Some(collider1), Some(collider2)) = (
+            backend.colliders.get(collider1_handle),
+            backend.colliders.get(collider2_handle),
+        ) else {
+            continue;
+        };
+        if !collider1.is_sensor() && !collider2.is_sensor() {
+            continue;
+        }
+        let (target1, _) = contact_target(backend, collider1_handle)?;
+        let (target2, _) = contact_target(backend, collider2_handle)?;
+        if target1 == target2
+            || (matches!(target1, BodyContactTarget::Terrain(_))
+                && matches!(target2, BodyContactTarget::Terrain(_)))
+        {
+            continue;
+        }
+        let reverse = target2 < target1;
+        let (first, second, first_handle, second_handle) = if reverse {
+            (target2, target1, collider2_handle, collider1_handle)
+        } else {
+            (target1, target2, collider1_handle, collider2_handle)
+        };
+        let first_position = backend
+            .colliders
+            .get(first_handle)
+            .ok_or_else(|| invalid("sensor event first collider"))?
+            .position()
+            .translation;
+        let second_position = backend
+            .colliders
+            .get(second_handle)
+            .ok_or_else(|| invalid("sensor event second collider"))?
+            .position()
+            .translation;
+        let delta = second_position - first_position;
+        let distance = delta.x.hypot(delta.y);
+        let normal = if distance > f64::EPSILON {
+            [delta.x / distance, delta.y / distance]
+        } else {
+            [1.0, 0.0]
+        };
+        let point = [
+            first_position.x * 0.5 + second_position.x * 0.5,
+            first_position.y * 0.5 + second_position.y * 0.5,
+        ];
+        if !point
+            .iter()
+            .chain(normal.iter())
+            .all(|value| value.is_finite())
+        {
+            return Err(invalid("sensor event geometryが有限値ではありません"));
+        }
+        if observations.len() == observations.capacity() {
+            observations.try_reserve(1).map_err(allocation)?;
+        }
+        observations.push(ContactObservation {
+            key: ContactPairKey { first, second },
+            point,
+            normal,
+            impulse: [0.0, 0.0],
+            penetration: 0.0,
+            sensor: true,
+            first_collider: first_handle,
+            second_collider: second_handle,
         });
     }
     observations.sort_by(|left, right| {
@@ -9573,21 +9656,25 @@ fn compact_contact_observations(observations: &mut Vec<ContactObservation>) -> E
         let candidate = observations[read];
         if write > 0 && observations[write - 1].key == candidate.key {
             let current = &mut observations[write - 1];
-            current.impulse[0] += candidate.impulse[0];
-            current.impulse[1] += candidate.impulse[1];
-            if !current.impulse.iter().all(|value| value.is_finite()) {
-                return Err(invalid("合算した接触event力積が有限値ではありません"));
-            }
-            if candidate.penetration < current.penetration
-                || (candidate.penetration == current.penetration
-                    && (candidate.point[0], candidate.point[1])
-                        < (current.point[0], current.point[1]))
-            {
+            // 同じBody pairにsolid接触とsensor交差の両方がある場合、物理接触を代表させます。
+            let replace_with_solid = current.sensor && !candidate.sensor;
+            let same_kind_is_deeper = current.sensor == candidate.sensor
+                && (candidate.penetration < current.penetration
+                    || (candidate.penetration == current.penetration
+                        && (candidate.point[0], candidate.point[1])
+                            < (current.point[0], current.point[1])));
+            if replace_with_solid || same_kind_is_deeper {
                 current.point = candidate.point;
                 current.normal = candidate.normal;
                 current.penetration = candidate.penetration;
                 current.first_collider = candidate.first_collider;
                 current.second_collider = candidate.second_collider;
+            }
+            current.sensor &= candidate.sensor;
+            current.impulse[0] += candidate.impulse[0];
+            current.impulse[1] += candidate.impulse[1];
+            if !current.impulse.iter().all(|value| value.is_finite()) {
+                return Err(invalid("合算した接触event力積が有限値ではありません"));
             }
         } else {
             observations[write] = candidate;
@@ -9635,6 +9722,7 @@ fn append_contact_event(
         first: observation.key.first,
         second: observation.key.second,
         phase: state.phase,
+        sensor: observation.sensor,
         exit_reason: state.exit_reason,
         point: observation.point,
         normal: observation.normal,
@@ -9823,6 +9911,9 @@ fn validate_contact_event_shape(event: &BodyContactEvent) -> EngineResult<()> {
         event.normal[0] * event.normal[0] + event.normal[1] * event.normal[1];
     if !normal_length_squared.is_finite() || (normal_length_squared - 1.0).abs() > 1.0e-6 {
         return Err(invalid("剛体contact event normal"));
+    }
+    if event.sensor && event.impulse != [0.0, 0.0] {
+        return Err(invalid("sensor contact event impulse"));
     }
     if matches!(event.phase, BodyContactPhase::Exit) != event.exit_reason.is_some() {
         return Err(invalid("剛体contact event exit reason"));
@@ -15438,6 +15529,7 @@ mod tests {
             first: BodyContactTarget::Body(body),
             second: BodyContactTarget::Terrain(ChunkCoord::new(0, 0).unwrap()),
             phase: BodyContactPhase::Enter,
+            sensor: false,
             exit_reason: None,
             point: [1.0, 2.0],
             normal: [0.0, 1.0],
@@ -15455,6 +15547,12 @@ mod tests {
             ..valid
         };
         assert!(validate_contact_event_shape(&invalid_normal).is_err());
+        let sensor_with_impulse = BodyContactEvent {
+            sensor: true,
+            impulse: [0.0, 0.5],
+            ..valid
+        };
+        assert!(validate_contact_event_shape(&sensor_with_impulse).is_err());
         let missing_exit_reason = BodyContactEvent {
             phase: BodyContactPhase::Exit,
             ..valid

@@ -239,6 +239,7 @@ impl BodyPhysicsStepProvider for CollisionDrivenBodyStep {
                 part: 0,
             },
             phase: BodyContactPhase::Enter,
+            sensor: false,
             exit_reason: None,
             point: hit.point,
             normal: [-hit.normal[0], -hit.normal[1]],
@@ -312,6 +313,7 @@ impl BodyPhysicsStepProvider for ContactReportingBodyStep {
             first: BodyContactTarget::Body(first),
             second: second_target,
             phase: BodyContactPhase::Enter,
+            sensor: false,
             exit_reason: None,
             point: [physics_candidate.state(first)?.pose.x + 0.5, 10.0],
             normal: [1.0, 0.0],
@@ -327,6 +329,7 @@ impl BodyPhysicsStepProvider for ContactReportingBodyStep {
                 first: BodyContactTarget::Body(first),
                 second: BodyContactTarget::Terrain(ChunkCoord::new(0, 0)?),
                 phase: BodyContactPhase::Enter,
+                sensor: false,
                 exit_reason: None,
                 point: [physics_candidate.state(first)?.pose.x, 10.0],
                 normal: [0.0, 1.0],
@@ -1939,6 +1942,58 @@ fn standard_body_contacts_publish_enter_stay_and_exit_with_substep_data() {
         Some(BodyContactExitReason::Separated)
     );
     assert!(physics.contact_events()[0].second_post_velocity.is_some());
+}
+
+#[test]
+fn standard_body_sensor_intersections_publish_enter_stay_and_exit() {
+    let mut physics = BodyPhysics::new(BodyPhysicsSettings {
+        gravity: [0.0, 0.0],
+        ..BodyPhysicsSettings::default()
+    })
+    .unwrap();
+    let mut fixed = BodyDef::dynamic(ColliderShape::Circle { radius: 1.0 });
+    fixed.motion = BodyMotionType::Fixed;
+    let fixed_id = physics.insert(fixed).unwrap();
+    let mut sensor = BodyDef::dynamic(ColliderShape::Circle { radius: 1.0 });
+    sensor.pose.x = 1.5;
+    sensor.collider.sensor = true;
+    let sensor_id = physics.insert(sensor).unwrap();
+
+    physics.step().unwrap();
+    let entered = physics.contact_events();
+    assert_eq!(entered.len(), 1);
+    assert_eq!(entered[0].first, BodyContactTarget::Body(fixed_id));
+    assert_eq!(entered[0].second, BodyContactTarget::Body(sensor_id));
+    assert_eq!(entered[0].phase, BodyContactPhase::Enter);
+    assert!(entered[0].sensor);
+    assert_eq!(entered[0].impulse, [0.0, 0.0]);
+    assert!(entered[0].point.iter().all(|value| value.is_finite()));
+    assert!((entered[0].normal[0].hypot(entered[0].normal[1]) - 1.0).abs() < 1.0e-12);
+
+    physics.step().unwrap();
+    assert_eq!(physics.contact_events().len(), 1);
+    assert_eq!(physics.contact_events()[0].phase, BodyContactPhase::Stay);
+    assert!(physics.contact_events()[0].sensor);
+
+    physics
+        .set_pose(
+            sensor_id,
+            BodyPose {
+                x: 8.0,
+                y: 0.0,
+                angle: 0.0,
+            },
+        )
+        .unwrap();
+    physics.step().unwrap();
+    assert_eq!(physics.contact_events().len(), 1);
+    assert_eq!(physics.contact_events()[0].phase, BodyContactPhase::Exit);
+    assert_eq!(
+        physics.contact_events()[0].exit_reason,
+        Some(BodyContactExitReason::Separated)
+    );
+    assert!(physics.contact_events()[0].sensor);
+    assert_eq!(physics.contact_events()[0].impulse, [0.0, 0.0]);
 }
 
 #[test]
@@ -9853,6 +9908,7 @@ fn author_body_physics_provider_publishes_contact_events_with_the_candidate_step
             first: BodyContactTarget::Body(first),
             second: BodyContactTarget::Body(second),
             phase: BodyContactPhase::Enter,
+            sensor: false,
             exit_reason: None,
             point: [10.5, 10.0],
             normal: [1.0, 0.0],

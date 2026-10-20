@@ -97,4 +97,4 @@ TerrariaとNoitaは完全クローンの制作可能性を判定する対象で�
 - [E04：世界と保存基盤](evidence/E04/README.md)
 - [E05：セルと流体（PR #4〜#10、#22 mainへマージ済み）](evidence/E05/README.md)
 - [E06：熱と反応（PR #23 mainへマージ済み）](evidence/E06/README.md)
-- [E07：物体と破壊連成（Q06実装中）](evidence/E07/README.md)
+- [E07：物体と破壊連成（Q06実装済み）](evidence/E07/README.md)

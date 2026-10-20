@@ -89,7 +89,7 @@ queryはWorld/layer/group、owner、ignore集合、one-way方向、trigger対象
 
 broad phaseは全ての真の候補を含む必要がある。独自shapeと巨大なbeamのために、通常のEntity bucketを越えた登録を許可する。queryの範囲外候補を落として「作者が精密判定を書ける」と説明しない。
 
-衝突filterは候補の除外、接触filterはnormal・摩擦・反発等の調整、responseは停止・slide・反射・貫通・独自解決を担当する。これらはWorldを再帰的に変更せず候補かcommandを返す。確定contact eventはenter/stay/exit、pre/post速度、impulse、接触相手、substepを持つ。除去・teleport・unloadによるexitも原因を区別する。
+衝突filterは候補の除外、接触filterはnormal・摩擦・反発等の調整、responseは停止・slide・反射・貫通・独自解決を担当する。これらはWorldを再帰的に変更せず候補かcommandを返す。確定contact eventはenter/stay/exit、pre/post速度、impulse、接触相手、substepを持つ。Rapier sensorはintersection差分も同じevent列へ含め、`sensor`を識別する。sensor eventにsolver impulseはなく、point/normalはcollider中心の幾何から作る。除去・teleport・unloadによるexitも原因を区別する。
 
 攻撃の免疫は、攻撃別、発射者別、対象別、同一projectile種共有などを作者が選ぶ。貫通回数、再命中間隔、遮蔽、部位共有HP、味方判定をHitResolutionで置き換えられる。既定の`AttackId × target × hit_window`だけへ固定しない。
 
