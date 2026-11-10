@@ -99,6 +99,13 @@ impl Chunk {
             self.collider_dirty = true;
         }
     }
+
+    /// `FLAG_PARITY` だけを書き換える。状態の変化ではないので dirty は付けない (仕様 02 §3)。
+    pub(crate) fn write_parity(&mut self, lx: u8, ly: u8, parity: bool) {
+        let i = index(lx, ly);
+        let c = self.cells[i];
+        self.cells[i] = c.with(crate::cell::FLAG_PARITY, parity);
+    }
 }
 
 fn index(lx: u8, ly: u8) -> usize {
