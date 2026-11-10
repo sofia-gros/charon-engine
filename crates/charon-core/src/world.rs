@@ -8,6 +8,7 @@ use crate::chunk::{Chunk, add_rect, wake_region};
 use crate::coords::{CHUNK_MASK, CellPos, ChunkPos};
 use crate::material::MaterialTable;
 use crate::rng::{SALT_FLOW, SALT_LIFE, SALT_SHADE, hash};
+use crate::sim::SCAN;
 
 /// 読み込まれているチャンクの集まり。
 #[derive(Debug)]
@@ -38,13 +39,25 @@ impl World {
     }
 
     /// セルを書き込み、仕様 01 §6 の処理を行う。チャンクがなければ何もしない。
+    ///
+    /// 材質が変わった場合は、その場所を行き先として見られる液体・気体が気づけるよう、
+    /// 上下 1 行・左右 `SCAN + 1` セルの帯も起こす (仕様 02 §9)。外からの編集は頻繁ではないので、
+    /// シミュレーション中の書き込み (`Neighborhood::set`) と違い、相手を探さずに帯ごと起こす。
     pub fn set(&mut self, pos: CellPos, cell: Cell) {
         let cpos = pos.chunk();
-        let Some(chunk) = self.chunks.get_mut(&cpos) else {
-            return;
-        };
-        chunk.write(local(pos.x), local(pos.y), cell, &self.materials);
+        let Some(chunk) = self.chunks.get_mut(&cpos) else { return };
+        let (lx, ly) = (local(pos.x), local(pos.y));
+        let changed = chunk.get(lx, ly).material != cell.material;
+        chunk.write(lx, ly, cell, &self.materials);
         self.keep_awake(pos);
+        if changed {
+            for dy in -1..=1 {
+                // keep_awake は左右 2 セルを起こすので、4 セルおきで帯が埋まる。
+                for dx in (-(SCAN + 1)..=SCAN + 1).step_by(4) {
+                    self.keep_awake(CellPos::new(pos.x + dx, pos.y + dy));
+                }
+            }
+        }
     }
 
     /// セルの値は変えずに、周囲 5×5 を次の tick の処理範囲に加える。
@@ -191,32 +204,49 @@ mod tests {
     }
 
     #[test]
-    fn set_marks_5x5_and_render_dirty() {
+    fn keep_awake_marks_5x5() {
         let mut w = world();
         w.insert_chunk(ChunkPos::new(0, 0));
-        let p = CellPos::new(10, 20);
-        let water = w.make_cell(id(&w, "water"), p);
-        w.set(p, water);
+        w.keep_awake(CellPos::new(10, 20));
         let c = w.chunk(ChunkPos::new(0, 0)).unwrap();
         assert_eq!(c.next_dirty, Some(Rect { min_x: 8, min_y: 18, max_x: 12, max_y: 22 }));
-        assert_eq!(c.render_dirty, Some(Rect::point(10, 20)));
-        assert!(!c.collider_dirty, "液体は当たり判定に関係しない");
+        assert_eq!(c.render_dirty, None);
         assert_eq!(w.awake_chunks(), 1);
     }
 
     #[test]
-    fn set_at_border_wakes_neighbours() {
+    fn keep_awake_at_border_wakes_neighbours() {
         let mut w = world();
         for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
             w.insert_chunk(ChunkPos::new(x, y));
         }
-        let p = CellPos::new(63, 63);
-        let water = w.make_cell(id(&w, "water"), p);
-        w.set(p, water);
+        w.keep_awake(CellPos::new(63, 63));
         assert_eq!(w.awake_chunks(), 4);
         let right = w.chunk(ChunkPos::new(1, 0)).unwrap();
         assert_eq!(right.next_dirty, Some(Rect { min_x: 0, min_y: 61, max_x: 1, max_y: 63 }));
-        assert_eq!(right.render_dirty, None, "隣のチャンクのセルは変わっていない");
+    }
+
+    #[test]
+    fn set_marks_render_dirty_and_a_wide_strip() {
+        let mut w = world();
+        w.insert_chunk(ChunkPos::new(0, 0));
+        let p = CellPos::new(40, 20);
+        let water = w.make_cell(id(&w, "water"), p);
+        w.set(p, water);
+        let c = w.chunk(ChunkPos::new(0, 0)).unwrap();
+        assert_eq!(c.render_dirty, Some(Rect::point(40, 20)), "変わったセルだけを再送する");
+        assert!(!c.collider_dirty, "液体は当たり判定に関係しない");
+        // 材質が変わったので、左右 SCAN + 1 セル・上下 1 行 (+ 余白 2) を起こす
+        let d = c.next_dirty.unwrap();
+        assert!(d.min_x <= 40 - 25 && d.max_x == 63);
+        assert_eq!((d.min_y, d.max_y), (17, 23));
+
+        // 材質が変わらない書き込みは 5×5 だけ
+        let mut w = world();
+        w.insert_chunk(ChunkPos::new(0, 0));
+        w.set(p, Cell::default());
+        let c = w.chunk(ChunkPos::new(0, 0)).unwrap();
+        assert_eq!(c.next_dirty, Some(Rect { min_x: 38, min_y: 18, max_x: 42, max_y: 22 }));
     }
 
     #[test]

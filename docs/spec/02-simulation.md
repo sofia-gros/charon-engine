@@ -41,8 +41,10 @@ x, y とも `-64..128`。
 
 | 関数 | 動作 |
 |---|---|
-| `get(&self, x: i32, y: i32) -> Cell` | チャンクが `None` なら `BOUNDARY` のセル。範囲外は `debug_assert!` で落とし、リリースでは `BOUNDARY` |
-| `set(&mut self, x, y, cell)` | 書き込み + 仕様 01 §6 の処理。チャンクが `None` なら何もしない |
+| `get(&self, x: i32, y: i32) -> Cell` | チャンクが `None` または範囲外なら `BOUNDARY` のセル |
+| `set(&mut self, x, y, cell)` | 書き込み + 仕様 01 §6 の処理 + `wake_watchers` (§9)。チャンクが `None` なら何もしない |
+| `mark_parity(&mut self, x, y)` | `FLAG_PARITY` を現在の tick の値にする。dirty は付けない (§3) |
+| `hash(&self, x, y, salt) -> u32` | ローカル座標をワールド座標に直して `rng::hash` を呼ぶ |
 | `swap(&mut self, ax, ay, bx, by)` | 2 つのセルを入れ替える。両方に `set` と同じ処理を行い、両方の `FLAG_PARITY` を現在の tick の値にする |
 | `keep_awake(&mut self, x, y)` | 仕様 01 §6 |
 
@@ -242,7 +244,7 @@ move_fluid(nb, x, y, cell, mat):
             if pass(nb.get(x + dir * i, y + dy)): goal[dir] = i; break
         if goal[dir] がある:
             if chance(hash(.., SALT_VISC), skip_p): nb.keep_awake(x, y); return
-            n = min(goal[dir], max(mat.dispersion, 1))
+            n = min(goal[dir], reach)          # reach = min(max(mat.dispersion, 1), SCAN)
             nb.swap(x, y, x + dir * n, y)
             FLAG_FLOW_RIGHT を dir の向きにする
             return
@@ -255,7 +257,7 @@ move_fluid(nb, x, y, cell, mat):
         for dir in [d, -d]:
             if open[dir] > 0:
                 if chance(hash(.., SALT_VISC), skip_p): nb.keep_awake(x, y); return
-                n = min(open[dir], max(mat.dispersion, 1))
+                n = min(open[dir], reach)
                 nb.swap(x, y, x + dir * n, y)
                 FLAG_FALLING を立て、FLAG_BOUNCED を下ろし、FLAG_FLOW_RIGHT を dir の向きにする
                 return
@@ -265,7 +267,7 @@ move_fluid(nb, x, y, cell, mat):
     if FLAG_FALLING なし: return                    # 何も書き込まない。ここで休眠する
     if open[d] > 0:
         if chance(hash(.., SALT_VISC), skip_p): nb.keep_awake(x, y); return
-        n = min(open[d], max(mat.dispersion, 1))
+        n = min(open[d], reach)
         nb.swap(x, y, x + d * n, y)
         return
     if materials.get(nb.get(x + d, y).material).phase == mat.phase:
@@ -308,6 +310,32 @@ move_fluid(nb, x, y, cell, mat):
    「寿命・燃焼・反応の相手がいる」など、時間で必ず終わる処理の最中だけ。
 4. 新しい移動規則や `step_*` を足すときは、必ず「最終的に全チャンクが眠る」テストを一緒に足す
    (`testkit::assert_sleeps`、`docs/TESTING.md`)。
+5. **遠くを見る規則には、遠くを起こす処理を対にする。** 書き込みが起こすのは周囲 2 セルだけだが、
+   液体・気体は `SCAN = 24` セル先まで行き先を見る (§8)。対にしないと、離れた場所で水位が下がっても、
+   眠っている水が気づかずに段が残る。そのため `Neighborhood::set` は、材質が変わって通れる場所
+   (空・液体・気体) ができたとき `wake_watchers` を呼ぶ。
+
+```
+wake_watchers(x, y):                    # (x, y) が通れるようになった
+    for (dy, watcher) in [(+1, Liquid), (-1, Gas)]:
+        row = y - dy                    # 液体は 1 段上、気体は 1 段下から (x, y) を見る
+        if !open_for(x, row, watcher): continue
+        for dir in [-1, +1]:
+            for k in 1..=SCAN:
+                c = nb.get(x + dir * k, row)
+                if c の相が watcher で FLAG_BODY なし: nb.keep_awake(x + dir * k, row); break
+                if !open_for(x + dir * k, row, watcher): break     # 壁
+                if open_for(x + dir * k, y, watcher): break        # 足場が途切れた。この先のセルは
+                                                                   # もっと近い行き先を既に持っている
+
+open_for(x, y, watcher): セルが FLAG_BODY でなく、相が Empty、または (watcher が Liquid で相が Gas)
+```
+
+`World::set` (ブラシなど外からの編集) は頻繁ではないので、相手を探さずに、材質が変わったら
+上下 1 行・左右 `SCAN + 1` セルの帯をまとめて起こす。
+
+この欠陥は試作 (`tools/prototype`) では見つからなかった。試作には休眠がないためである。
+`breached_wall_drains` が検出した。
 
 ## 10. 必須テスト
 

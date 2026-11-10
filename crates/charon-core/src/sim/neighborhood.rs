@@ -3,13 +3,17 @@
 //! 同じフェーズのチャンクは 3 チャンクずつ離れているので、それぞれの `Neighborhood` は
 //! 1 つもチャンクを共有しない。そのため 9 チャンクの所有権を丸ごと持てる。
 
-use crate::cell::{Cell, FLAG_PARITY};
+use crate::cell::{Cell, FLAG_BODY, FLAG_PARITY};
 use crate::chunk::{Chunk, add_rect, wake_region};
 use crate::coords::{CHUNK_MASK, CHUNK_SHIFT, ChunkPos};
-use crate::material::MaterialTable;
+use crate::material::{MaterialTable, Phase};
 
 /// 1 セルの更新が読み書きしてよい距離 (セル)。
 pub const MAX_REACH: i32 = 32;
+
+/// 液体・気体が行き先を探す距離 (仕様 02 §8)。
+pub const SCAN: i32 = 24;
+const _: () = assert!(SCAN < MAX_REACH);
 
 /// 中心チャンクと周囲 8 チャンク。
 ///
@@ -93,15 +97,59 @@ impl<'a> Neighborhood<'a> {
     }
 
     /// セルを書き込み、周囲 5×5 を起こす (仕様 01 §6)。チャンクがなければ何もしない。
+    ///
+    /// 書き込みで通れる場所ができた場合は、そこを行き先として見られる液体・気体も起こす (仕様 02 §9)。
     pub fn set(&mut self, x: i32, y: i32, cell: Cell) {
-        let Some((slot, lx, ly)) = locate(x, y) else {
-            return;
-        };
-        let Some(chunk) = &mut self.chunks[slot] else {
-            return;
-        };
+        debug_assert!(locate(x, y).is_some(), "Neighborhood の範囲外への書き込み: ({x}, {y})");
+        let Some((slot, lx, ly)) = locate(x, y) else { return };
+        let Some(chunk) = &mut self.chunks[slot] else { return };
+        let old = chunk.get(lx, ly);
         chunk.write(lx, ly, cell, self.materials);
         self.keep_awake(x, y);
+        if old.material != cell.material
+            && !matches!(self.materials.get(cell.material).phase, Phase::Solid | Phase::Powder)
+        {
+            self.wake_watchers(x, y);
+        }
+    }
+
+    /// `(x, y)` が通れるようになったとき、そこを行き先として見られる液体・気体を起こす。
+    ///
+    /// 液体は 1 段上の行、気体は 1 段下の行から `(x, y)` を見る。その行を左右に `SCAN` セルまでたどり、
+    /// 最初に見つかった液体 (気体) を起こす。途中に壁があるか、足場が途切れていたら (その先のセルは
+    /// もっと近い行き先を既に持っているので) そこでやめる。
+    fn wake_watchers(&mut self, x: i32, y: i32) {
+        for (dy, watcher) in [(1, Phase::Liquid), (-1, Phase::Gas)] {
+            let row = y - dy;
+            if !self.is_open_for(x, row, watcher) {
+                continue;
+            }
+            for dir in [-1, 1] {
+                for k in 1..=SCAN {
+                    let (wx, c) = (x + dir * k, self.get(x + dir * k, row));
+                    if self.materials.get(c.material).phase == watcher && !c.has(FLAG_BODY) {
+                        self.keep_awake(wx, row);
+                        break;
+                    }
+                    if !self.is_open_for(wx, row, watcher) || self.is_open_for(wx, y, watcher) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// `(x, y)` を `watcher` の相のセルが通り抜けられるか (おおまかな判定)。
+    fn is_open_for(&self, x: i32, y: i32, watcher: Phase) -> bool {
+        let c = self.get(x, y);
+        if c.has(FLAG_BODY) {
+            return false;
+        }
+        match self.materials.get(c.material).phase {
+            Phase::Empty => true,
+            Phase::Gas => watcher == Phase::Liquid,
+            _ => false,
+        }
     }
 
     /// 2 つのセルを入れ替える。両方を「この tick で更新済み」にする。
@@ -142,7 +190,6 @@ impl<'a> Neighborhood<'a> {
 fn locate(x: i32, y: i32) -> Option<(usize, u8, u8)> {
     let (cx, cy) = (x >> CHUNK_SHIFT, y >> CHUNK_SHIFT);
     if !(-1..=1).contains(&cx) || !(-1..=1).contains(&cy) {
-        debug_assert!(false, "Neighborhood の範囲外: ({x}, {y})");
         return None;
     }
     Some((((cx + 1) + 3 * (cy + 1)) as usize, (x & CHUNK_MASK) as u8, (y & CHUNK_MASK) as u8))
@@ -173,7 +220,7 @@ mod tests {
         let m = MaterialTable::builtin().unwrap();
         let mut nb = full(&m, 0);
         let cases =
-            [(-64, -64, 0, 0, 0), (-1, 0, 3, 63, 0), (0, 0, 4, 0, 0), (127, 127, 8, 63, 63)];
+            [(-30, -30, 0, 34, 34), (-1, 0, 3, 63, 0), (0, 0, 4, 0, 0), (90, 90, 8, 26, 26)];
         for (i, &(x, y, _, _, _)) in cases.iter().enumerate() {
             nb.set(x, y, cell(10 + i as u16));
         }

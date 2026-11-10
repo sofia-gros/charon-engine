@@ -296,7 +296,8 @@ pub struct World {
 | `new(materials: Arc<MaterialTable>, seed: u64) -> Self` | 空のワールド |
 | `insert_chunk(&mut self, pos: ChunkPos)` | 全セルが空のチャンクを追加。既にあれば何もしない |
 | `get(&self, pos: CellPos) -> Cell` | チャンクがなければ `material: BOUNDARY` のセルを返す |
-| `set(&mut self, pos: CellPos, cell: Cell)` | 書き込み、§6 の「書き込み時の処理」を行う。チャンクがなければ何もしない |
+| `set(&mut self, pos: CellPos, cell: Cell)` | 書き込み、§6 の「書き込み時の処理」を行う。材質が変わったら広い帯も起こす (仕様 02 §9 の 5)。チャンクがなければ何もしない |
+| `keep_awake(&mut self, pos: CellPos)` | §6 の `keep_awake` |
 | `make_cell(&self, material: MaterialId, pos: CellPos) -> Cell` | 新しいセルを作る (下記) |
 | `step(&mut self)` | 1 tick 進める (仕様 02) |
 | `tick(&self) -> u64` | 現在の tick |
