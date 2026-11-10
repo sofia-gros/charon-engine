@@ -5,6 +5,7 @@
 
 pub mod cell;
 pub mod coords;
+pub mod rng;
 
 /// エンジンのバージョン文字列。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
