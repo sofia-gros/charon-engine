@@ -64,10 +64,11 @@ pub struct Cell {
 const _: () = assert!(std::mem::size_of::<Cell>() == 8);
 
 pub const FLAG_PARITY: u8 = 1 << 0;   // この tick で更新済みかの判定に使う (仕様 02 §3)
-pub const FLAG_FALLING: u8 = 1 << 1;  // 粉体が動いている途中 (仕様 02 §5)
+pub const FLAG_FALLING: u8 = 1 << 1;  // 動いている途中。粉体は仕様 02 §7、液体・気体は仕様 02 §8 の「勢い」
 pub const FLAG_FLOW_RIGHT: u8 = 1 << 2; // 液体・気体の水平移動の向き。立っていれば +x
 pub const FLAG_BURNING: u8 = 1 << 3;  // 燃焼中 (仕様 03 §4)
 pub const FLAG_BODY: u8 = 1 << 4;     // 剛体が書き込んだセル (仕様 05)。保存しない
+pub const FLAG_BOUNCED: u8 = 1 << 5;  // 液体・気体が水平移動で 1 回はね返った (仕様 02 §8)
 ```
 
 `Cell::default()` は「空」(全フィールド 0) である。
@@ -145,7 +146,7 @@ pub struct MaterialTable {
 4. 名前の重複はエラー。材質数が 65535 を超えたらエラー。
 5. 省略されたフィールドは上の「既定」の値、既定がないものは 0 / `None` / `EMPTY`。
 
-RON の形式 (`assets/materials.ron`):
+RON の形式 (抜粋):
 
 ```ron
 [
@@ -163,6 +164,58 @@ RON の形式 (`assets/materials.ron`):
      freeze: Some((at: 80, into: "water")), initial_temp: 110),
 ]
 ```
+
+実際のデータは `assets/materials.ron` にある (全 15 材質。この文書の作成時に、下の構造体で読めることを確認済み)。
+
+RON はまず次の構造体に読み、その後 `Material` に変換する (参照の名前を ID に解決するため)。
+**この定義をそのまま使うこと。**
+
+```rust
+#[derive(serde::Deserialize)]
+struct RawTransition { at: i16, into: String }
+
+fn d_gravity() -> u8 { 4 }
+fn d_max_speed() -> u8 { 96 }
+fn d_temp() -> i16 { 20 }
+fn d_empty() -> String { "empty".to_string() }
+fn d_friction() -> f32 { 0.6 }
+fn d_restitution() -> f32 { 0.1 }
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMaterial {
+    name: String,
+    phase: Phase,
+    #[serde(default)] density: u16,
+    color: [u8; 4],
+    #[serde(default)] color_variation: u8,
+    #[serde(default = "d_gravity")] gravity: u8,
+    #[serde(default = "d_max_speed")] max_speed: u8,
+    #[serde(default)] friction: u8,
+    #[serde(default)] dispersion: u8,
+    #[serde(default)] viscosity: u8,
+    #[serde(default = "d_temp")] initial_temp: i16,
+    #[serde(default)] conductivity: u8,
+    #[serde(default)] melt: Option<RawTransition>,
+    #[serde(default)] freeze: Option<RawTransition>,
+    #[serde(default)] boil: Option<RawTransition>,
+    #[serde(default)] ignite_at: Option<i16>,
+    #[serde(default)] burn_time: u8,
+    #[serde(default = "d_empty")] burn_into: String,
+    #[serde(default)] burn_temp: i16,
+    #[serde(default)] lifetime: Option<(u8, u8)>,
+    #[serde(default = "d_empty")] decay_into: String,
+    #[serde(default = "d_friction")] rigid_friction: f32,
+    #[serde(default = "d_restitution")] restitution: f32,
+    #[serde(default)] emission: [u8; 3],
+}
+```
+
+読み込み時の追加の検査 (違反はエラー): `max_speed <= 127`、`lifetime` は `1 <= min <= max`、
+`ignite_at` が `Some` なら `burn_time >= 1`。
+
+`MaterialTable` には、テストとアプリが使う補助を 1 つ用意する:
+`MaterialTable::builtin() -> Self` は `include_str!` で `assets/materials.ron` を埋め込んで読む。
 
 依存クレートは `serde` (derive) と `ron`。導入時点の最新安定版を `cargo add` で入れる。
 
@@ -189,6 +242,24 @@ pub fn chance(h: u32, p: u8) -> bool { (h & 0xFF) < p as u32 }
 ```
 
 salt の定数は `rng.rs` に `pub const SALT_*: u32` として連番で定義し、重複させない。
+
+```rust
+pub const SALT_SHADE: u32 = 1;      // make_cell: 色のばらつき
+pub const SALT_LIFE: u32 = 2;       // make_cell / convert: 寿命
+pub const SALT_FLOW: u32 = 3;       // make_cell: 流れる向きの初期値
+pub const SALT_SCAN: u32 = 4;       // 行を走査する向き
+pub const SALT_DRAG: u32 = 5;       // 液体の中を沈むときの抵抗
+pub const SALT_FALL: u32 = 6;       // 落下の歩数の端数
+pub const SALT_DIAG: u32 = 7;       // 粉体が斜めに落ちる向き
+pub const SALT_WAKE: u32 = 8;       // 隣の粉体を起こすか
+pub const SALT_VISC: u32 = 9;       // 液体・気体が移動を見送るか
+pub const SALT_REACT_DIR: u32 = 10; // 反応を試す方向
+pub const SALT_REACT: u32 = 11;     // 反応が起きるか
+pub const SALT_FIRE_DIR: u32 = 12;  // 炎を出す方向
+pub const SALT_FIRE: u32 = 13;      // 炎を出すか
+```
+
+新しく乱数が必要になったら、この一覧の末尾に足す。
 
 ## 5. チャンクとワールド
 
@@ -228,10 +299,13 @@ pub struct World {
 | `make_cell(&self, material: MaterialId, pos: CellPos) -> Cell` | 新しいセルを作る (下記) |
 | `step(&mut self)` | 1 tick 進める (仕様 02) |
 | `tick(&self) -> u64` | 現在の tick |
+| `awake_chunks(&self) -> usize` | `dirty` または `next_dirty` が `Some` のチャンクの数。0 なら世界全体が休眠している |
+| `chunk_positions(&self) -> Vec<ChunkPos>` | 読み込まれているチャンクの位置。昇順に並べて返す |
 | `state_hash(&self) -> u64` | 全チャンクを `ChunkPos` の昇順に並べ、全セルの 8 バイトを FNV-1a 64 でハッシュ。`FLAG_PARITY` のビットは 0 にしてから混ぜる |
 
 `make_cell` の規則: `shade = hash(seed, tick, x, y, SALT_SHADE) as u8`、`temp = initial_temp`、
-`vy = 0`、`flags = FLAG_FALLING` (置いた直後は動ける状態)。`lifetime` が `Some((min, max))` なら
+`vy = 0`、`flags = FLAG_FALLING` (置いた直後は動ける状態)。`FLAG_FLOW_RIGHT` は
+`hash(.., SALT_FLOW) & 1` で決める (置いた液体が左右均等に広がるようにする)。`lifetime` が `Some((min, max))` なら
 `life = min + hash(.., SALT_LIFE) % (max - min + 1)`、`None` なら 0。
 
 ## 6. 書き込み時の処理 (dirty の規則)

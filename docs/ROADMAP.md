@@ -16,6 +16,8 @@
 | [05-rigid-bodies](spec/05-rigid-bodies.md) | 剛体とセルの相互作用、浮力、パーティクル |
 | [06-rendering-platform](spec/06-rendering-platform.md) | wgpu、シェーダー、Android、メインループ |
 
+テストの書き方は [`docs/TESTING.md`](TESTING.md) にある。
+
 ## 方針
 
 Noita 寄りの機能 (液体・気体・反応・熱) を先に固める。セルの表現とシミュレータの中心に関わり、
@@ -61,18 +63,18 @@ FallingSandEngine の調査で見つかった問題に、それぞれ対応さ�
 | T1.1 | `coords.rs` (仕様 01 §1) | §1 の必須テストが通る |
 | T1.2 | `cell.rs` (仕様 01 §2) | `size_of::<Cell>() == 8` のコンパイル時検査がある。`Cell::default()` が空 |
 | T1.3 | `rng.rs` (仕様 01 §4) | 同じ入力で同じ値。`chance(h, 0)` は常に false。`p = 128` で 10,000 回試すと true が 4,500〜5,500 回 |
-| T1.4 | `material.rs` と `assets/materials.ron` (仕様 01 §3)。石、砂、水、スライム、油、蒸気、木、土を定義 | 読み込める。ID 0 と 1 が組み込み。未定義の参照・名前の重複がエラーになる |
-| T1.5 | `chunk.rs`、`world.rs` (仕様 01 §5、§6)。`step` は空実装 | `get` / `set` の往復。存在しないチャンクは `BOUNDARY`。`set` で `next_dirty` が 5×5 広がり、チャンク境界では隣にも付く |
+| T1.4 | `material.rs` (仕様 01 §3)。`assets/materials.ron` は用意済みなので書き換えない | `MaterialTable::builtin()` が 17 材質 (組み込み 2 + ファイル 15) を返す。未定義の参照・名前の重複・検査違反がエラーになる |
+| T1.5 | `chunk.rs`、`world.rs` (仕様 01 §5、§6)。`step` は空実装 | `get` / `set` の往復。存在しないチャンクは `BOUNDARY`。`set` で `next_dirty` が 5×5 広がり、チャンク境界では隣にも付く。同じ値の `set` でも dirty は付く (呼ぶ側が避ける) |
 | T1.6 | `sim/neighborhood.rs` (仕様 02 §2)。この時点では並列化せず、順に処理する | ローカル座標 `-64..128` の読み書きが正しいチャンクに届く。`swap` が両方の parity を更新する |
-| T1.7 | `World::step` の骨格 (仕様 02 §1、§3、§4)。`step_*` は空の関数 | 走査が下から上。parity で二重更新が起きない |
-| T1.8 | `can_displace`、`fall_steps`、`move_powder` (仕様 02 §5〜§7) | `sand_falls`、`sand_piles`、`friction_makes_steeper_piles`、`chunk_border`、`settles_to_sleep` |
-| T1.9 | `move_liquid` (仕様 02 §8) | `water_levels`、`sand_sinks_in_water`、`oil_floats_on_water`、`slime_is_slower_than_water`、`full_pool_sleeps` |
-| T1.10 | `move_gas` (仕様 02 §9) | `gas_rises` |
-| T1.11 | 全体のテスト | `mass_is_conserved`、`deterministic` |
-| T1.12 | ベンチマーク (`benches/sim.rs`、criterion)。砂 10 万個の落下、水 10 万個の流れ、休眠した世界 | 実行でき、結果を `docs/BENCHMARKS.md` に記録する |
+| T1.7 | `World::step` の骨格 (仕様 02 §1、§3、§4)。`step_*` と移動は空の関数 | 走査が下から上。parity で二重更新が起きない |
+| T1.8 | `testkit` モジュール (`docs/TESTING.md` §2) | `world_from_ascii` と `to_ascii` の往復が一致。`count`、`column_heights` が正しい |
+| T1.9 | `can_displace`、`can_rise`、`fall_steps`、`move_powder` (仕様 02 §5〜§7)。テストは `tests/powder.rs` | `sand_falls`、`sand_piles`、`friction_makes_steeper_piles`、`chunk_border` |
+| T1.10 | `move_fluid` (仕様 02 §8)。液体と気体の両方。テストは `tests/fluid.rs` | `water_levels`、`sand_sinks_in_water`、`oil_floats_on_water`、`slime_is_slower_than_water`、`gas_rises`、`water_flows_through_tunnel`、`breached_wall_drains` |
+| T1.11 | 休眠のテスト (仕様 02 §9)。`tests/sleep.rs` | `settles_to_sleep`、`full_pool_sleeps`、`partial_layer_sleeps`、`gas_under_ceiling_sleeps`、`mixed_liquids_sleep` |
+| T1.12 | 全体のテスト。`tests/invariants.rs`、`tests/determinism.rs` | `mass_is_conserved`、`deterministic`、`golden_hashes` (`docs/TESTING.md` §4) |
+| T1.13 | ベンチマーク (`benches/sim.rs`、criterion)。砂 10 万個の落下、水 10 万個の流れ、休眠した世界 | 実行でき、結果を `docs/BENCHMARKS.md` に記録する |
 
-M1 の完了条件: 上の全テストが通り、`cargo check --target aarch64-linux-android` と
-`--target wasm32-unknown-unknown` が通る。
+M1 の完了条件: 上の全テストが通り、`scripts/check.sh` が通る。
 
 ## M2 反応と熱
 
@@ -81,12 +83,12 @@ M1 の完了条件: 上の全テストが通り、`cargo check --target aarch64-
 | タスク | 作るもの | 完了条件 |
 |---|---|---|
 | T2.1 | `convert` 関数 (仕様 03 §1 の末尾)。材質が変わる処理をここに集める | `temp` と `shade` を引き継ぎ、`life` を引き直す |
-| T2.2 | `ReactionTable` と `assets/reactions.ron`、`step_reaction` (仕様 03 §1) | `water_lava_makes_stone_and_steam`、`reaction_is_symmetric` |
+| T2.2 | `ReactionTable`、`step_reaction` (仕様 03 §1)。`assets/reactions.ron` は用意済み | `water_lava_makes_stone_and_steam`、`reaction_is_symmetric` |
 | T2.3 | `step_heat` (仕様 03 §2) | `heat_is_conserved`、`heat_flows_hot_to_cold` |
 | T2.4 | 相変化 (仕様 03 §3) と読み込み時の振動検査 | `water_boils_and_condenses`、`phase_loop_is_rejected` |
 | T2.5 | `step_lifetime` (仕様 03 §5) | 寿命つきの材質が `decay_into` に変わる |
-| T2.6 | `step_burning` (仕様 03 §4)。火、煙、灰、溶岩、氷、酸を `materials.ron` に追加 | `wood_burns_to_ash`、`fire_dies_out` |
-| T2.7 | 全体のテストとベンチマークの追加 (反応と熱が動いている世界) | `deterministic`。M1 のテストがすべて通ったまま |
+| T2.6 | `step_burning` (仕様 03 §4)。材質は `materials.ron` に定義済み | `wood_burns_to_ash`、`fire_dies_out`、`methane_explodes_into_fire` (メタンに火を付けると炎になって消える) |
+| T2.7 | 全体のテストとベンチマークの追加 (反応と熱が動いている世界) | `deterministic`、`everything_sleeps` (全材質を乱数で撒いた世界が 20,000 tick 以内に眠る)。M1 のテストがすべて通ったまま。`golden_hashes` は `CHARON_BLESS=1` で更新する |
 
 ## M3 並列化と性能
 
@@ -98,6 +100,7 @@ M1 の完了条件: 上の全テストが通り、`cargo check --target aarch64-
 | T3.2 | スレッド数を 1、2、4、8 に変えた決定性テスト | すべて同じ `state_hash` |
 | T3.3 | プロファイルを取り、遅い箇所を直す。**`unsafe` は使わない** | 仕様 02 §11 の目標を満たす。満たせない場合は実測値と原因を `docs/BENCHMARKS.md` に書き、目標の見直しを提案する |
 | T3.4 | 休眠の検証 | 休眠した 10,000 チャンクの世界で 1 tick が 0.2 ms 以内 |
+| T3.5 | 休眠の計測をサンドボックス用に公開する: `World::awake_chunks()` と、直前の tick で処理したセル数 `World::last_tick_cells()` | 眠った世界で両方が 0 |
 
 `unsafe` がどうしても必要だと判断した場合は、実装せずに作業を止め、理由と実測値を報告すること。
 

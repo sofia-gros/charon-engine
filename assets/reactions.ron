@@ -1,0 +1,9 @@
+// 反応の定義。形式は docs/spec/03-reactions-heat.md §1。
+// 隣り合った a と b が、確率 prob/256 で out_a と out_b に変わる。
+[
+    (a: "water", b: "lava", prob: 200, out_a: "steam", out_b: "stone"),
+    (a: "acid", b: "stone", prob: 12, out_a: "empty", out_b: "empty"),
+    (a: "acid", b: "wood", prob: 30, out_a: "smoke", out_b: "empty"),
+    (a: "acid", b: "sand", prob: 20, out_a: "empty", out_b: "empty"),
+    (a: "acid", b: "dirt", prob: 20, out_a: "empty", out_b: "empty"),
+]

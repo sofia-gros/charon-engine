@@ -34,11 +34,16 @@ pub struct ReactionTable {
 step_reaction(nb, x, y):
     cell = nb.get(x, y)
     if !reactive[cell.material]: return
-    (dx, dy) = [(0,-1), (1,0), (0,1), (-1,0)][hash(.., SALT_REACT_DIR) & 3]
+    DIRS = [(0,-1), (1,0), (0,1), (-1,0)]
+    # 4 方向のどこかに反応の相手がいるか (いる間は眠らない)
+    any = DIRS のどれかで、隣が FLAG_BODY でなく index[cell.material * n + 隣.material] != 0
+    if !any: return
+    nb.keep_awake(x, y)
+    # 実際に試すのは 1 方向だけ
+    (dx, dy) = DIRS[hash(.., SALT_REACT_DIR) & 3]
     other = nb.get(x + dx, y + dy)
     if other.flags に FLAG_BODY: return        # 剛体の加工は仕様 05 §7 で扱う
     r = index[cell.material * n + other.material]; if r == 0: return
-    nb.keep_awake(x, y)                         # 反応相手が隣にいる間は眠らない
     if !chance(hash(.., SALT_REACT), reactions[r - 1].prob): return
     nb.set(x, y, convert(cell, out_a)); nb.set(x + dx, y + dy, convert(other, out_b))
 ```
@@ -50,18 +55,27 @@ step_reaction(nb, x, y):
 ## 2. 熱の移動 `step_heat`
 
 ```
-step_heat(nb, x, y):
-    cell = nb.get(x, y); mat = materials.get(cell.material)
-    if mat.conductivity == 0: return
-    (dx, dy) = 4 方向から hash(.., SALT_HEAT_DIR) & 3 で 1 つ選ぶ
-    other = nb.get(x + dx, y + dy); om = materials.get(other.material)
-    if other.material == BOUNDARY または other.flags に FLAG_BODY: return
-    k = min(mat.conductivity, om.conductivity) as i32
-    d = (other.temp as i32 - cell.temp as i32) * k / 512     # 0 方向へ切り捨て
-    if d == 0: return
-    cell.temp += d; other.temp -= d        # 合計は変わらない。i16 の範囲に clamp する
-    両方を nb.set (dirty が付くので、温度が動いている間は眠らない)
+step_heat(nb, x, y):                          # (x, y) は空でないセル
+    for (dx, dy) in [(1, 0), (0, 1), (-1, 0), (0, -1)]:
+        cell = nb.get(x, y); mat = materials.get(cell.material)
+        other = nb.get(x + dx, y + dy); om = materials.get(other.material)
+        if other.material == BOUNDARY または other.flags に FLAG_BODY: continue
+        # 左と上は、相手が空のときだけ扱う (空でない相手は、相手自身の「右・下」で扱われる)
+        if (dx, dy) が (-1, 0) か (0, -1) で、om.phase != Empty: continue
+        k = min(mat.conductivity, om.conductivity) as i32
+        d = (other.temp as i32 - cell.temp as i32) * k / 1024    # 0 方向へ切り捨て
+        if d == 0: continue
+        cell.temp += d; other.temp -= d        # 合計は変わらない。i16 の範囲に clamp する
+        両方を nb.set (dirty が付くので、温度が動いている間は眠らない)
 ```
+
+こうすると、隣り合う組のうち少なくとも片方が空でなければ、その組は 1 tick にちょうど 1 回処理される
+(空のセルは `update_cell` が何もしないので、空でない側が受け持つ)。
+乱数で 1 方向だけ選ぶ方式にしてはいけない。選ばれなかった方向に温度差が残ったまま眠ってしまう。
+
+空と空の組は熱を交換しない (熱い空気は自分では広がらない)。簡略化であり、M2 では許容する。
+
+`d` が 0 になれば書き込みが止まり、自然に休眠する (温度差が `1024 / k` 未満で止まる)。
 
 空 (`empty`) も温度を持つ。`empty` の `conductivity` は 8 とする (空気はゆっくり熱を運ぶ)。
 この値は `MaterialTable` が `empty` を作るときに設定する。

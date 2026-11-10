@@ -9,31 +9,22 @@ Noita / Terraria のような落下砂ゲームのための Rust 製エンジン
 2. そのタスクの「読む仕様」を全部読む。
 3. 仕様の名前・式・順序をそのまま実装する。仕様にないものを足さない。
 4. 完了条件のテストを書き、通す。テストの名前は仕様の表にある名前にする。
-5. 下の「確認コマンド」を全部通す。
+5. `scripts/check.sh` を通す。
 6. 1 タスクを 1 コミットにする。コミットメッセージにタスク番号を書く (例: `T1.8: 粉体の移動を実装`)。
 7. マイルストーンの全タスクが終わったら、`docs/ROADMAP.md` の「状態」を更新する。
 
 ## 確認コマンド
 
-```bash
-cargo fmt --all --check
-```
+コミットの前に必ず実行する。CI も同じスクリプトを実行する。
 
 ```bash
-cargo clippy --workspace --all-targets -- -D warnings
+scripts/check.sh
 ```
 
-```bash
-cargo test --workspace
-```
+fmt、clippy (`parallel` feature の有無の両方)、テスト (同じく両方)、ドキュメントのビルド、
+Android と WebAssembly 向けのコンパイル確認を順に行う。1 つでも失敗したらコミットしない。
 
-```bash
-cargo check -p charon-core --target aarch64-linux-android
-```
-
-```bash
-cargo check -p charon-core --target wasm32-unknown-unknown --no-default-features
-```
+テストの書き方と置き場所は `docs/TESTING.md` に従う。
 
 ## 守ること
 
@@ -45,6 +36,7 @@ cargo check -p charon-core --target wasm32-unknown-unknown --no-default-features
 - **材質の名前をコードに書かない。** 性質は `Material` のフィールドで判断する。
   例外は `EMPTY`、`BOUNDARY`、起動時に 1 回だけ引く `fire` (仕様 03 §4)。
 - **材質が変わる処理は `convert` を通す** (仕様 03 §1)。
+- **変化しないセルは何も書き込まない。** 休眠の規則 (仕様 02 §9) を守る。規則を足したら「最終的に眠る」テストも足す。
 - **セルを消さない・増やさない。** 移動は入れ替え (`swap`) で行う。数が変わってよいのは、反応・相変化・
   燃焼・寿命・ブラシの操作だけ。
 - **`charon-core` に描画・ウィンドウ・ファイル入出力・スレッド生成の依存を入れない。**
@@ -76,6 +68,8 @@ cargo check -p charon-core --target wasm32-unknown-unknown --no-default-features
 | `crates/charon-app` | ウィンドウ、入力、メインループ (M4 で追加) |
 | `apps/sandbox` | 動作確認用のアプリ (M4 で追加) |
 | `assets/` | 材質、反応、シェーダー |
+| `tools/prototype/` | 移動規則の Python 試作。挙動に迷ったときの基準 |
+| `scripts/check.sh` | コミット前の確認 |
 | `docs/spec/` | 仕様 |
 
 クレートは、ロードマップでそのタスクに来たときに作る。空のクレートを先に作らない。

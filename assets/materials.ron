@@ -1,0 +1,48 @@
+// 材質の定義。形式は docs/spec/01-core-data.md §3。
+// "empty" (ID 0) と "boundary" (ID 1) は組み込みなので、ここには書かない。
+// 省略したフィールドは既定値になる。
+[
+    // ---- 固体 ----
+    (name: "stone", phase: Solid, density: 2600, color: (110, 110, 115, 255), color_variation: 12,
+     conductivity: 40, melt: Some((at: 1200, into: "lava")), rigid_friction: 0.7),
+    (name: "wood", phase: Solid, density: 600, color: (122, 84, 46, 255), color_variation: 14,
+     conductivity: 10, ignite_at: Some(300), burn_time: 40, burn_into: "ash", burn_temp: 800,
+     rigid_friction: 0.5),
+    (name: "ice", phase: Solid, density: 920, color: (170, 215, 240, 230), color_variation: 6,
+     initial_temp: -10, conductivity: 60, melt: Some((at: 1, into: "water")), rigid_friction: 0.05),
+
+    // ---- 粉体 ----
+    (name: "sand", phase: Powder, density: 1600, color: (218, 196, 128, 255), color_variation: 16,
+     friction: 60, conductivity: 20),
+    (name: "dirt", phase: Powder, density: 1300, color: (104, 72, 44, 255), color_variation: 14,
+     friction: 220, conductivity: 15),
+    (name: "ash", phase: Powder, density: 500, color: (90, 88, 86, 255), color_variation: 20,
+     friction: 30, conductivity: 10),
+
+    // ---- 液体 ----
+    (name: "water", phase: Liquid, density: 1000, color: (48, 110, 220, 190), color_variation: 4,
+     dispersion: 5, conductivity: 80,
+     boil: Some((at: 100, into: "steam")), freeze: Some((at: 0, into: "ice"))),
+    (name: "slime", phase: Liquid, density: 1100, color: (120, 200, 80, 230), color_variation: 8,
+     dispersion: 1, viscosity: 240, conductivity: 30),
+    (name: "oil", phase: Liquid, density: 800, color: (60, 50, 30, 220), color_variation: 4,
+     dispersion: 3, viscosity: 60, conductivity: 20,
+     ignite_at: Some(200), burn_time: 30, burn_into: "smoke", burn_temp: 700),
+    (name: "lava", phase: Liquid, density: 2500, color: (240, 90, 20, 255), color_variation: 20,
+     dispersion: 1, viscosity: 200, initial_temp: 1400, conductivity: 60,
+     freeze: Some((at: 700, into: "stone")), emission: (255, 110, 30)),
+    (name: "acid", phase: Liquid, density: 1200, color: (150, 240, 40, 210), color_variation: 6,
+     dispersion: 4, conductivity: 40),
+
+    // ---- 気体 ----
+    (name: "steam", phase: Gas, density: 1, color: (200, 200, 210, 90), color_variation: 10,
+     dispersion: 3, initial_temp: 110, conductivity: 30, freeze: Some((at: 80, into: "water"))),
+    (name: "methane", phase: Gas, density: 1, color: (170, 200, 150, 70), color_variation: 10,
+     dispersion: 3, conductivity: 20,
+     ignite_at: Some(150), burn_time: 2, burn_into: "fire", burn_temp: 900),
+    (name: "smoke", phase: Gas, density: 2, color: (60, 60, 60, 140), color_variation: 20,
+     dispersion: 2, conductivity: 10, lifetime: Some((30, 90)), decay_into: "empty"),
+    (name: "fire", phase: Gas, density: 1, color: (255, 150, 40, 220), color_variation: 40,
+     dispersion: 1, initial_temp: 900, conductivity: 255, lifetime: Some((4, 12)),
+     decay_into: "smoke", emission: (255, 160, 40)),
+]
