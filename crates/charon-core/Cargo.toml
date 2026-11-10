@@ -13,3 +13,10 @@ workspace = true
 [dependencies]
 ron = "0.12.3"
 serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "sim"
+harness = false
