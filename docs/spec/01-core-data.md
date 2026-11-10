@@ -135,7 +135,7 @@ pub struct MaterialTable {
 | `MaterialTable::from_ron(src: &str) -> Result<Self, MaterialError>` | RON を読む。下の規則に従う |
 | `get(&self, id: MaterialId) -> &Material` | 添字で引く。範囲外は `BOUNDARY` を返す |
 | `id(&self, name: &str) -> Option<MaterialId>` | 名前から ID |
-| `len(&self) -> usize` | 材質数 |
+| `len(&self) -> usize` | 材質数 (組み込みの 2 つを含む) |
 
 読み込みの規則:
 
@@ -215,7 +215,7 @@ struct RawMaterial {
 `ignite_at` が `Some` なら `burn_time >= 1`。
 
 `MaterialTable` には、テストとアプリが使う補助を 1 つ用意する:
-`MaterialTable::builtin() -> Self` は `include_str!` で `assets/materials.ron` を埋め込んで読む。
+`MaterialTable::builtin() -> Result<Self, MaterialError>` は `include_str!` で `assets/materials.ron` を埋め込んで読む。
 
 依存クレートは `serde` (derive) と `ron`。導入時点の最新安定版を `cargo add` で入れる。
 

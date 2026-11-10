@@ -5,6 +5,7 @@
 
 pub mod cell;
 pub mod coords;
+pub mod material;
 pub mod rng;
 
 /// エンジンのバージョン文字列。
