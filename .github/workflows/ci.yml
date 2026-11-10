@@ -36,3 +36,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+
+  # 核がモバイルと Web でもコンパイルできることを常に確認する (docs/spec/06 §7)。
+  portability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p charon-core --target aarch64-linux-android
+      - run: cargo check -p charon-core --target wasm32-unknown-unknown --no-default-features
