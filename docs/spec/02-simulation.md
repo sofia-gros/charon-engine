@@ -359,7 +359,7 @@ open_for(x, y, watcher): セルが FLAG_BODY でなく、相が Empty、また�
 | `gas_under_ceiling_sleeps` | 密閉した箱に、寿命のない気体を天井を埋めきらない数だけ入れ、3000 tick 以内に全チャンクが眠る |
 | `breached_wall_drains` | 眠っている池の壁を 1 セル消すと、水が流れ出て、壁の両側の水位の差が 1 以下になり、再び眠る |
 | `water_flows_through_tunnel` | 池の底から長さ 30 の水平なトンネルを通って、水が反対側の部屋に届く |
-| `mixed_liquids_sleep` | 水と油とスライムを混ぜて入れ、5000 tick 以内に全チャンクが眠る |
+| `mixed_liquids_sleep` | 水と油とスライムを混ぜて入れ、8000 tick 以内に全チャンクが眠る。眠った後、どの列でも重い液体の上に軽い液体がない (境目の行は混ざってよい) |
 | `full_pool_sleeps` | 幅 20 の容器に水をちょうど 20×5 個入れ、2000 tick 後に全チャンクの `dirty` が `None` |
 | `chunk_border` | 砂がチャンクの境界をまたいで落ち、消えも増えもしない |
 | `parallel_matches_serial` (M3) | `parallel` feature の有無で、毎 tick の `state_hash()` が一致する |
