@@ -59,19 +59,30 @@ x, y とも `-64..128`。
   (`cx` は中心チャンクの x、`world_y` はその行のワールド y)。
 - 各セルで `update_cell` (§4) を呼ぶ。
 
-更新済みの判定: `cur_parity = (tick & 1) as u8`。セルの `flags & FLAG_PARITY == cur_parity` なら
-既にこの tick で動いたセルなので飛ばす。`update_cell` は最後に必ずそのセル (移動した場合は移動先) の
-`FLAG_PARITY` を `cur_parity` にする。
+更新済みの判定: `cur_parity = (tick & 1)`。動かせる相 (粉体・液体・気体) のセルで
+`FLAG_PARITY` が `cur_parity` と同じなら、既にこの tick で動いたセルなので飛ばす。
+
+- 飛ばすときは必ず `keep_awake` を呼ぶ。眠っている間に parity が古くなったセルは、起こされた tick で
+  たまたま `cur_parity` と一致して飛ばされることがある。`keep_awake` しないと、そのまま処理されずに
+  再び眠ってしまう (支えを失った砂が宙に残る)。
+- 処理するセルは、移動の前に `mark_parity` で `FLAG_PARITY` を `cur_parity` にする。
+  `mark_parity` は dirty を付けない (parity は状態ではなく、`state_hash` にも含めない)。
+- `swap` は両方のセルの parity を `cur_parity` にするので、動いた先でもう一度処理されることはない。
+- 固体は動かないので parity を見ない。
+
+`update_chunk` は処理の最初に中心チャンクの `dirty` を取り出して `None` にする。
+したがって `step` の後、`awake_chunks()` は `next_dirty` が付いたチャンクだけを数える。
 
 ## 4. `update_cell`
 
 ```
 update_cell(nb, x, y):
     cell = nb.get(x, y)
-    if cell の parity が cur_parity: return
     if cell.flags に FLAG_BODY: return          # 剛体のセルは動かさない
     mat = materials.get(cell.material)
     if mat.phase == Empty: return
+    if mat.phase が Powder / Liquid / Gas で、cell の parity が cur_parity:
+        nb.keep_awake(x, y); return             # §3
 
     step_lifetime(nb, x, y)            # 仕様 03 §5。セルが別の材質に変わることがある
     step_heat(nb, x, y)                # 仕様 03 §2, §3
@@ -80,9 +91,9 @@ update_cell(nb, x, y):
 
     cell, mat を読み直す
     match mat.phase:
-        Powder => move_powder(nb, x, y)
-        Liquid, Gas => move_fluid(nb, x, y, cell, mat)   # §8
-        Solid, Empty => parity だけ更新
+        Powder      => nb.mark_parity(x, y); move_powder(nb, x, y, cell, mat)
+        Liquid, Gas => nb.mark_parity(x, y); move_fluid(nb, x, y, cell, mat)   # §8
+        Solid, Empty => 何もしない
 ```
 
 マイルストーン M1 では `step_*` の 4 つは何もしない関数として置き、M2 で実装する。

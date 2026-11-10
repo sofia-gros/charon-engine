@@ -20,8 +20,8 @@ pub struct Neighborhood<'a> {
     /// 添字 = `(dx + 1) + 3 * (dy + 1)`。
     chunks: [Option<Box<Chunk>>; 9],
     materials: &'a MaterialTable,
-    /// 現在の tick の `FLAG_PARITY` の値 (`tick & 1`)。
-    parity: bool,
+    seed: u64,
+    tick: u64,
 }
 
 impl<'a> Neighborhood<'a> {
@@ -29,13 +29,15 @@ impl<'a> Neighborhood<'a> {
         center: ChunkPos,
         chunks: [Option<Box<Chunk>>; 9],
         materials: &'a MaterialTable,
+        seed: u64,
         tick: u64,
     ) -> Self {
         Self {
             center,
             chunks,
             materials,
-            parity: tick & 1 == 1,
+            seed,
+            tick,
         }
     }
 
@@ -56,9 +58,37 @@ impl<'a> Neighborhood<'a> {
         self.materials
     }
 
-    /// 現在の tick の parity。
+    /// 現在の tick。
+    pub fn tick(&self) -> u64 {
+        self.tick
+    }
+
+    /// 現在の tick の `FLAG_PARITY` の値 (`tick & 1`)。
     pub fn parity(&self) -> bool {
-        self.parity
+        self.tick & 1 == 1
+    }
+
+    /// ローカル座標 `(x, y)` のセルのための乱数 (仕様 01 §4)。ワールド座標に直して `rng::hash` を呼ぶ。
+    pub fn hash(&self, x: i32, y: i32, salt: u32) -> u32 {
+        let o = self.center.origin();
+        crate::rng::hash(self.seed, self.tick, o.x + x, o.y + y, salt)
+    }
+
+    /// 行 `y` (ローカル座標) を走査する向きを決める乱数 (仕様 02 §3)。
+    pub fn row_hash(&self, y: i32) -> u32 {
+        let world_y = self.center.origin().y + y;
+        crate::rng::hash(
+            self.seed,
+            self.tick,
+            self.center.x,
+            world_y,
+            crate::rng::SALT_SCAN,
+        )
+    }
+
+    /// 中心チャンクの `dirty` を取り出す (取り出した後は `None` になる)。
+    pub fn take_center_dirty(&mut self) -> Option<crate::chunk::Rect> {
+        self.chunks[4].as_mut().and_then(|c| c.dirty.take())
     }
 
     /// 中心チャンク。
@@ -91,8 +121,8 @@ impl<'a> Neighborhood<'a> {
 
     /// 2 つのセルを入れ替える。両方を「この tick で更新済み」にする。
     pub fn swap(&mut self, ax: i32, ay: i32, bx: i32, by: i32) {
-        let a = self.get(ax, ay).with(FLAG_PARITY, self.parity);
-        let b = self.get(bx, by).with(FLAG_PARITY, self.parity);
+        let a = self.get(ax, ay).with(FLAG_PARITY, self.parity());
+        let b = self.get(bx, by).with(FLAG_PARITY, self.parity());
         self.set(ax, ay, b);
         self.set(bx, by, a);
     }
@@ -115,8 +145,9 @@ impl<'a> Neighborhood<'a> {
         let Some((slot, lx, ly)) = locate(x, y) else {
             return;
         };
+        let parity = self.parity();
         if let Some(chunk) = &mut self.chunks[slot] {
-            chunk.write_parity(lx, ly, self.parity);
+            chunk.write_parity(lx, ly, parity);
         }
     }
 }
@@ -147,6 +178,7 @@ mod tests {
             ChunkPos::new(0, 0),
             std::array::from_fn(|_| Some(Box::new(Chunk::new()))),
             materials,
+            1,
             tick,
         )
     }
@@ -191,7 +223,7 @@ mod tests {
         let mut chunks: [Option<Box<Chunk>>; 9] =
             std::array::from_fn(|_| Some(Box::new(Chunk::new())));
         chunks[5] = None; // 右隣
-        let mut nb = Neighborhood::new(ChunkPos::new(0, 0), chunks, &m, 0);
+        let mut nb = Neighborhood::new(ChunkPos::new(0, 0), chunks, &m, 1, 0);
         assert_eq!(nb.get(64, 0).material, MaterialId::BOUNDARY);
         nb.set(64, 0, cell(5)); // 何も起きない
         assert_eq!(nb.get(64, 0).material, MaterialId::BOUNDARY);
