@@ -9,6 +9,7 @@ pub mod coords;
 pub mod material;
 pub mod rng;
 pub mod sim;
+pub mod testkit;
 pub mod world;
 
 /// エンジンのバージョン文字列。

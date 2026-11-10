@@ -43,6 +43,7 @@ Android と WebAssembly 向けのコンパイル確認を順に行う。1 つで
   許可する依存は `serde`、`ron`、`rayon` (`parallel` feature のとき) だけ。
 - **テスト以外で `unwrap()` / `expect()` を使わない。** `Result` を返すか、起こりえない理由をコメントに書いて
   `debug_assert!` と安全な既定値にする。
+  例外は `testkit` モジュール (テスト用の道具なので、誤った使い方は `panic` で知らせる)。
 - **浮動小数点数を `charon-core` のシミュレーションに使わない。** 整数だけで計算する (プラットフォーム間で結果を揃えるため)。
   剛体 (`charon-physics`) は例外。
 - 依存クレートを足すときは `cargo add` で最新の安定版を入れ、`Cargo.lock` をコミットする。

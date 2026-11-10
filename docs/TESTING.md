@@ -39,7 +39,7 @@ Charon Engine は、仕様の「必須テスト」が通ることを完了条件
 /// 材質は `MaterialTable::builtin()` を使う。知らない文字は panic。
 pub fn world_from_ascii(art: &str, seed: u64) -> World;
 
-/// 世界の矩形 (x0..x1, y0..y1) を文字の絵に戻す。
+/// 世界の矩形 (x0..x1, y0..y1。終端は含まない) を文字の絵に戻す。行は改行で区切る。
 pub fn to_ascii(world: &World, x0: i32, y0: i32, x1: i32, y1: i32) -> String;
 
 /// 文字から材質へ。`world_from_ascii` と `place` が使う。
