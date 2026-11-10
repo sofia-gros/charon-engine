@@ -47,6 +47,8 @@ pub const SALT_REACT: u32 = 11;
 pub const SALT_FIRE_DIR: u32 = 12;
 /// 炎を出すか。
 pub const SALT_FIRE: u32 = 13;
+/// 着地した粉体がその場に止まるか (摩擦)。
+pub const SALT_STICK: u32 = 14;
 
 #[cfg(test)]
 mod tests {
@@ -85,9 +87,7 @@ mod tests {
 
     #[test]
     fn chance_is_roughly_fair() {
-        let hits = (0..10_000)
-            .filter(|&i| chance(hash(7, 0, i, 0, 0), 128))
-            .count();
+        let hits = (0..10_000).filter(|&i| chance(hash(7, 0, i, 0, 0), 128)).count();
         assert!((4_500..=5_500).contains(&hits), "hits = {hits}");
     }
 }

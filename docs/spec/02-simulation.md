@@ -115,9 +115,9 @@ can_displace(mover: Cell, target: Cell) -> bool:
 気体が **上へ** 動くときの判定は別関数 `can_rise(mover, target)`: target が `Empty` なら true、
 target が `Gas` で `mover.density < target.density` なら true、それ以外は false。
 
-液体の中を沈むときの抵抗: `can_displace` が true で target が `Liquid` のとき、
-`chance(hash(.., SALT_DRAG), target の viscosity / 2 + 64)` が true なら **今回は動かず**
-`keep_awake` して終わる。
+液体の中を沈むときの抵抗: 粉体が **真下** の液体へ沈もうとするとき、
+`chance(hash(.., SALT_DRAG), 液体の viscosity / 2 + 64)` が true なら **今回は動かず**
+`keep_awake` して終わる。斜めの移動と、液体同士の入れ替わりには抵抗をかけない。
 
 ## 6. 落下の歩数 (粉体・液体で共通)
 
@@ -146,7 +146,8 @@ if moved > 0:
     return
 
 # 真下に進めなかった
-if cell.flags に FLAG_FALLING:
+# 摩擦 (1): 着地したセルは、確率 friction / 256 でその場に止まる
+if cell.flags に FLAG_FALLING かつ !chance(hash(.., SALT_STICK), mat.friction):
     d = (hash(.., SALT_DIAG) & 1) なら +1、そうでなければ -1
     for dx in [d, -d]:
         if can_displace(cell, nb.get(x + dx, y + 1)) かつ can_displace(cell, nb.get(x + dx, y)):
@@ -166,8 +167,15 @@ wake_neighbors(x, y):       # (x, y) は今セルが出ていった場所
                 n に FLAG_FALLING を立てて nb.set
 ```
 
-これが摩擦の仕組みである。`friction` が小さい粉体は隣が動くとすぐ崩れ、なだらかな山になる。
-`friction` が大きい粉体は動かず、急な斜面を保つ。動いていないセルは書き込みをしないので、
+摩擦は 2 か所で効く。
+
+1. **着地したとき** (上の「摩擦 (1)」): `friction` が大きいほど、斜めに滑らずその場に積もる。山が急になる。
+2. **隣が動いたとき** (`wake_neighbors`): `friction` が大きいほど、止まっているセルが崩れにくい。
+
+`friction: 10` の灰は約 45 度のなだらかな山に、`friction: 80` の土は切り立った山になる。
+形は `cargo run -p charon-core --example piles` で確かめられる。
+
+(1) がないと、注いだ粉体は `friction` に関係なく同じ 45 度の山になる。実装時のテストで見つかり、追加した。動いていないセルは書き込みをしないので、
 チャンクは自然に休眠する。
 
 ## 8. 液体と気体 `move_fluid`
@@ -309,7 +317,8 @@ move_fluid(nb, x, y, cell, mat):
 |---|---|
 | `sand_falls` | 空の 1 チャンクの上端に砂を 1 個置き、200 tick 後に最下行にある |
 | `sand_piles` | 1 点から砂を 500 個落とす。山の高さ < 幅 (崩れている) |
-| `friction_makes_steeper_piles` | 同じ条件で `friction: 0` と `friction: 250` の山を作り、後者のほうが高い |
+| `friction_makes_steeper_piles` | 同じ条件で砂 (`friction: 30`) と土 (`friction: 80`) の山を作り、土のほうが高い |
+| `unsupported_sand_falls_after_sleeping` | 眠っている砂の支えを消すと落ちる (§3 の parity の規則) |
 | `water_levels` | 幅 40 の容器の左端から水を 400 個注ぎ、1500 tick 後に各列の水面の高さの差が 1 以下 |
 | `sand_sinks_in_water` | 水の上に砂を置くと、砂が底に着き水が上に来る |
 | `oil_floats_on_water` | 油と水を混ぜて置くと、1000 tick 後に油がすべて水より上 |

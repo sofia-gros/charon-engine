@@ -94,7 +94,7 @@ pub struct Material {
     // 移動 (仕様 02)
     pub gravity: u8,           // 毎 tick の vy 増分 (1/16 セル)。既定 4
     pub max_speed: u8,         // |vy| の上限。既定 96、最大 127
-    pub friction: u8,          // 粉体: 0 = さらさら、255 = 崩れない
+    pub friction: u8,          // 粉体: 0 = さらさら (45 度の山)、大きいほど急な山になり崩れにくい
     pub dispersion: u8,        // 液体・気体: 1 tick に水平に進める最大セル数
     pub viscosity: u8,         // 液体: 0 = 水、240 = スライム。移動を見送る確率 (x/256)
 
@@ -153,7 +153,7 @@ RON の形式 (抜粋):
     (name: "stone", phase: Solid, density: 2600, color: (110, 110, 115, 255), color_variation: 12,
      conductivity: 40, melt: Some((at: 1200, into: "lava"))),
     (name: "sand", phase: Powder, density: 1600, color: (218, 196, 128, 255), color_variation: 16,
-     friction: 60, conductivity: 20),
+     friction: 30, conductivity: 20),
     (name: "water", phase: Liquid, density: 1000, color: (48, 110, 220, 190), dispersion: 5,
      conductivity: 80, boil: Some((at: 100, into: "steam")), freeze: Some((at: 0, into: "ice"))),
     (name: "slime", phase: Liquid, density: 1100, color: (120, 200, 80, 230), dispersion: 1,
@@ -257,6 +257,7 @@ pub const SALT_REACT_DIR: u32 = 10; // 反応を試す方向
 pub const SALT_REACT: u32 = 11;     // 反応が起きるか
 pub const SALT_FIRE_DIR: u32 = 12;  // 炎を出す方向
 pub const SALT_FIRE: u32 = 13;      // 炎を出すか
+pub const SALT_STICK: u32 = 14;     // 着地した粉体がその場に止まるか
 ```
 
 新しく乱数が必要になったら、この一覧の末尾に足す。

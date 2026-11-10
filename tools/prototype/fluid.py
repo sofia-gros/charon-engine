@@ -15,7 +15,7 @@ def h(seed,tick,x,y,salt):
 E,S,P,L,G='E','S','P','L','G'
 MAT={'.':dict(ph=E,den=0),'#':dict(ph=S,den=65535),
  'w':dict(ph=L,den=1000,disp=5,visc=0),'o':dict(ph=L,den=800,disp=3,visc=60),
- 's':dict(ph=L,den=1100,disp=1,visc=240),'d':dict(ph=P,den=1600,fr=60),
+ 's':dict(ph=L,den=1100,disp=1,visc=240),'d':dict(ph=P,den=1600,fr=30),
  'g':dict(ph=G,den=1,disp=3,visc=0),'k':dict(ph=G,den=2,disp=2,visc=0)}
 FALL,RIGHT,BOUNCED=1,2,4
 SCAN=24
@@ -67,7 +67,7 @@ class W:
             n,vy=s.steps(x,y); mv=0; ox,oy=x,y
             while mv<n and s.candisp(c,s.get(x,y+1)): s.swap(x,y,x,y+1); y+=1; mv+=1
             s.f[y][x]|=FALL; s.vy[y][x]=vy if mv==n else 0; s.wake(ox,oy); return
-        if s.f[y][x]&FALL:
+        if s.f[y][x]&FALL and not (h(s.seed,t,x,y,8)&255)<MAT[c]['fr']:
             d=1 if h(s.seed,t,x,y,4)&1 else -1
             for dx in (d,-d):
                 if s.candisp(c,s.get(x+dx,y+1)) and s.candisp(c,s.get(x+dx,y)):

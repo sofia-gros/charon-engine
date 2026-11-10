@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
-use crate::cell::{Cell, FLAG_BODY};
+use crate::cell::FLAG_BODY;
 use crate::coords::ChunkPos;
-use crate::material::{Material, MaterialTable, Phase};
+use crate::material::{MaterialTable, Phase};
 use crate::sim::Neighborhood;
+use crate::sim::movement::{move_fluid, move_powder};
 use crate::world::World;
 
 /// チャンクのフェーズ (0..9)。同じフェーズのチャンクは 3 チャンクずつ離れている。
@@ -61,8 +62,7 @@ impl World {
             let center = nb.center;
             for (slot, chunk) in nb.into_chunks().into_iter().enumerate() {
                 if let Some(chunk) = chunk {
-                    self.chunks
-                        .insert(Neighborhood::slot_pos(center, slot), chunk);
+                    self.chunks.insert(Neighborhood::slot_pos(center, slot), chunk);
                 }
             }
         }
@@ -131,11 +131,6 @@ fn step_heat(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32) {}
 fn step_reaction(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32) {}
 fn step_burning(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32) {}
 
-// ---- T1.9、T1.10 で実装する (仕様 02 §7、§8) ----
-
-fn move_powder(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32, _cell: Cell, _mat: &Material) {}
-fn move_fluid(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32, _cell: Cell, _mat: &Material) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,20 +189,11 @@ mod tests {
         let mut w = world_3x3();
         let p = CellPos::new(5, 5);
         // tick 0 の parity (false) と同じ値を持つ、動かせる材質のセル
-        let sand = w
-            .make_cell(w.materials().id("sand").unwrap(), p)
-            .with(FLAG_PARITY, false);
+        let sand = w.make_cell(w.materials().id("sand").unwrap(), p).with(FLAG_PARITY, false);
         w.set(p, sand);
         w.step();
-        assert_eq!(
-            w.awake_chunks(),
-            1,
-            "飛ばしたセルは次の tick まで起こしておく"
-        );
+        assert_eq!(w.awake_chunks(), 1, "飛ばしたセルは次の tick まで起こしておく");
         w.step();
-        assert!(
-            w.get(p).has(FLAG_PARITY),
-            "tick 1 で処理され、parity が更新された"
-        );
+        assert!(w.get(p).has(FLAG_PARITY), "tick 1 で処理され、parity が更新された");
     }
 }

@@ -32,13 +32,7 @@ impl<'a> Neighborhood<'a> {
         seed: u64,
         tick: u64,
     ) -> Self {
-        Self {
-            center,
-            chunks,
-            materials,
-            seed,
-            tick,
-        }
+        Self { center, chunks, materials, seed, tick }
     }
 
     /// チャンクを取り出す (ワールドへ戻すため)。添字は [`Neighborhood::slot_pos`] で位置に変換する。
@@ -48,10 +42,7 @@ impl<'a> Neighborhood<'a> {
 
     /// 添字 `slot` (0..9) のチャンクの位置。
     pub fn slot_pos(center: ChunkPos, slot: usize) -> ChunkPos {
-        ChunkPos::new(
-            center.x + (slot % 3) as i32 - 1,
-            center.y + (slot / 3) as i32 - 1,
-        )
+        ChunkPos::new(center.x + (slot % 3) as i32 - 1, center.y + (slot / 3) as i32 - 1)
     }
 
     pub fn materials(&self) -> &'a MaterialTable {
@@ -77,13 +68,7 @@ impl<'a> Neighborhood<'a> {
     /// 行 `y` (ローカル座標) を走査する向きを決める乱数 (仕様 02 §3)。
     pub fn row_hash(&self, y: i32) -> u32 {
         let world_y = self.center.origin().y + y;
-        crate::rng::hash(
-            self.seed,
-            self.tick,
-            self.center.x,
-            world_y,
-            crate::rng::SALT_SCAN,
-        )
+        crate::rng::hash(self.seed, self.tick, self.center.x, world_y, crate::rng::SALT_SCAN)
     }
 
     /// 中心チャンクの `dirty` を取り出す (取り出した後は `None` になる)。
@@ -160,11 +145,7 @@ fn locate(x: i32, y: i32) -> Option<(usize, u8, u8)> {
         debug_assert!(false, "Neighborhood の範囲外: ({x}, {y})");
         return None;
     }
-    Some((
-        ((cx + 1) + 3 * (cy + 1)) as usize,
-        (x & CHUNK_MASK) as u8,
-        (y & CHUNK_MASK) as u8,
-    ))
+    Some((((cx + 1) + 3 * (cy + 1)) as usize, (x & CHUNK_MASK) as u8, (y & CHUNK_MASK) as u8))
 }
 
 #[cfg(test)]
@@ -184,22 +165,15 @@ mod tests {
     }
 
     fn cell(id: u16) -> Cell {
-        Cell {
-            material: MaterialId(id),
-            ..Cell::default()
-        }
+        Cell { material: MaterialId(id), ..Cell::default() }
     }
 
     #[test]
     fn coordinates_reach_the_right_chunk() {
         let m = MaterialTable::builtin().unwrap();
         let mut nb = full(&m, 0);
-        let cases = [
-            (-64, -64, 0, 0, 0),
-            (-1, 0, 3, 63, 0),
-            (0, 0, 4, 0, 0),
-            (127, 127, 8, 63, 63),
-        ];
+        let cases =
+            [(-64, -64, 0, 0, 0), (-1, 0, 3, 63, 0), (0, 0, 4, 0, 0), (127, 127, 8, 63, 63)];
         for (i, &(x, y, _, _, _)) in cases.iter().enumerate() {
             nb.set(x, y, cell(10 + i as u16));
         }
@@ -209,11 +183,7 @@ mod tests {
         let chunks = nb.into_chunks();
         for (i, &(_, _, slot, lx, ly)) in cases.iter().enumerate() {
             let c = chunks[slot].as_ref().unwrap();
-            assert_eq!(
-                c.get(lx, ly).material,
-                MaterialId(10 + i as u16),
-                "case {i}"
-            );
+            assert_eq!(c.get(lx, ly).material, MaterialId(10 + i as u16), "case {i}");
         }
     }
 
@@ -250,21 +220,11 @@ mod tests {
         let chunks = nb.into_chunks();
         assert_eq!(
             chunks[4].as_ref().unwrap().next_dirty,
-            Some(Rect {
-                min_x: 0,
-                min_y: 0,
-                max_x: 2,
-                max_y: 2
-            })
+            Some(Rect { min_x: 0, min_y: 0, max_x: 2, max_y: 2 })
         );
         assert_eq!(
             chunks[0].as_ref().unwrap().next_dirty,
-            Some(Rect {
-                min_x: 62,
-                min_y: 62,
-                max_x: 63,
-                max_y: 63
-            })
+            Some(Rect { min_x: 62, min_y: 62, max_x: 63, max_y: 63 })
         );
         assert!(chunks[1].as_ref().unwrap().next_dirty.is_some());
         assert!(chunks[3].as_ref().unwrap().next_dirty.is_some());

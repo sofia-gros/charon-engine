@@ -16,12 +16,7 @@ pub struct Rect {
 impl Rect {
     /// 1 点だけの矩形。
     pub const fn point(x: u8, y: u8) -> Self {
-        Self {
-            min_x: x,
-            min_y: y,
-            max_x: x,
-            max_y: y,
-        }
+        Self { min_x: x, min_y: y, max_x: x, max_y: y }
     }
 
     /// 2 つの矩形を含む最小の矩形。
@@ -158,16 +153,7 @@ mod tests {
     fn wake_region_inside_one_chunk() {
         assert_eq!(
             collect(10, 20),
-            vec![(
-                0,
-                0,
-                Rect {
-                    min_x: 8,
-                    min_y: 18,
-                    max_x: 12,
-                    max_y: 22
-                }
-            )]
+            vec![(0, 0, Rect { min_x: 8, min_y: 18, max_x: 12, max_y: 22 })]
         );
     }
 
@@ -175,46 +161,10 @@ mod tests {
     fn wake_region_crosses_corner() {
         let v = collect(0, 63);
         assert_eq!(v.len(), 4);
-        assert!(v.contains(&(
-            -1,
-            0,
-            Rect {
-                min_x: 62,
-                min_y: 61,
-                max_x: 63,
-                max_y: 63
-            }
-        )));
-        assert!(v.contains(&(
-            0,
-            0,
-            Rect {
-                min_x: 0,
-                min_y: 61,
-                max_x: 2,
-                max_y: 63
-            }
-        )));
-        assert!(v.contains(&(
-            -1,
-            1,
-            Rect {
-                min_x: 62,
-                min_y: 0,
-                max_x: 63,
-                max_y: 1
-            }
-        )));
-        assert!(v.contains(&(
-            0,
-            1,
-            Rect {
-                min_x: 0,
-                min_y: 0,
-                max_x: 2,
-                max_y: 1
-            }
-        )));
+        assert!(v.contains(&(-1, 0, Rect { min_x: 62, min_y: 61, max_x: 63, max_y: 63 })));
+        assert!(v.contains(&(0, 0, Rect { min_x: 0, min_y: 61, max_x: 2, max_y: 63 })));
+        assert!(v.contains(&(-1, 1, Rect { min_x: 62, min_y: 0, max_x: 63, max_y: 1 })));
+        assert!(v.contains(&(0, 1, Rect { min_x: 0, min_y: 0, max_x: 2, max_y: 1 })));
     }
 
     #[test]
@@ -222,16 +172,7 @@ mod tests {
         // 原点のチャンクの左隣 (-1) の中だけに収まる
         assert_eq!(
             collect(-10, 5),
-            vec![(
-                -1,
-                0,
-                Rect {
-                    min_x: 52,
-                    min_y: 3,
-                    max_x: 56,
-                    max_y: 7
-                }
-            )]
+            vec![(-1, 0, Rect { min_x: 52, min_y: 3, max_x: 56, max_y: 7 })]
         );
     }
 
@@ -240,14 +181,6 @@ mod tests {
         let mut r = None;
         add_rect(&mut r, Rect::point(5, 6));
         add_rect(&mut r, Rect::point(2, 9));
-        assert_eq!(
-            r,
-            Some(Rect {
-                min_x: 2,
-                min_y: 6,
-                max_x: 5,
-                max_y: 9
-            })
-        );
+        assert_eq!(r, Some(Rect { min_x: 2, min_y: 6, max_x: 5, max_y: 9 }));
     }
 }

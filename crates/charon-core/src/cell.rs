@@ -48,14 +48,8 @@ pub const FLAG_BOUNCED: u8 = 1 << 5;
 
 impl Cell {
     /// 読み込まれていない領域を表すセル。
-    pub const BOUNDARY: Cell = Cell {
-        material: MaterialId::BOUNDARY,
-        flags: 0,
-        shade: 0,
-        temp: 0,
-        vy: 0,
-        life: 0,
-    };
+    pub const BOUNDARY: Cell =
+        Cell { material: MaterialId::BOUNDARY, flags: 0, shade: 0, temp: 0, vy: 0, life: 0 };
 
     /// `flag` のビットがすべて立っているか。
     pub const fn has(self, flag: u8) -> bool {
@@ -87,14 +81,8 @@ mod tests {
 
     #[test]
     fn flags_do_not_overlap() {
-        let all = [
-            FLAG_PARITY,
-            FLAG_FALLING,
-            FLAG_FLOW_RIGHT,
-            FLAG_BURNING,
-            FLAG_BODY,
-            FLAG_BOUNCED,
-        ];
+        let all =
+            [FLAG_PARITY, FLAG_FALLING, FLAG_FLOW_RIGHT, FLAG_BURNING, FLAG_BODY, FLAG_BOUNCED];
         let mut seen = 0u8;
         for f in all {
             assert_eq!(f.count_ones(), 1);

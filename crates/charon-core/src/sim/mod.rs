@@ -1,5 +1,6 @@
 //! セルのシミュレーション (仕様 02)。
 
+mod movement;
 pub mod neighborhood;
 mod step;
 

@@ -131,7 +131,7 @@ flowchart TD
 
 ```ron
 // 砂: 粉体。friction が小さいほどさらさら崩れる
-(name: "sand", phase: Powder, density: 1600, color: (218, 196, 128, 255), friction: 60),
+(name: "sand", phase: Powder, density: 1600, color: (218, 196, 128, 255), friction: 30),
 
 // スライム: 粘性の高い液体。ゆっくり垂れる
 (name: "slime", phase: Liquid, density: 1100, color: (120, 200, 80, 230),

@@ -13,11 +13,11 @@
 
     // ---- 粉体 ----
     (name: "sand", phase: Powder, density: 1600, color: (218, 196, 128, 255), color_variation: 16,
-     friction: 60, conductivity: 20),
+     friction: 30, conductivity: 20),
     (name: "dirt", phase: Powder, density: 1300, color: (104, 72, 44, 255), color_variation: 14,
-     friction: 220, conductivity: 15),
+     friction: 80, conductivity: 15),
     (name: "ash", phase: Powder, density: 500, color: (90, 88, 86, 255), color_variation: 20,
-     friction: 30, conductivity: 10),
+     friction: 10, conductivity: 10),
 
     // ---- 液体 ----
     (name: "water", phase: Liquid, density: 1000, color: (48, 110, 220, 190), color_variation: 4,

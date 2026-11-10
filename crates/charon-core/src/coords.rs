@@ -34,10 +34,7 @@ impl CellPos {
     ///
     /// 算術右シフトは負数でも床方向に丸める。割り算を使ってはいけない。
     pub const fn chunk(self) -> ChunkPos {
-        ChunkPos {
-            x: self.x >> CHUNK_SHIFT,
-            y: self.y >> CHUNK_SHIFT,
-        }
+        ChunkPos { x: self.x >> CHUNK_SHIFT, y: self.y >> CHUNK_SHIFT }
     }
 
     /// チャンク内の添字 (0..4096)。行優先: `ly * 64 + lx`。
@@ -53,10 +50,7 @@ impl ChunkPos {
 
     /// このチャンクの左上のセル。
     pub const fn origin(self) -> CellPos {
-        CellPos {
-            x: self.x << CHUNK_SHIFT,
-            y: self.y << CHUNK_SHIFT,
-        }
+        CellPos { x: self.x << CHUNK_SHIFT, y: self.y << CHUNK_SHIFT }
     }
 }
 

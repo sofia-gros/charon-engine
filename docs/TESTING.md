@@ -42,6 +42,10 @@ pub fn world_from_ascii(art: &str, seed: u64) -> World;
 /// 世界の矩形 (x0..x1, y0..y1。終端は含まない) を文字の絵に戻す。行は改行で区切る。
 pub fn to_ascii(world: &World, x0: i32, y0: i32, x1: i32, y1: i32) -> String;
 
+/// 上が開いた箱の絵を作る。内側は幅 width、高さ height の空間で、左右と下が石の壁。
+/// 内側の左上は (1, 0)、床の上の行は y = height - 1。
+pub fn box_art(width: usize, height: usize) -> String;
+
 /// 文字から材質へ。`world_from_ascii` と `place` が使う。
 pub fn material_of(world: &World, ch: char) -> MaterialId;
 
@@ -50,6 +54,10 @@ pub fn place(world: &mut World, x: i32, y: i32, ch: char);
 
 /// 矩形 (両端を含む) を材質で埋める。
 pub fn fill(world: &mut World, x0: i32, y0: i32, x1: i32, y1: i32, ch: char);
+
+/// (x, 0) から材質を n 個、1 tick に 1 個ずつ落とす (置くたびに 1 tick 進める)。
+/// 注ぎ口が塞がって置けない状態が続いたら panic。
+pub fn pour(world: &mut World, x: i32, ch: char, n: usize);
 
 /// 世界全体で、その材質のセルを数える。
 pub fn count(world: &World, ch: char) -> usize;

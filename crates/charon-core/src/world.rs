@@ -21,19 +21,12 @@ pub struct World {
 impl World {
     /// 空のワールド。
     pub fn new(materials: Arc<MaterialTable>, seed: u64) -> Self {
-        Self {
-            chunks: HashMap::new(),
-            materials,
-            seed,
-            tick: 0,
-        }
+        Self { chunks: HashMap::new(), materials, seed, tick: 0 }
     }
 
     /// 全セルが空のチャンクを追加する。既にあれば何もしない。
     pub fn insert_chunk(&mut self, pos: ChunkPos) {
-        self.chunks
-            .entry(pos)
-            .or_insert_with(|| Box::new(Chunk::new()));
+        self.chunks.entry(pos).or_insert_with(|| Box::new(Chunk::new()));
     }
 
     /// セルを読む。チャンクがなければ `BOUNDARY` のセルを返す。
@@ -58,10 +51,7 @@ impl World {
     pub fn keep_awake(&mut self, pos: CellPos) {
         let cpos = pos.chunk();
         wake_region(pos.x & CHUNK_MASK, pos.y & CHUNK_MASK, |dcx, dcy, rect| {
-            if let Some(c) = self
-                .chunks
-                .get_mut(&ChunkPos::new(cpos.x + dcx, cpos.y + dcy))
-            {
+            if let Some(c) = self.chunks.get_mut(&ChunkPos::new(cpos.x + dcx, cpos.y + dcy)) {
                 add_rect(&mut c.next_dirty, rect);
             }
         });
@@ -94,10 +84,7 @@ impl World {
 
     /// `dirty` または `next_dirty` が `Some` のチャンクの数。0 なら世界全体が休眠している。
     pub fn awake_chunks(&self) -> usize {
-        self.chunks
-            .values()
-            .filter(|c| c.dirty.is_some() || c.next_dirty.is_some())
-            .count()
+        self.chunks.values().filter(|c| c.dirty.is_some() || c.next_dirty.is_some()).count()
     }
 
     /// 読み込まれているチャンクの位置。昇順。
@@ -122,16 +109,7 @@ impl World {
             for c in chunk.cells.iter() {
                 let [m0, m1] = c.material.0.to_le_bytes();
                 let [t0, t1] = c.temp.to_le_bytes();
-                for b in [
-                    m0,
-                    m1,
-                    c.flags & !FLAG_PARITY,
-                    c.shade,
-                    t0,
-                    t1,
-                    c.vy as u8,
-                    c.life,
-                ] {
+                for b in [m0, m1, c.flags & !FLAG_PARITY, c.shade, t0, t1, c.vy as u8, c.life] {
                     mix(b);
                 }
             }
@@ -220,15 +198,7 @@ mod tests {
         let water = w.make_cell(id(&w, "water"), p);
         w.set(p, water);
         let c = w.chunk(ChunkPos::new(0, 0)).unwrap();
-        assert_eq!(
-            c.next_dirty,
-            Some(Rect {
-                min_x: 8,
-                min_y: 18,
-                max_x: 12,
-                max_y: 22
-            })
-        );
+        assert_eq!(c.next_dirty, Some(Rect { min_x: 8, min_y: 18, max_x: 12, max_y: 22 }));
         assert_eq!(c.render_dirty, Some(Rect::point(10, 20)));
         assert!(!c.collider_dirty, "液体は当たり判定に関係しない");
         assert_eq!(w.awake_chunks(), 1);
@@ -245,19 +215,8 @@ mod tests {
         w.set(p, water);
         assert_eq!(w.awake_chunks(), 4);
         let right = w.chunk(ChunkPos::new(1, 0)).unwrap();
-        assert_eq!(
-            right.next_dirty,
-            Some(Rect {
-                min_x: 0,
-                min_y: 61,
-                max_x: 1,
-                max_y: 63
-            })
-        );
-        assert_eq!(
-            right.render_dirty, None,
-            "隣のチャンクのセルは変わっていない"
-        );
+        assert_eq!(right.next_dirty, Some(Rect { min_x: 0, min_y: 61, max_x: 1, max_y: 63 }));
+        assert_eq!(right.render_dirty, None, "隣のチャンクのセルは変わっていない");
     }
 
     #[test]

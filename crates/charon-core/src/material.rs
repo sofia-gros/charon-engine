@@ -65,16 +65,9 @@ pub enum MaterialError {
     /// 同じ名前が 2 回定義された (組み込みの `empty`、`boundary` との重複を含む)。
     DuplicateName(String),
     /// 定義されていない材質への参照。
-    UnknownReference {
-        material: String,
-        field: &'static str,
-        target: String,
-    },
+    UnknownReference { material: String, field: &'static str, target: String },
     /// 値の検査に違反した。
-    Invalid {
-        material: String,
-        reason: &'static str,
-    },
+    Invalid { material: String, reason: &'static str },
     /// 材質数が上限を超えた。
     TooMany,
 }
@@ -84,11 +77,7 @@ impl fmt::Display for MaterialError {
         match self {
             Self::Parse(e) => write!(f, "材質の定義を読めません: {e}"),
             Self::DuplicateName(n) => write!(f, "材質 \"{n}\" が重複しています"),
-            Self::UnknownReference {
-                material,
-                field,
-                target,
-            } => {
+            Self::UnknownReference { material, field, target } => {
                 write!(
                     f,
                     "材質 \"{material}\" の {field} が未定義の材質 \"{target}\" を指しています"
@@ -241,10 +230,7 @@ impl MaterialTable {
             builtin_material("boundary", Phase::Solid, u16::MAX, 0),
         ];
         for raw in raws {
-            let invalid = |reason| MaterialError::Invalid {
-                material: raw.name.clone(),
-                reason,
-            };
+            let invalid = |reason| MaterialError::Invalid { material: raw.name.clone(), reason };
             if raw.max_speed > 127 {
                 return Err(invalid("max_speed は 127 以下にする"));
             }
@@ -258,23 +244,15 @@ impl MaterialTable {
             }
 
             let resolve = |field: &'static str, target: &str| {
-                by_name
-                    .get(target)
-                    .copied()
-                    .ok_or_else(|| MaterialError::UnknownReference {
-                        material: raw.name.clone(),
-                        field,
-                        target: target.to_string(),
-                    })
+                by_name.get(target).copied().ok_or_else(|| MaterialError::UnknownReference {
+                    material: raw.name.clone(),
+                    field,
+                    target: target.to_string(),
+                })
             };
             let transition = |field: &'static str, t: &Option<RawTransition>| {
                 t.as_ref()
-                    .map(|t| {
-                        Ok(Transition {
-                            at: t.at,
-                            into: resolve(field, &t.into)?,
-                        })
-                    })
+                    .map(|t| Ok(Transition { at: t.at, into: resolve(field, &t.into)? }))
                     .transpose()
             };
 
@@ -316,9 +294,7 @@ impl MaterialTable {
 
     /// 添字で引く。範囲外は `boundary` を返す。
     pub fn get(&self, id: MaterialId) -> &Material {
-        self.materials
-            .get(id.0 as usize)
-            .unwrap_or(&self.materials[1])
+        self.materials.get(id.0 as usize).unwrap_or(&self.materials[1])
     }
 
     /// 名前から ID を引く。
@@ -357,10 +333,7 @@ mod tests {
         let t = MaterialTable::from_ron("[]").unwrap();
         assert_eq!(t.len(), 2);
         let empty = t.get(MaterialId::EMPTY);
-        assert_eq!(
-            (empty.phase, empty.density, empty.conductivity),
-            (Phase::Empty, 0, 8)
-        );
+        assert_eq!((empty.phase, empty.density, empty.conductivity), (Phase::Empty, 0, 8));
         let boundary = t.get(MaterialId::BOUNDARY);
         assert_eq!((boundary.phase, boundary.density), (Phase::Solid, u16::MAX));
     }
@@ -370,10 +343,7 @@ mod tests {
         let t = MaterialTable::from_ron(&format!("[{SAND}]")).unwrap();
         let m = t.get(MaterialId(2));
         assert_eq!((m.gravity, m.max_speed, m.initial_temp), (4, 96, 20));
-        assert_eq!(
-            (m.burn_into, m.decay_into),
-            (MaterialId::EMPTY, MaterialId::EMPTY)
-        );
+        assert_eq!((m.burn_into, m.decay_into), (MaterialId::EMPTY, MaterialId::EMPTY));
         assert_eq!(m.rigid_friction, 0.6);
     }
 
@@ -385,13 +355,7 @@ mod tests {
         ]"#;
         let t = MaterialTable::from_ron(src).unwrap();
         let water = t.get(t.id("water").unwrap());
-        assert_eq!(
-            water.boil,
-            Some(Transition {
-                at: 100,
-                into: t.id("steam").unwrap()
-            })
-        );
+        assert_eq!(water.boil, Some(Transition { at: 100, into: t.id("steam").unwrap() }));
     }
 
     #[test]
@@ -405,10 +369,7 @@ mod tests {
         let src = r#"[(name: "a", phase: Solid, color: (0, 0, 0, 0), decay_into: "nope")]"#;
         assert!(matches!(
             MaterialTable::from_ron(src),
-            Err(MaterialError::UnknownReference {
-                field: "decay_into",
-                ..
-            })
+            Err(MaterialError::UnknownReference { field: "decay_into", .. })
         ));
     }
 
@@ -420,10 +381,7 @@ mod tests {
             Some(MaterialError::DuplicateName("sand".to_string()))
         );
         let src = r#"[(name: "empty", phase: Solid, color: (0, 0, 0, 0))]"#;
-        assert!(matches!(
-            MaterialTable::from_ron(src),
-            Err(MaterialError::DuplicateName(_))
-        ));
+        assert!(matches!(MaterialTable::from_ron(src), Err(MaterialError::DuplicateName(_))));
     }
 
     #[test]
@@ -442,9 +400,6 @@ mod tests {
     #[test]
     fn unknown_field_is_error() {
         let src = r#"[(name: "a", phase: Solid, color: (0, 0, 0, 0), typo: 1)]"#;
-        assert!(matches!(
-            MaterialTable::from_ron(src),
-            Err(MaterialError::Parse(_))
-        ));
+        assert!(matches!(MaterialTable::from_ron(src), Err(MaterialError::Parse(_))));
     }
 }

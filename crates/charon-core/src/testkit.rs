@@ -34,18 +34,11 @@ const LEGEND: &[(char, &str)] = &[
 /// 絵を覆うのに必要なチャンクを作り、絵の外側のセルはすべて石で埋める。
 /// 各行の前後の空白と空行は無視する。全行の長さが同じでなければ panic。
 pub fn world_from_ascii(art: &str, seed: u64) -> World {
-    let rows: Vec<Vec<char>> = art
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|l| l.chars().collect())
-        .collect();
+    let rows: Vec<Vec<char>> =
+        art.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.chars().collect()).collect();
     assert!(!rows.is_empty(), "絵が空です");
     let width = rows[0].len();
-    assert!(
-        rows.iter().all(|r| r.len() == width),
-        "絵の行の長さが揃っていません"
-    );
+    assert!(rows.iter().all(|r| r.len() == width), "絵の行の長さが揃っていません");
     let height = rows.len();
 
     let materials = MaterialTable::builtin().expect("assets/materials.ron を読めません");
@@ -60,17 +53,26 @@ pub fn world_from_ascii(art: &str, seed: u64) -> World {
 
     for y in 0..(chunks_y + 1) * CHUNK_SIZE {
         for x in 0..(chunks_x + 1) * CHUNK_SIZE {
-            let ch = rows
-                .get(y as usize)
-                .and_then(|r| r.get(x as usize))
-                .copied()
-                .unwrap_or('#');
+            let ch = rows.get(y as usize).and_then(|r| r.get(x as usize)).copied().unwrap_or('#');
             if ch != '.' {
                 place(&mut world, x, y, ch);
             }
         }
     }
     world
+}
+
+/// 上が開いた箱の絵を作る。内側は幅 `width`、高さ `height` の空間で、左右と下が石の壁。
+/// 内側の左上は `(1, 0)`、床の上の行は `y = height - 1`。
+pub fn box_art(width: usize, height: usize) -> String {
+    let mut art = String::new();
+    for _ in 0..height {
+        art.push('#');
+        art.push_str(&".".repeat(width));
+        art.push_str("#\n");
+    }
+    art.push_str(&"#".repeat(width + 2));
+    art
 }
 
 /// 世界の矩形 (`x0..x1`、`y0..y1`。終端は含まない) を文字の絵に戻す。行は改行で区切る。
@@ -83,11 +85,7 @@ pub fn to_ascii(world: &World, x0: i32, y0: i32, x1: i32, y1: i32) -> String {
         }
         for x in x0..x1 {
             let name = &materials.get(world.get(CellPos::new(x, y)).material).name;
-            let ch = LEGEND
-                .iter()
-                .find(|(_, n)| n == name)
-                .map(|(c, _)| *c)
-                .unwrap_or('?');
+            let ch = LEGEND.iter().find(|(_, n)| n == name).map(|(c, _)| *c).unwrap_or('?');
             out.push(ch);
         }
     }
@@ -101,16 +99,19 @@ pub fn material_of(world: &World, ch: char) -> MaterialId {
         .find(|(c, _)| *c == ch)
         .map(|(_, n)| *n)
         .unwrap_or_else(|| panic!("testkit が知らない文字です: {ch:?}"));
-    world
-        .materials()
-        .id(name)
-        .unwrap_or_else(|| panic!("材質 {name:?} が定義されていません"))
+    world.materials().id(name).unwrap_or_else(|| panic!("材質 {name:?} が定義されていません"))
 }
 
 /// `(x, y)` に材質を 1 個置く。
 pub fn place(world: &mut World, x: i32, y: i32, ch: char) {
     let pos = CellPos::new(x, y);
-    let cell = world.make_cell(material_of(world, ch), pos);
+    let material = material_of(world, ch);
+    // 空を置くときは、フラグも温度もない本当の「空」にする。
+    let cell = if material == MaterialId::EMPTY {
+        crate::cell::Cell::default()
+    } else {
+        world.make_cell(material, pos)
+    };
     world.set(pos, cell);
 }
 
@@ -123,6 +124,27 @@ pub fn fill(world: &mut World, x0: i32, y0: i32, x1: i32, y1: i32, ch: char) {
     }
 }
 
+/// `(x, 0)` から材質を `n` 個、1 tick に 1 個ずつ落とす (置くたびに 1 tick 進める)。
+/// 注ぎ口が塞がって置けない状態が続いたら panic。
+pub fn pour(world: &mut World, x: i32, ch: char, n: usize) {
+    let mut placed = 0;
+    let mut blocked = 0;
+    while placed < n {
+        if world.get(CellPos::new(x, 0)).material == MaterialId::EMPTY {
+            place(world, x, 0, ch);
+            placed += 1;
+            blocked = 0;
+        } else {
+            blocked += 1;
+            assert!(
+                blocked < 1000,
+                "注ぎ口 ({x}, 0) が塞がっています ({placed}/{n} 個を置いた時点)"
+            );
+        }
+        world.step();
+    }
+}
+
 /// 読み込まれている範囲 (セル単位。終端は含まない)。チャンクがなければ `None`。
 fn bounds(world: &World) -> Option<(i32, i32, i32, i32)> {
     let chunks = world.chunk_positions();
@@ -130,12 +152,7 @@ fn bounds(world: &World) -> Option<(i32, i32, i32, i32)> {
     let x1 = chunks.iter().map(|c| c.x).max()?;
     let y0 = chunks.iter().map(|c| c.y).min()?;
     let y1 = chunks.iter().map(|c| c.y).max()?;
-    Some((
-        x0 * CHUNK_SIZE,
-        y0 * CHUNK_SIZE,
-        (x1 + 1) * CHUNK_SIZE,
-        (y1 + 1) * CHUNK_SIZE,
-    ))
+    Some((x0 * CHUNK_SIZE, y0 * CHUNK_SIZE, (x1 + 1) * CHUNK_SIZE, (y1 + 1) * CHUNK_SIZE))
 }
 
 /// 世界全体で、その材質のセルを数える。
@@ -156,11 +173,7 @@ pub fn column_heights(world: &World, ch: char, x0: i32, x1: i32) -> Vec<u32> {
         return vec![0; (x1 - x0).max(0) as usize];
     };
     (x0..x1)
-        .map(|x| {
-            (y0..y1)
-                .filter(|&y| world.get(CellPos::new(x, y)).material == id)
-                .count() as u32
-        })
+        .map(|x| (y0..y1).filter(|&y| world.get(CellPos::new(x, y)).material == id).count() as u32)
         .collect()
 }
 
@@ -191,11 +204,7 @@ pub fn assert_sleeps(world: &mut World, max_ticks: u64) {
     let awake: Vec<ChunkPos> = world
         .chunk_positions()
         .into_iter()
-        .filter(|&p| {
-            world
-                .chunk(p)
-                .is_some_and(|c| c.dirty.is_some() || c.next_dirty.is_some())
-        })
+        .filter(|&p| world.chunk(p).is_some_and(|c| c.dirty.is_some() || c.next_dirty.is_some()))
         .collect();
     let art = match bounds(world) {
         Some((x0, y0, x1, y1)) => to_ascii(world, x0, y0, x1, y1),
@@ -231,10 +240,7 @@ mod tests {
     #[test]
     fn ascii_roundtrip() {
         let world = world_from_ascii(ART, 1);
-        assert_eq!(
-            to_ascii(&world, 0, 0, 8, 4),
-            "#......#\n#..ss..#\n#wwwwww#\n########"
-        );
+        assert_eq!(to_ascii(&world, 0, 0, 8, 4), "#......#\n#..ss..#\n#wwwwww#\n########");
     }
 
     #[test]
