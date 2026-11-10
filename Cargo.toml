@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+repository = "https://github.com/sofia-gros/charon-engine"
+publish = false
+
+[workspace.lints.rust]
+# unsafe は検証済みの小さなモジュールでのみ、理由を書いたうえで個別に許可する。
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+# シミュレーションは最適化なしでは遅すぎて確認できないため、開発ビルドも軽く最適化する。
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+[profile.bench]
+debug = true
