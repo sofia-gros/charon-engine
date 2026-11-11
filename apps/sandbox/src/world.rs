@@ -1,14 +1,19 @@
 //! デスクトップと Android で共有する初期ワールド。
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 use charon_core::cell::{Cell, MaterialId};
 use charon_core::testkit::{box_art, fill, material_of, world_from_ascii};
 use charon_core::world::World;
 use charon_physics::{BodyError, PhysicsEngine};
+#[cfg(not(target_arch = "wasm32"))]
 use charon_world::generator::NoiseGenerator;
+#[cfg(not(target_arch = "wasm32"))]
 use charon_world::save::WorldMeta;
+#[cfg(not(target_arch = "wasm32"))]
 use charon_world::streaming::Streamer;
 
 pub(crate) fn make_world(seed: u64) -> World {
@@ -40,6 +45,7 @@ pub(crate) fn demo_body(world: &World) -> Result<PhysicsEngine, BodyError> {
     Ok(physics)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn open(
     root: &Path,
 ) -> Result<(World, Streamer, WorldMeta, PhysicsEngine), Box<dyn std::error::Error>> {

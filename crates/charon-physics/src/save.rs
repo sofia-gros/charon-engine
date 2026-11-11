@@ -1,8 +1,12 @@
 //! 仕様 04 §3 / ロードマップ T6.9: 剛体をスタンプから分離して保存する。
 
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::{self, OpenOptions};
-use std::io::{self, Cursor, Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write;
+use std::io::{self, Cursor, Read};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use charon_core::cell::{Cell, FLAG_BODY, FLAG_PARITY, MaterialId};
@@ -65,13 +69,12 @@ fn read_f32(cursor: &mut Cursor<&[u8]>) -> Result<f32, BodySaveError> {
 }
 
 impl PhysicsEngine {
-    /// `world.ron` の材質名順を使い、スタンプでない剛体本体と速度を保存する。
-    pub fn save_bodies(
+    /// `world.ron` の材質名順を使い、スタンプでない剛体本体と速度を符号化する。
+    pub fn encode_bodies(
         &self,
-        root: &Path,
         materials: &MaterialTable,
         saved_names: &[String],
-    ) -> Result<(), BodySaveError> {
+    ) -> Result<Vec<u8>, BodySaveError> {
         let count = u32::try_from(self.bodies.len()).map_err(|_| BodySaveError::InvalidData)?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
@@ -111,6 +114,18 @@ impl PhysicsEngine {
                 bytes.push(cell.life);
             }
         }
+        Ok(bytes)
+    }
+
+    /// ネイティブでは一時ファイルを書いてから剛体ファイルを置換する。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_bodies(
+        &self,
+        root: &Path,
+        materials: &MaterialTable,
+        saved_names: &[String],
+    ) -> Result<(), BodySaveError> {
+        let bytes = self.encode_bodies(materials, saved_names)?;
         fs::create_dir_all(root)?;
         let path = root.join("bodies.bin");
         for suffix in 0..32 {
@@ -140,6 +155,7 @@ impl PhysicsEngine {
     }
 
     /// 保存ファイルがなければ None。全件の検証後だけ復元結果を返す。
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load_bodies(
         root: &Path,
         materials: &MaterialTable,
@@ -150,7 +166,16 @@ impl PhysicsEngine {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let mut cursor = Cursor::new(bytes.as_slice());
+        Self::decode_bodies(&bytes, materials, saved_names).map(Some)
+    }
+
+    /// ブラウザーの保存アダプターが渡したバイト列を検証して復元する。
+    pub fn decode_bodies(
+        bytes: &[u8],
+        materials: &MaterialTable,
+        saved_names: &[String],
+    ) -> Result<Self, BodySaveError> {
+        let mut cursor = Cursor::new(bytes);
         if &read::<4>(&mut cursor)? != MAGIC {
             return Err(BodySaveError::InvalidData);
         }
@@ -204,6 +229,6 @@ impl PhysicsEngine {
         if cursor.position() as usize != bytes.len() {
             return Err(BodySaveError::InvalidData);
         }
-        Ok(Some(engine))
+        Ok(engine)
     }
 }

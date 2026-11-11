@@ -1,5 +1,7 @@
 //! 仕様 06 §6〜§7: 固定 tick と、ウィンドウ・サーフェスの復帰管理。
 
+#[cfg(target_arch = "wasm32")]
+mod browser_storage;
 mod gesture;
 mod pointer;
 mod replay;
@@ -10,8 +12,13 @@ pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
 pub use timestep::FixedTimestep;
 
+#[cfg(target_arch = "wasm32")]
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -26,14 +33,22 @@ use charon_render::{
 };
 use charon_world::background::BackgroundWorld;
 use charon_world::building::{BuildOp, Layer, apply_build};
+#[cfg(target_arch = "wasm32")]
+use charon_world::generator::ChunkGenerator;
 use charon_world::save::WorldMeta;
+#[cfg(target_arch = "wasm32")]
+use charon_world::streaming::MemoryStore;
 use charon_world::streaming::Streamer;
+#[cfg(target_arch = "wasm32")]
+use charon_world::web_save::WebSnapshot;
 use gesture::TouchGestures;
 use ui::Gui;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+#[cfg(target_arch = "wasm32")]
+use winit::platform::web::{EventLoopExtWebSys, WindowExtWebSys};
 use winit::window::{Window, WindowId};
 
 /// 初期ワールドを受け取り、どのプラットフォームでも同じイベント処理を走らせる。
@@ -47,8 +62,72 @@ pub fn run(
     event_loop.run_app(&mut App::new(world, brush_material, make_world))
 }
 
+/// ブラウザー上で同じ描画・入力ループを使い、保存だけ Web アダプターへ渡す。
+#[cfg(target_arch = "wasm32")]
+pub fn run_web(
+    event_loop: EventLoop<()>,
+    world: World,
+    brush_material: MaterialId,
+    make_world: fn(u64) -> World,
+    generator: Arc<dyn ChunkGenerator>,
+    physics: PhysicsEngine,
+) -> Result<(), String> {
+    let materials = Arc::clone(world.materials());
+    let mut app = App::new(world, brush_material, make_world);
+    app.physics = physics;
+    app.physics_initialized = false;
+    let mut metadata = WorldMeta::new(app.world.seed(), &materials);
+    let store = Arc::new(MemoryStore::new());
+    match browser_storage::load() {
+        Ok(Some(snapshot)) => {
+            let restored = BackgroundWorld::from_bytes(
+                &snapshot.background,
+                &materials,
+                &snapshot.metadata.materials,
+            )
+            .map_err(|err| err.to_string())
+            .and_then(|background| {
+                PhysicsEngine::decode_bodies(
+                    &snapshot.bodies,
+                    &materials,
+                    &snapshot.metadata.materials,
+                )
+                .map(|physics| (background, physics))
+                .map_err(|err| err.to_string())
+            });
+            match restored {
+                Ok((background, physics)) => {
+                    store.restore(snapshot.chunks).map_err(|err| err.to_string())?;
+                    metadata = snapshot.metadata;
+                    app.world = World::new(Arc::clone(&materials), metadata.seed);
+                    app.world.restore_tick(metadata.tick);
+                    app.background = background;
+                    app.physics = physics;
+                    app.web_status = format!("保存済み: tick {} を読み込みました", metadata.tick);
+                }
+                Err(err) => app.web_status = format!("未保存: 保存データを復元できません: {err}"),
+            }
+        }
+        Ok(None) => {}
+        Err(err) => app.web_status = format!("未保存: {err}"),
+    }
+    let streamer = Streamer::with_memory_store(
+        Arc::clone(&store),
+        materials,
+        metadata.seed,
+        generator,
+        3,
+        metadata.materials.clone(),
+    )
+    .map_err(|err| err.to_string())?;
+    app.streaming = Some(StreamingState { streamer, metadata, store });
+    event_loop.spawn_app(app);
+    Ok(())
+}
+
 /// 無限ワールドと保存を接続してウィンドウを起動する。
 /// 起動に必要なワールド・保存先・物理状態をそれぞれ明示的に渡す。
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_with_streaming(
     event_loop: EventLoop<()>,
@@ -75,8 +154,11 @@ pub fn run_with_streaming(
 
 struct StreamingState {
     streamer: Streamer,
+    #[cfg(not(target_arch = "wasm32"))]
     save_root: PathBuf,
     metadata: WorldMeta,
+    #[cfg(target_arch = "wasm32")]
+    store: Arc<charon_world::streaming::MemoryStore>,
 }
 
 #[derive(Debug)]
@@ -102,6 +184,12 @@ struct Grab {
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuContext>,
+    #[cfg(target_arch = "wasm32")]
+    gpu_pending: Rc<RefCell<Option<Result<GpuContext, String>>>>,
+    #[cfg(target_arch = "wasm32")]
+    gpu_generation: Rc<Cell<u64>>,
+    #[cfg(target_arch = "wasm32")]
+    web_status: String,
     passes: Option<PassList>,
     gui: Option<Gui>,
     world: World,
@@ -111,6 +199,7 @@ struct App {
     physics_initialized: bool,
     grab: Option<Grab>,
     streaming: Option<StreamingState>,
+    #[cfg(not(target_arch = "wasm32"))]
     make_world: fn(u64) -> World,
     operations: Vec<BrushOp>,
     brush_material: MaterialId,
@@ -123,9 +212,17 @@ struct App {
 
 impl App {
     fn new(world: World, brush_material: MaterialId, make_world: fn(u64) -> World) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        let _ = make_world;
         Self {
             window: None,
             gpu: None,
+            #[cfg(target_arch = "wasm32")]
+            gpu_pending: Rc::new(RefCell::new(None)),
+            #[cfg(target_arch = "wasm32")]
+            gpu_generation: Rc::new(Cell::new(0)),
+            #[cfg(target_arch = "wasm32")]
+            web_status: "未保存".to_owned(),
             passes: None,
             gui: None,
             world,
@@ -135,6 +232,7 @@ impl App {
             physics_initialized: true,
             grab: None,
             streaming: None,
+            #[cfg(not(target_arch = "wasm32"))]
             make_world,
             operations: Vec::new(),
             brush_material,
@@ -224,6 +322,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn save_world(&mut self) -> Result<(), String> {
         let Some(mut state) = self.streaming.take() else { return Ok(()) };
         // 剛体は次の保存タスクで別ファイルに記録する。スタンプを地形として残さない。
@@ -240,6 +339,58 @@ impl App {
         state.metadata.save(&state.save_root).map_err(|err| err.to_string())
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn save_browser(&mut self) -> Result<(), String> {
+        let state = self.streaming.as_mut().ok_or("Web の保存領域がありません")?;
+        let initialized = self.physics_initialized;
+        if initialized {
+            self.physics.unstamp_all(&mut self.world);
+        }
+        let result = (|| {
+            state.streamer.save_loaded(&self.world).map_err(|err| err.to_string())?;
+            state.streamer.flush().map_err(|err| err.to_string())?;
+            state.metadata.tick = self.world.tick();
+            let snapshot = WebSnapshot {
+                metadata: state.metadata.clone(),
+                chunks: state.store.snapshot().map_err(|err| err.to_string())?,
+                background: self
+                    .background
+                    .to_bytes(self.world.materials(), &state.metadata.materials)
+                    .map_err(|err| err.to_string())?,
+                bodies: self
+                    .physics
+                    .encode_bodies(self.world.materials(), &state.metadata.materials)
+                    .map_err(|err| err.to_string())?,
+            };
+            browser_storage::save(&snapshot)
+        })();
+        if initialized {
+            self.physics.stamp_all(&mut self.world);
+        }
+        result
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn update_web_save_status(&mut self, result: Result<(), String>) {
+        self.web_status = match result {
+            Ok(()) => format!("保存済み: tick {}", self.world.tick()),
+            Err(err) => format!("未保存: {err}"),
+        };
+        if let Some(gui) = self.gui.as_mut() {
+            gui.controls.web_status.clone_from(&self.web_status);
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn process_actions(&mut self, _size: winit::dpi::PhysicalSize<u32>) {
+        let save = self.gui.as_mut().is_some_and(|gui| std::mem::take(&mut gui.controls.web_save));
+        if save {
+            let result = self.save_browser();
+            self.update_web_save_status(result);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn process_actions(&mut self, size: winit::dpi::PhysicalSize<u32>) {
         const REPLAY_FILE: &str = "charon-sandbox-replay.ron";
         let Some(gui) = self.gui.as_mut() else { return };
@@ -344,6 +495,9 @@ impl App {
                     })
                 });
                 if !ready {
+                    // 保存状態の初回読み込み中も tick を進め、30 tick 後の挿入を待つ。
+                    // 剛体スタンプは対応チャンクが来るまで作らない。
+                    world.step();
                     return;
                 }
                 physics.stamp_all(world);
@@ -544,16 +698,35 @@ fn apply_build_pointer(
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_arch = "wasm32")]
+        self.gpu_generation.set(self.gpu_generation.get().wrapping_add(1));
         self.timer.reset();
         self.previous = None;
         self.pointer = PointerInput::default();
         self.gestures = TouchGestures::default();
         self.release_grab();
         self.occluded = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let initial_size = LogicalSize::new(1024, 768);
+        #[cfg(target_arch = "wasm32")]
+        let initial_size = {
+            let viewport = web_sys::window();
+            let width = viewport
+                .as_ref()
+                .and_then(|web| web.inner_width().ok())
+                .and_then(|value| value.as_f64())
+                .map_or(1024.0, |value| value.clamp(320.0, 1440.0));
+            let height = viewport
+                .as_ref()
+                .and_then(|web| web.inner_height().ok())
+                .and_then(|value| value.as_f64())
+                .map_or(768.0, |value| value.clamp(300.0, 1000.0));
+            LogicalSize::new(width - 32.0, height - 120.0)
+        };
         let window = match event_loop.create_window(
             Window::default_attributes()
                 .with_title("Charon — live world")
-                .with_inner_size(LogicalSize::new(1024, 768)),
+                .with_inner_size(initial_size),
         ) {
             Ok(window) => Arc::new(window),
             Err(err) => {
@@ -563,6 +736,27 @@ impl ApplicationHandler for App {
             }
         };
         let size = window.inner_size();
+        #[cfg(target_arch = "wasm32")]
+        {
+            let Some(host) = web_sys::window()
+                .and_then(|web| web.document())
+                .and_then(|document| document.get_element_by_id("charon-canvas"))
+            else {
+                eprintln!("Web のキャンバス置き場がありません");
+                event_loop.exit();
+                return;
+            };
+            let Some(canvas) = window.canvas() else {
+                eprintln!("Web のキャンバスを取得できません");
+                event_loop.exit();
+                return;
+            };
+            if host.append_child(&canvas).is_err() {
+                eprintln!("Web のキャンバスを配置できません");
+                event_loop.exit();
+                return;
+            }
+        }
         if let Some(gpu) = &mut self.gpu {
             if let Err(err) = gpu.recreate_surface(Arc::clone(&window), size.width, size.height) {
                 eprintln!("サーフェスの復帰に失敗: {err}");
@@ -573,6 +767,7 @@ impl ApplicationHandler for App {
             let descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
                 event_loop.owned_display_handle(),
             ));
+            #[cfg(not(target_arch = "wasm32"))]
             match pollster::block_on(GpuContext::new(
                 descriptor,
                 Arc::clone(&window),
@@ -586,6 +781,25 @@ impl ApplicationHandler for App {
                     return;
                 }
             }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let pending = Rc::clone(&self.gpu_pending);
+                let generation = Rc::clone(&self.gpu_generation);
+                let current = generation.get();
+                let wake = Arc::clone(&window);
+                wasm_bindgen_futures::spawn_local(async move {
+                    let result =
+                        GpuContext::new(descriptor, Arc::clone(&wake), size.width, size.height)
+                            .await
+                            .map_err(|err| err.to_string());
+                    if generation.get() == current {
+                        *pending.borrow_mut() = Some(result);
+                        wake.request_redraw();
+                    }
+                });
+                self.window = Some(window);
+                return;
+            }
         }
         if let Err(err) = self.init_passes(size) {
             eprintln!("描画パスの初期化に失敗: {err}");
@@ -597,6 +811,11 @@ impl ApplicationHandler for App {
             let mut gui = Gui::new(gpu, &window, self.brush_material);
             if let Some(controls) = previous {
                 gui.controls = controls;
+            } else {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    gui.controls.web_status = self.web_status.clone();
+                }
             }
             self.gui = Some(gui);
         }
@@ -605,6 +824,13 @@ impl ApplicationHandler for App {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.gpu_generation.set(self.gpu_generation.get().wrapping_add(1));
+            self.gpu_pending.borrow_mut().take();
+            let result = self.save_browser();
+            self.update_web_save_status(result);
+        }
         if let Some(gpu) = &mut self.gpu {
             gpu.suspend();
         }
@@ -619,6 +845,42 @@ impl ApplicationHandler for App {
         let Some(window) = self.window.as_ref().map(Arc::clone) else { return };
         if window.id() != id {
             return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if self.gpu.is_none() && matches!(&event, WindowEvent::RedrawRequested) {
+            let ready = self.gpu_pending.borrow_mut().take();
+            if let Some(result) = ready {
+                match result {
+                    Ok(gpu) => self.gpu = Some(gpu),
+                    Err(err) => {
+                        eprintln!("GPU の初期化に失敗: {err}");
+                        if let Some(status) = web_sys::window()
+                            .and_then(|web| web.document())
+                            .and_then(|document| document.get_element_by_id("status"))
+                        {
+                            status.set_text_content(Some(&format!("GPU の初期化に失敗: {err}")));
+                        }
+                        event_loop.exit();
+                        return;
+                    }
+                }
+                if let Err(err) = self.init_passes(window.inner_size()) {
+                    eprintln!("Web の描画パスの作成に失敗: {err}");
+                    event_loop.exit();
+                    return;
+                }
+                if let Some(gpu) = &self.gpu {
+                    let mut gui = Gui::new(gpu, &window, self.brush_material);
+                    gui.controls.web_status = self.web_status.clone();
+                    self.gui = Some(gui);
+                }
+                if let Some(status) = web_sys::window()
+                    .and_then(|web| web.document())
+                    .and_then(|document| document.get_element_by_id("status"))
+                {
+                    status.set_text_content(Some("実行中 — ワールドの保存は Sandbox パネルから"));
+                }
+            }
         }
         let consumed = self.gui.as_mut().is_some_and(|gui| gui.on_event(&window, &event));
         let gesture = if let (WindowEvent::Touch(touch), Some(gui)) = (&event, self.gui.as_mut()) {

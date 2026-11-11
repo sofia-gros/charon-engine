@@ -3,9 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 
@@ -14,9 +15,13 @@ use charon_core::coords::ChunkPos;
 use charon_core::material::MaterialTable;
 use charon_core::world::World;
 
+use crate::RegionError;
 use crate::generator::ChunkGenerator;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::material_names;
-use crate::region::{RegionError, RegionStore};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::region::RegionStore;
+use crate::{decode_chunk, encode_chunk_with_names};
 
 const MAX_PER_TICK: usize = 4;
 pub const LOAD_DELAY: u64 = 30;
@@ -63,8 +68,85 @@ struct Pending {
     due: u64,
 }
 
+/// Web が永続ストレージから読み出した圧縮済みチャンクを保持する。
+/// ブラウザー API とファイル API はここから呼ばない。
+#[derive(Debug, Default)]
+pub struct MemoryStore {
+    chunks: Mutex<BTreeMap<ChunkPos, Vec<u8>>>,
+}
+
+impl MemoryStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> Result<BTreeMap<ChunkPos, Vec<u8>>, StreamError> {
+        Ok(self.chunks.lock().map_err(|_| StreamError::WorkerClosed)?.clone())
+    }
+
+    pub fn restore(&self, chunks: BTreeMap<ChunkPos, Vec<u8>>) -> Result<(), StreamError> {
+        *self.chunks.lock().map_err(|_| StreamError::WorkerClosed)? = chunks;
+        Ok(())
+    }
+}
+
+enum ChunkStore {
+    #[cfg(not(target_arch = "wasm32"))]
+    Region(RegionStore),
+    Memory(Arc<MemoryStore>),
+}
+
+impl ChunkStore {
+    fn read(
+        &self,
+        pos: ChunkPos,
+        saved_names: &[String],
+        materials: Arc<MaterialTable>,
+    ) -> Result<Option<Chunk>, RegionError> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Region(store) => store.read_chunk(pos, saved_names, materials),
+            Self::Memory(store) => {
+                let chunks = store.chunks.lock().map_err(|_| {
+                    RegionError::Io(io::Error::other("チャンクのメモリ保存が利用できません"))
+                })?;
+                chunks
+                    .get(&pos)
+                    .map(|bytes| {
+                        decode_chunk(bytes, saved_names, materials).map_err(RegionError::from)
+                    })
+                    .transpose()
+            }
+        }
+    }
+
+    fn write(
+        &self,
+        pos: ChunkPos,
+        chunk: &Chunk,
+        materials: &MaterialTable,
+        saved_names: &[String],
+    ) -> Result<(), RegionError> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Region(store) => store.write_chunk_with_names(pos, chunk, materials, saved_names),
+            Self::Memory(store) => {
+                let bytes = encode_chunk_with_names(chunk, materials, saved_names)?;
+                store
+                    .chunks
+                    .lock()
+                    .map_err(|_| {
+                        RegionError::Io(io::Error::other("チャンクのメモリ保存が利用できません"))
+                    })?
+                    .insert(pos, bytes);
+                Ok(())
+            }
+        }
+    }
+}
+
 struct WorkContext {
-    store: RegionStore,
+    store: ChunkStore,
     generator: Arc<dyn ChunkGenerator>,
     materials: Arc<MaterialTable>,
     saved_names: Vec<String>,
@@ -83,7 +165,7 @@ impl WorkContext {
                 }
                 let result = self
                     .store
-                    .read_chunk(pos, &self.saved_names, Arc::clone(&self.materials))
+                    .read(pos, &self.saved_names, Arc::clone(&self.materials))
                     .map(|saved| {
                         saved.unwrap_or_else(|| {
                             self.generator.generate(self.seed, pos, &self.materials)
@@ -91,12 +173,9 @@ impl WorkContext {
                     });
                 Reply::Loaded { id, result }
             }
-            Job::Save { pos, chunk } => Reply::Saved(self.store.write_chunk_with_names(
-                pos,
-                &chunk,
-                &self.materials,
-                &self.saved_names,
-            )),
+            Job::Save { pos, chunk } => {
+                Reply::Saved(self.store.write(pos, &chunk, &self.materials, &self.saved_names))
+            }
         }
     }
 }
@@ -112,10 +191,7 @@ pub struct Streamer {
     sender: Option<Sender<Job>>,
     #[cfg(not(target_arch = "wasm32"))]
     worker: Option<JoinHandle<()>>,
-    #[cfg(target_arch = "wasm32")]
-    reply_sender: Sender<Reply>,
-    #[cfg(target_arch = "wasm32")]
-    context: WorkContext,
+    sync: Option<(Sender<Reply>, WorkContext)>,
 }
 
 impl fmt::Debug for Streamer {
@@ -130,6 +206,7 @@ impl fmt::Debug for Streamer {
 
 impl Streamer {
     /// 読み込み範囲の半径とワールド固有の生成器・保存場所を指定する。
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         root: impl Into<PathBuf>,
         materials: Arc<MaterialTable>,
@@ -142,6 +219,7 @@ impl Streamer {
     }
 
     /// 保存済み `world.ron` の材質名順を用いて古い ID を復元する。
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_saved_names(
         root: impl Into<PathBuf>,
         materials: Arc<MaterialTable>,
@@ -151,7 +229,29 @@ impl Streamer {
         saved_names: Vec<String>,
     ) -> Result<Self, StreamError> {
         Self::start(
-            root.into(),
+            ChunkStore::Region(RegionStore::new(root)),
+            materials,
+            seed,
+            generator,
+            load_radius,
+            saved_names,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    /// スレッドを使わずメモリの保存領域から同期的に読み書きする。
+    /// Web の永続保存は呼び出し側のアダプターが snapshot/restore で行う。
+    pub fn with_memory_store(
+        store: Arc<MemoryStore>,
+        materials: Arc<MaterialTable>,
+        seed: u64,
+        generator: Arc<dyn ChunkGenerator>,
+        load_radius: i32,
+        saved_names: Vec<String>,
+    ) -> Result<Self, StreamError> {
+        Self::start(
+            ChunkStore::Memory(store),
             materials,
             seed,
             generator,
@@ -172,11 +272,19 @@ impl Streamer {
         delay: Arc<dyn Fn(ChunkPos) + Send + Sync>,
     ) -> Result<Self, StreamError> {
         let names = material_names(&materials);
-        Self::start(root, materials, seed, generator, load_radius, names, Some(delay))
+        Self::start(
+            ChunkStore::Region(RegionStore::new(root)),
+            materials,
+            seed,
+            generator,
+            load_radius,
+            names,
+            Some(delay),
+        )
     }
 
     fn start(
-        root: PathBuf,
+        store: ChunkStore,
         materials: Arc<MaterialTable>,
         seed: u64,
         generator: Arc<dyn ChunkGenerator>,
@@ -185,7 +293,7 @@ impl Streamer {
         #[cfg(test)] delay: Option<Arc<dyn Fn(ChunkPos) + Send + Sync>>,
     ) -> Result<Self, StreamError> {
         let context = WorkContext {
-            store: RegionStore::new(root),
+            store,
             generator,
             saved_names,
             materials,
@@ -195,7 +303,7 @@ impl Streamer {
         };
         let (reply_sender, receiver) = mpsc::channel();
         #[cfg(not(target_arch = "wasm32"))]
-        {
+        if matches!(&context.store, ChunkStore::Region(_)) {
             let (sender, jobs) = mpsc::channel();
             let worker = thread::Builder::new()
                 .name("charon-world-stream".into())
@@ -205,7 +313,7 @@ impl Streamer {
                     }
                 })
                 .map_err(StreamError::Io)?;
-            Ok(Self {
+            return Ok(Self {
                 load_radius: load_radius.max(0),
                 pending: BTreeMap::new(),
                 ready: BTreeMap::new(),
@@ -213,20 +321,21 @@ impl Streamer {
                 receiver,
                 sender: Some(sender),
                 worker: Some(worker),
-            })
+                sync: None,
+            });
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            Ok(Self {
-                load_radius: load_radius.max(0),
-                pending: BTreeMap::new(),
-                ready: BTreeMap::new(),
-                next_id: 0,
-                receiver,
-                reply_sender,
-                context,
-            })
-        }
+        Ok(Self {
+            load_radius: load_radius.max(0),
+            pending: BTreeMap::new(),
+            ready: BTreeMap::new(),
+            next_id: 0,
+            receiver,
+            #[cfg(not(target_arch = "wasm32"))]
+            sender: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            worker: None,
+            sync: Some((reply_sender, context)),
+        })
     }
 
     /// 画面サイズや拡大率の変化に合わせて読み込み半径を更新する。
@@ -293,6 +402,11 @@ impl Streamer {
         Ok(())
     }
 
+    /// 同期 Web 保存ではキュー上の保存エラーを確認してから公開する。
+    pub fn flush(&mut self) -> Result<(), StreamError> {
+        self.drain()
+    }
+
     /// 終了時に読み込み済みの全チャンクも保存キューへ送る。
     pub fn save_loaded(&self, world: &World) -> Result<(), StreamError> {
         for pos in world.chunk_positions() {
@@ -316,6 +430,9 @@ impl Streamer {
     }
 
     fn dispatch(&self, job: Job) -> Result<(), StreamError> {
+        if let Some((reply_sender, context)) = &self.sync {
+            return reply_sender.send(context.process(job)).map_err(|_| StreamError::WorkerClosed);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.sender
@@ -325,9 +442,7 @@ impl Streamer {
                 .map_err(|_| StreamError::WorkerClosed)
         }
         #[cfg(target_arch = "wasm32")]
-        {
-            self.reply_sender.send(self.context.process(job)).map_err(|_| StreamError::WorkerClosed)
-        }
+        Err(StreamError::WorkerClosed)
     }
 
     fn drain(&mut self) -> Result<(), StreamError> {

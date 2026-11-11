@@ -7,9 +7,12 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-charon-core = { version = "0.1.0", path = "../charon-core" }
+charon-core = { version = "0.1.0", path = "../charon-core", default-features = false }
 earcutr = "0.5.0"
 rapier2d = { version = "0.36.1", features = ["enhanced-determinism"] }
+
+[features]
+default = ["charon-core/parallel"]
 
 [lints]
 workspace = true

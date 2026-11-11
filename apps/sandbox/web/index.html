@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Charon Sandbox</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.5 system-ui, sans-serif; background: #101724; color: #eef3fa; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #101724; }
+    header { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; padding: .6rem 1rem; }
+    header strong { letter-spacing: .06em; }
+    #status { color: #adc9de; }
+    #charon-canvas { padding: 0 1rem 1rem; width: 100%; overflow: hidden; }
+    #charon-canvas canvas { display: block; width: 100%; max-width: 100%; max-height: calc(100vh - 5rem); touch-action: none; border: 1px solid #36465e; border-radius: 8px; }
+    p { margin: .2rem 1rem 1rem; color: #afbbcc; }
+    @media (max-width: 600px) { #charon-canvas canvas { max-height: calc(100vh - 7rem); } }
+  </style>
+</head>
+<body>
+  <header><strong>CHARON / SANDBOX</strong><span id="status" role="status">起動中…</span></header>
+  <main id="charon-canvas"></main>
+  <p>左の Sandbox パネルで材質、停止・再開、保存を選べます。マウスまたは指でセルを置きます。</p>
+  <script type="module">
+    try {
+      const { default: init } = await import('./pkg/charon_sandbox.js');
+      await init();
+    } catch (error) {
+      document.getElementById('status').textContent = `起動できません: ${error}`;
+      console.error(error);
+    }
+  </script>
+</body>
+</html>

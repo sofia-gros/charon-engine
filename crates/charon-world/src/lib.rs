@@ -3,9 +3,13 @@
 pub mod background;
 pub mod building;
 pub mod generator;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod region;
+mod region_error;
+pub use region_error::RegionError;
 pub mod save;
 pub mod streaming;
+pub mod web_save;
 
 use std::collections::BTreeMap;
 use std::fmt;

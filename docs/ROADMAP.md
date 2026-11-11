@@ -51,7 +51,7 @@ FallingSandEngine の調査で見つかった問題に、それぞれ対応さ�
 | M5 | 無限ワールドと保存 | 完了（Windows 実機で移動・復帰・再起動を確認、Android 実機は依頼者の指示で免除） |
 | M6 | 剛体とパーティクル | 完了（Windows の T6.8 実機操作・撮影は依頼者の指示で免除、未検証。Android 実機も免除、未検証） |
 | M7 | ライティングと後処理 | 実装・自動テスト完了（T7.4 の Android 60 fps 実測は依頼者の指示で免除、未検証。Windows GUI 目視・撮影も未実施） |
-| M8 | ゲーム層 | 仕様 07 を追加。T8.1〜T8.5 の自動テストを実装、T8.6 以降は未完了。Windows GUI 目視・撮影は未検証 |
+| M8 | ゲーム層 | T8.1〜T8.8 の実装と自動テストを完了。T8.8 の実ブラウザー動作・保存は依頼者の指示で後日検証（未検証）。Windows GUI の操作・撮影も未検証 |
 
 ---
 
@@ -195,6 +195,9 @@ GPU オフスクリーンテストでは、空の見える地点が洞窟内よ�
 | T8.8 | Web ビルド、同期チャンク生成、実ブラウザーでの保存と操作 (07 §8) | `web_core_compiles`、`web_streaming_tick_is_deterministic`、`web_save_roundtrip`、`web_input_and_resume` |
 
 Web の実機結果と異種 OS の入力同期は、自動テストだけから成功を推定しない。Android 実機検証は依頼者の継続指示により免除し、未検証と記録する。
+2026-11-12 の依頼者指示で、T8.8 の Web 実機確認は後日実施に変更。Windows 版の起動を当面の確認範囲とし、
+Web の `web_save_roundtrip`（ブラウザー）と `web_input_and_resume` は未検証のままにする。
+これらの完了を主張せず、未検証項目は [`PLATFORM_CHECK.md`](PLATFORM_CHECK.md) に残す。
 
 ---
 

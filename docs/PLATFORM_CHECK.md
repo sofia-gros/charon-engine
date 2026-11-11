@@ -26,3 +26,36 @@ Android の実機検証省略は**テスト成功を意味しない**。手順�
 これらは GUI の実機確認を代替しない。依頼者の 2026-11-11 の判断により、
 Windows 実機操作・撮影は未検証として免除し、後続タスクへ進む。
 Android 実機確認も依頼者の指示どおり省略（未検証）。
+
+## M8 Web サンドボックス (T8.8)
+
+2026-11-11: `charon-core` と `charon-sandbox --lib` の非並列 wasm32 ビルド・Clippy、
+`web_streaming_tick_is_deterministic`、保存形式のネイティブテスト `web_save_roundtrip`、
+`scripts/check.sh` は通過した。`cargo build -p charon-sandbox --lib --release
+--target wasm32-unknown-unknown --no-default-features` も通過した。
+これらはブラウザー上の実行・永続保存の成功を示さない。
+
+| 確認対象 | 状態 | 未実施の操作 |
+|---|---|---|
+| WebGPU | 未検証 | ブラウザーで起動・描画、マウスとタッチでセルを配置、ポーズ・再開、保存・再読込 |
+| WebGL2 | 未検証 | WebGPU を利用できない環境で同じ操作と復帰後の描画を確認 |
+| `web_save_roundtrip`（ブラウザー） | 未検証 | 保存した材質名・前景・背景・剛体を再読込後に照合 |
+| `web_input_and_resume`（ブラウザー） | 未検証 | ポインター操作と中断・復帰後の描画を確認 |
+| Android 実機・エミュレーター | 依頼者の指示で省略 | Web の検証から Android 動作を推定しない |
+
+`wasm-bindgen-cli` のインストールはツールの安全判定で拒否された。
+`scripts/build-web.sh` は wasm の release ビルド後、6 行目で `wasm-bindgen: command not found`
+（終了コード 127）となり、JavaScript glue は生成されていない。
+2026-11-12: 依頼者は `wasm-bindgen-cli` のインストールを許可しなかったため、
+別経路で導入しない。保存状態の UI 表示を修正し、`scripts/check.sh` と wasm release ビルドを再実行して通過。
+JavaScript glue がないためサンドボックス本体の確認と撮影は未実施。
+ブラウザーで HTML ホストだけを開くと `pkg/charon_sandbox.js` が 404 となることを確認した。
+ホスト側は読み込み失敗を画面の状態欄に表示するよう修正し、ブラウザーで表示を確認した。
+これは `web_input_and_resume` や保存の実機検証を代替しない。
+
+2026-11-12: 依頼者は Windows 版の動作を当面の確認対象とし、その他の実機検証を後日に延期した。
+Windows の `charon-sandbox.exe` をビルドし、既存セーブを変更しない別の作業ディレクトリで起動。
+プロセスが生存し、`Charon — live world` というウィンドウタイトルが存在することを確認した。
+操作ツールがこの未インストール実行ファイルを許可対象として認識しなかったため、
+**画面の目視、マウス配置、最小化・復帰、スクリーンショットは未検証**。
+Windows の起動確認を WebGPU / WebGL2 の成功として扱わない。

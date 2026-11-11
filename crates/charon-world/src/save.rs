@@ -1,15 +1,19 @@
 //! 仕様 04 §3: `world.ron` に保存する世界のメタデータ。
 
 use std::fmt;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use charon_core::material::MaterialTable;
 use serde::{Deserialize, Serialize};
 
+use crate::RegionError;
 use crate::material_names;
-use crate::region::{RegionError, atomic_replace};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::region::atomic_replace;
 
 const VERSION: u16 = 1;
 
@@ -54,25 +58,35 @@ impl WorldMeta {
     }
 
     /// 保存がなければ None。新しい版や壊れたファイルは明示的にエラーにする。
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(root: &Path) -> Result<Option<Self>, SaveError> {
         let text = match fs::read_to_string(root.join("world.ron")) {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(SaveError::Io(err)),
         };
-        let metadata: Self = ron::from_str(&text).map_err(SaveError::Parse)?;
+        Self::from_ron(&text).map(Some)
+    }
+
+    pub fn from_ron(text: &str) -> Result<Self, SaveError> {
+        let metadata: Self = ron::from_str(text).map_err(SaveError::Parse)?;
         if metadata.version > VERSION {
             return Err(SaveError::NewerVersion(metadata.version));
         }
         if metadata.version != VERSION {
             return Err(SaveError::UnsupportedVersion(metadata.version));
         }
-        Ok(Some(metadata))
+        Ok(metadata)
+    }
+
+    pub fn to_ron(&self) -> Result<String, SaveError> {
+        ron::ser::to_string(self).map_err(SaveError::Serialize)
     }
 
     /// チャンクの書き込みが完了した後、同じ保存ルートへ原子的に書く。
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save(&self, root: &Path) -> Result<(), SaveError> {
-        let bytes = ron::ser::to_string(self).map_err(SaveError::Serialize)?;
+        let bytes = self.to_ron()?;
         atomic_replace(&root.join("world.ron"), bytes.as_bytes()).map_err(SaveError::Region)
     }
 }

@@ -1,6 +1,5 @@
 //! 仕様 04 §3: 32×32 チャンクをまとめるリージョンファイル。
 
-use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -10,7 +9,8 @@ use charon_core::chunk::Chunk;
 use charon_core::coords::ChunkPos;
 use charon_core::material::MaterialTable;
 
-use crate::{ChunkCodecError, decode_chunk, encode_chunk_with_names, material_names};
+pub use crate::RegionError;
+use crate::{decode_chunk, encode_chunk_with_names, material_names};
 
 const MAGIC: &[u8; 4] = b"CHRN";
 const VERSION: u16 = 1;
@@ -21,42 +21,6 @@ const HEADER_LEN: usize = 8 + ENTRIES * 8;
 struct Entry {
     offset: u32,
     length: u32,
-}
-
-/// リージョンファイルを読めない、または保存できない理由。
-#[derive(Debug)]
-pub enum RegionError {
-    Io(io::Error),
-    Codec(ChunkCodecError),
-    InvalidHeader,
-    NewerVersion(u16),
-    TooLarge,
-}
-
-impl fmt::Display for RegionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "リージョンの入出力に失敗: {err}"),
-            Self::Codec(err) => write!(f, "チャンクの符号化に失敗: {err}"),
-            Self::InvalidHeader => write!(f, "リージョンのヘッダーが壊れています"),
-            Self::NewerVersion(version) => write!(f, "未対応の新しいリージョン形式: {version}"),
-            Self::TooLarge => write!(f, "リージョンが u32 のアドレス範囲を超えました"),
-        }
-    }
-}
-
-impl std::error::Error for RegionError {}
-
-impl From<io::Error> for RegionError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-impl From<ChunkCodecError> for RegionError {
-    fn from(error: ChunkCodecError) -> Self {
-        Self::Codec(error)
-    }
 }
 
 /// `saves/<world_name>` を起点とするリージョンの読み書き。

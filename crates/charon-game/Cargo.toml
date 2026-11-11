@@ -7,11 +7,14 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-charon-core = { version = "0.1.0", path = "../charon-core" }
-charon-physics = { version = "0.1.0", path = "../charon-physics" }
-charon-world = { version = "0.1.0", path = "../charon-world" }
+charon-core = { version = "0.1.0", path = "../charon-core", default-features = false }
+charon-physics = { version = "0.1.0", path = "../charon-physics", default-features = false }
+charon-world = { version = "0.1.0", path = "../charon-world", default-features = false }
 ron = "0.12.3"
 serde = { version = "1.0.229", features = ["derive"] }
+
+[features]
+default = ["charon-core/parallel"]
 
 [lints]
 workspace = true

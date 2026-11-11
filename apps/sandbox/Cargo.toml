@@ -7,6 +7,9 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["charon-core/parallel"]
+
 [lints]
 workspace = true
 
@@ -28,8 +31,11 @@ min_sdk_version = 26
 label = "Charon Sandbox"
 
 [dependencies]
-charon-app = { version = "0.1.0", path = "../../crates/charon-app" }
-charon-core = { version = "0.1.0", path = "../../crates/charon-core" }
-charon-physics = { version = "0.1.0", path = "../../crates/charon-physics" }
-charon-world = { version = "0.1.0", path = "../../crates/charon-world" }
+charon-app = { version = "0.1.0", path = "../../crates/charon-app", default-features = false }
+charon-core = { version = "0.1.0", path = "../../crates/charon-core", default-features = false }
+charon-physics = { version = "0.1.0", path = "../../crates/charon-physics", default-features = false }
+charon-world = { version = "0.1.0", path = "../../crates/charon-world", default-features = false }
 winit = { version = "0.30.13", features = ["android-native-activity"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.130"

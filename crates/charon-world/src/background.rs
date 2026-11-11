@@ -1,8 +1,10 @@
 //! 仕様 07 §4: 前景とは独立した背景セルと、名前に基づく保存。
 
 use std::collections::{BTreeMap, HashMap};
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use charon_core::cell::MaterialId;
@@ -10,7 +12,9 @@ use charon_core::chunk::{Rect, add_rect};
 use charon_core::coords::{CHUNK_AREA, CellPos, ChunkPos};
 use charon_core::material::MaterialTable;
 
-use crate::region::{RegionError, atomic_replace};
+use crate::RegionError;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::region::atomic_replace;
 
 const MAGIC: &[u8; 4] = b"CHBG";
 const VERSION: u16 = 1;
@@ -94,13 +98,12 @@ impl BackgroundWorld {
         self.chunks.get_mut(&pos).and_then(|chunk| chunk.render_dirty.take())
     }
 
-    /// world.ron の材質名順の u16 添字で、座標昇順に保存する。
-    pub fn save(
+    /// world.ron の材質名順の u16 添字で、座標昇順に符号化する。
+    pub fn to_bytes(
         &self,
-        root: &Path,
         materials: &MaterialTable,
         saved_names: &[String],
-    ) -> Result<(), BackgroundError> {
+    ) -> Result<Vec<u8>, BackgroundError> {
         let count = u32::try_from(self.chunks.len()).map_err(|_| BackgroundError::TooLarge)?;
         let names: HashMap<&str, u16> = saved_names
             .iter()
@@ -126,10 +129,23 @@ impl BackgroundWorld {
                 bytes.extend_from_slice(&index.to_le_bytes());
             }
         }
+        Ok(bytes)
+    }
+
+    /// ネイティブでは一時ファイルから原子的に置換する。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save(
+        &self,
+        root: &Path,
+        materials: &MaterialTable,
+        saved_names: &[String],
+    ) -> Result<(), BackgroundError> {
+        let bytes = self.to_bytes(materials, saved_names)?;
         atomic_replace(&root.join("background.bin"), &bytes).map_err(BackgroundError::Replace)
     }
 
     /// 保存がなければ空の背景。未知の材質名は EMPTY に置く。
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load(
         root: &Path,
         materials: &MaterialTable,
@@ -140,6 +156,15 @@ impl BackgroundWorld {
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Self::new()),
             Err(err) => return Err(BackgroundError::Io(err)),
         };
+        Self::from_bytes(&bytes, materials, saved_names)
+    }
+
+    /// ブラウザーの保存アダプターが渡したバイト列を検証して復元する。
+    pub fn from_bytes(
+        bytes: &[u8],
+        materials: &MaterialTable,
+        saved_names: &[String],
+    ) -> Result<Self, BackgroundError> {
         let header = bytes.get(..10).ok_or(BackgroundError::InvalidData)?;
         if &header[..4] != MAGIC {
             return Err(BackgroundError::InvalidData);

@@ -18,8 +18,14 @@ pub(super) struct Controls {
     pub(super) zoom: u32,
     pub(super) light_quality: LightQuality,
     pub(super) show_debug: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) save: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) replay: bool,
+    #[cfg(target_arch = "wasm32")]
+    pub(super) web_save: bool,
+    #[cfg(target_arch = "wasm32")]
+    pub(super) web_status: String,
 }
 
 impl Controls {
@@ -34,8 +40,14 @@ impl Controls {
             zoom: 4,
             light_quality: LightQuality::High,
             show_debug: false,
+            #[cfg(not(target_arch = "wasm32"))]
             save: false,
+            #[cfg(not(target_arch = "wasm32"))]
             replay: false,
+            #[cfg(target_arch = "wasm32")]
+            web_save: false,
+            #[cfg(target_arch = "wasm32")]
+            web_status: "未保存".to_owned(),
         }
     }
 }
@@ -162,6 +174,7 @@ impl Gui {
                     ui.label(format!("Tick: {} · {:.2} ms", world.tick(), tick_ms));
                     ui.label(format!("Awake chunks: {}", world.awake_chunks()));
                 }
+                #[cfg(not(target_arch = "wasm32"))]
                 ui.horizontal(|ui| {
                     if ui.button("Save replay").clicked() {
                         controls.save = true;
@@ -170,6 +183,13 @@ impl Gui {
                         controls.replay = true;
                     }
                 });
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if ui.button("Save world").clicked() {
+                        controls.web_save = true;
+                    }
+                    ui.label(&controls.web_status);
+                }
             });
             if controls.show_debug {
                 draw_debug(context, world, controls);
