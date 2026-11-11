@@ -3,6 +3,8 @@
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
 mod gesture;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod headless_tests;
 mod pointer;
 mod replay;
 mod timestep;
@@ -11,6 +13,7 @@ mod ui;
 pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
 pub use timestep::FixedTimestep;
+use timestep::advance_frame;
 
 #[cfg(target_arch = "wasm32")]
 use std::cell::{Cell, RefCell};
@@ -475,7 +478,7 @@ impl App {
         let entities = &mut self.entities;
         let initialized = &mut self.physics_initialized;
         let mut stream_error: Option<String> = None;
-        let mut step = || {
+        let step = || {
             if stream_error.is_some() {
                 return;
             }
@@ -511,16 +514,12 @@ impl App {
                 stream_error = Some(err.to_string());
             }
         };
-        if paused {
-            self.timer.reset();
-            if step_once {
-                step();
-                if let Some(gui) = self.gui.as_mut() {
-                    gui.controls.step_once = false;
-                }
-            }
-        } else {
-            self.timer.advance(elapsed, step);
+        advance_frame(&mut self.timer, elapsed, paused, step_once, step);
+        if paused
+            && step_once
+            && let Some(gui) = self.gui.as_mut()
+        {
+            gui.controls.step_once = false;
         }
         if let Some(err) = stream_error {
             eprintln!("ワールドの読み書きに失敗: {err}");

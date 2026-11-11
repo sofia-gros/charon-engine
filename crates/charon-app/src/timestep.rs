@@ -13,6 +13,27 @@ pub struct FixedTimestep {
     accumulator: u128,
 }
 
+/// 描画ループから切り出した停止・1 tick 送り・再開の規則。
+/// ウィンドウがなくても同じ状態遷移を検査できる。
+pub(crate) fn advance_frame(
+    timer: &mut FixedTimestep,
+    elapsed: Duration,
+    paused: bool,
+    step_once: bool,
+    mut step: impl FnMut(),
+) -> u32 {
+    if paused {
+        timer.reset();
+        if step_once {
+            step();
+            return 1;
+        }
+        0
+    } else {
+        timer.advance(elapsed, step)
+    }
+}
+
 impl FixedTimestep {
     /// 経過時間のうち最大 0.1 秒を加え、必要な回数だけ `step` を呼ぶ。
     pub fn advance(&mut self, elapsed: Duration, mut step: impl FnMut()) -> u32 {
@@ -56,5 +77,46 @@ mod tests {
         timer.reset();
         assert_eq!(timer.advance(Duration::from_millis(16), || count += 1), 0);
         assert_eq!(count, 8);
+    }
+
+    #[test]
+    fn headless_pause_and_resume() {
+        use charon_core::testkit::{box_art, world_from_ascii};
+
+        for seed in 1..=8 {
+            let mut world = world_from_ascii(&box_art(62, 64), seed);
+            let mut timer = FixedTimestep::default();
+            assert_eq!(
+                advance_frame(&mut timer, Duration::from_millis(17), false, false, || world.step()),
+                1,
+                "seed={seed}"
+            );
+            let before = world.tick();
+            assert_eq!(
+                advance_frame(&mut timer, Duration::from_secs(2), true, false, || world.step()),
+                0,
+                "seed={seed}"
+            );
+            assert_eq!(world.tick(), before, "seed={seed}");
+            assert_eq!(
+                advance_frame(&mut timer, Duration::from_secs(2), true, true, || world.step()),
+                1,
+                "seed={seed}"
+            );
+            assert_eq!(world.tick(), before + 1, "seed={seed}");
+            // 復帰時の reset と同じ操作を行い、停止中の 2 秒を持ち越さない。
+            timer.reset();
+            assert_eq!(
+                advance_frame(&mut timer, Duration::from_millis(1), false, false, || world.step()),
+                0,
+                "seed={seed}"
+            );
+            assert_eq!(world.tick(), before + 1, "seed={seed}");
+            assert_eq!(
+                advance_frame(&mut timer, Duration::from_millis(17), false, false, || world.step()),
+                1,
+                "seed={seed}"
+            );
+        }
     }
 }
