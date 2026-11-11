@@ -385,6 +385,8 @@ name = "charon-game"
 version = "0.1.0"
 dependencies = [
  "charon-core",
+ "charon-physics",
+ "charon-world",
  "ron",
  "serde",
 ]

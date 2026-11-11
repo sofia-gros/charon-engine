@@ -15,3 +15,6 @@ pub mod world;
 
 /// エンジンのバージョン文字列。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// 入力同期で比較する核の実際の並列化 feature 構成。
+pub const PARALLEL_ENABLED: bool = cfg!(feature = "parallel");
