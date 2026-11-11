@@ -7,6 +7,7 @@ use crate::cell::{Cell, FLAG_BODY, FLAG_PARITY};
 use crate::chunk::{Chunk, add_rect, wake_region};
 use crate::coords::{CHUNK_MASK, CHUNK_SHIFT, ChunkPos};
 use crate::material::{MaterialTable, Phase};
+use crate::reaction::ReactionTable;
 
 /// 1 セルの更新が読み書きしてよい距離 (セル)。
 pub const MAX_REACH: i32 = 32;
@@ -24,6 +25,7 @@ pub struct Neighborhood<'a> {
     /// 添字 = `(dx + 1) + 3 * (dy + 1)`。
     chunks: [Option<Box<Chunk>>; 9],
     materials: &'a MaterialTable,
+    reactions: Option<&'a ReactionTable>,
     seed: u64,
     tick: u64,
 }
@@ -33,10 +35,11 @@ impl<'a> Neighborhood<'a> {
         center: ChunkPos,
         chunks: [Option<Box<Chunk>>; 9],
         materials: &'a MaterialTable,
+        reactions: Option<&'a ReactionTable>,
         seed: u64,
         tick: u64,
     ) -> Self {
-        Self { center, chunks, materials, seed, tick }
+        Self { center, chunks, materials, reactions, seed, tick }
     }
 
     /// チャンクを取り出す (ワールドへ戻すため)。添字は [`Neighborhood::slot_pos`] で位置に変換する。
@@ -51,6 +54,23 @@ impl<'a> Neighborhood<'a> {
 
     pub fn materials(&self) -> &'a MaterialTable {
         self.materials
+    }
+
+    /// このワールドの反応表。独自の材質表で同梱の反応を読めなければ反応なし。
+    pub fn reactions(&self) -> Option<&'a ReactionTable> {
+        self.reactions
+    }
+
+    /// ローカル座標に材質を新しく生成する (仕様 01 §5)。
+    pub fn make_cell(&self, material: crate::cell::MaterialId, x: i32, y: i32) -> Cell {
+        let origin = self.center.origin();
+        crate::world::make_cell(
+            self.materials,
+            self.seed,
+            self.tick,
+            material,
+            crate::coords::CellPos::new(origin.x + x, origin.y + y),
+        )
     }
 
     /// 現在の tick。
@@ -206,6 +226,7 @@ mod tests {
             ChunkPos::new(0, 0),
             std::array::from_fn(|_| Some(Box::new(Chunk::new()))),
             materials,
+            None,
             1,
             tick,
         )
@@ -240,7 +261,7 @@ mod tests {
         let mut chunks: [Option<Box<Chunk>>; 9] =
             std::array::from_fn(|_| Some(Box::new(Chunk::new())));
         chunks[5] = None; // 右隣
-        let mut nb = Neighborhood::new(ChunkPos::new(0, 0), chunks, &m, 1, 0);
+        let mut nb = Neighborhood::new(ChunkPos::new(0, 0), chunks, &m, None, 1, 0);
         assert_eq!(nb.get(64, 0).material, MaterialId::BOUNDARY);
         nb.set(64, 0, cell(5)); // 何も起きない
         assert_eq!(nb.get(64, 0).material, MaterialId::BOUNDARY);

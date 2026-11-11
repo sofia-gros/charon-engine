@@ -24,6 +24,9 @@ jobs:
           components: rustfmt, clippy
           targets: aarch64-linux-android, wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager --install 'ndk;27.2.12479018'
+      - run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - run: scripts/check.sh
 
   # 他の OS でもテストが通ること (決定性の確認を兼ねる)。

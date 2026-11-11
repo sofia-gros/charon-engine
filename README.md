@@ -11,7 +11,7 @@
 ![Rust](https://img.shields.io/badge/rust-1.99%2B%20(stable)-orange?logo=rust)
 ![Edition](https://img.shields.io/badge/edition-2024-orange)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-success)
-![Status](https://img.shields.io/badge/status-M1%20%E5%AE%8C%E4%BA%86%20%2F%20M2%20%E7%9D%80%E6%89%8B%E5%89%8D-blue)
+![Status](https://img.shields.io/badge/status-M3%20%E5%AE%8C%E4%BA%86%20%2F%20M4%20%E7%9D%80%E6%89%8B%E5%89%8D-blue)
 
 ![Windows](https://img.shields.io/badge/Windows-planned-lightgrey?logo=windows)
 ![Linux](https://img.shields.io/badge/Linux-planned-lightgrey?logo=linux&logoColor=white)
@@ -27,7 +27,7 @@
 ---
 
 > [!NOTE]
-> **M1 (粉体・液体・気体のシミュレーション) まで実装済みです。** 反応・熱・剛体・描画はまだです。
+> **M3 (並列化・性能検証) まで実装済みです。** 剛体・描画はまだです。100 万セルの性能目標は未達で、実測と見直し案は[ベンチマーク記録](docs/BENCHMARKS.md)を参照してください。
 > `cargo run -p charon-core --example piles` で粉体の山の形を文字で見られます。
 > 進み具合は[現在の状態](#現在の状態)を見てください。
 
@@ -124,7 +124,7 @@ flowchart TD
     physics --> core
 ```
 
-`charon-core` は他のどれにも依存しません。現在あるのは `charon-core` の雛形だけです。
+`charon-core` は他のクレートに依存しません。現在は M3 までのシミュレーション核が実装済みです。
 
 ## 材質はデータで定義する
 
@@ -156,9 +156,9 @@ flowchart TD
 |---|---|---|
 | M0 | 環境整備、仕様、テスト方針 | ✅ 完了 |
 | M1 | シミュレーション核: 粉体・液体・気体、摩擦、粘性、休眠 | ✅ 完了 |
-| M2 | 反応、熱、相変化、燃焼 | ⏳ 次に着手 |
-| M3 | 並列化と性能 | ・ |
-| M4 | 描画とサンドボックス (Windows / Linux / macOS / Android) | ・ |
+| M2 | 反応、熱、相変化、燃焼 | ✅ 完了 |
+| M3 | 並列化と性能 (100 万セルの性能目標は未達) | ✅ 検証完了 |
+| M4 | 描画とサンドボックス (Windows / Linux / macOS / Android) | ⏳ 次に着手 |
 | M5 | 無限ワールドと保存 | ・ |
 | M6 | 剛体とパーティクル | ・ |
 | M7 | ライティングと後処理 | ・ |
@@ -168,7 +168,7 @@ flowchart TD
 
 ### 性能の目標
 
-M1 時点の実測は [docs/BENCHMARKS.md](docs/BENCHMARKS.md) にあります (1 スレッドで 1 tick あたり 10 万セルを 6〜8 ms、休眠した世界は 0.5 µs)。並列化 (M3) 後に目標と照らします。
+M3 時点の実測は [docs/BENCHMARKS.md](docs/BENCHMARKS.md) にあります (この環境では並列で 100 万セルを約 85 ms、休眠 10,000 チャンクを約 43 µs)。目標未達の原因と見直し案も記録しています。
 
 | 環境 | 目標 |
 |---|---|

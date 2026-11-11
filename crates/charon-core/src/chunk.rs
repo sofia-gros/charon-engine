@@ -1,6 +1,6 @@
 //! チャンク (仕様 01 §5、§6)。
 
-use crate::cell::{Cell, FLAG_FALLING};
+use crate::cell::{Cell, FLAG_BODY, FLAG_FALLING};
 use crate::coords::{CHUNK_AREA, CHUNK_SIZE};
 use crate::material::{MaterialTable, Phase};
 
@@ -110,6 +110,9 @@ fn index(lx: u8, ly: u8) -> usize {
 
 /// 地形の当たり判定に含まれるセルか: 固体、または動いていない粉体。
 fn is_collidable(cell: Cell, materials: &MaterialTable) -> bool {
+    if cell.has(FLAG_BODY) {
+        return false;
+    }
     match materials.get(cell.material).phase {
         Phase::Solid => true,
         Phase::Powder => !cell.has(FLAG_FALLING),

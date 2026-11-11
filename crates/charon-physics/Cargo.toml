@@ -1,0 +1,15 @@
+[package]
+name = "charon-physics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+charon-core = { version = "0.1.0", path = "../charon-core" }
+earcutr = "0.5.0"
+rapier2d = { version = "0.36.1", features = ["enhanced-determinism"] }
+
+[lints]
+workspace = true

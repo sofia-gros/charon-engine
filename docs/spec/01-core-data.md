@@ -258,6 +258,8 @@ pub const SALT_REACT: u32 = 11;     // 反応が起きるか
 pub const SALT_FIRE_DIR: u32 = 12;  // 炎を出す方向
 pub const SALT_FIRE: u32 = 13;      // 炎を出すか
 pub const SALT_STICK: u32 = 14;     // 着地した粉体がその場に止まるか
+pub const SALT_TERRAIN: u32 = 15;   // 地表の値ノイズ (M5)
+pub const SALT_CAVE: u32 = 16;      // 洞窟の値ノイズ (M5)
 ```
 
 新しく乱数が必要になったら、この一覧の末尾に足す。

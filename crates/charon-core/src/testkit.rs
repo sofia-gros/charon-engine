@@ -42,7 +42,8 @@ pub fn world_from_ascii(art: &str, seed: u64) -> World {
     let height = rows.len();
 
     let materials = MaterialTable::builtin().expect("assets/materials.ron を読めません");
-    let mut world = World::new(Arc::new(materials), seed);
+    let mut world =
+        World::try_new(Arc::new(materials), seed).expect("assets/reactions.ron を読めません");
     let chunks_x = (width as i32 - 1) >> CHUNK_SHIFT;
     let chunks_y = (height as i32 - 1) >> CHUNK_SHIFT;
     for cy in 0..=chunks_y {

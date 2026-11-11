@@ -1,0 +1,26 @@
+[package]
+name = "charon-app"
+description = "Charon Engine の共通ウィンドウと固定 tick メインループ"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+charon-core = { version = "0.1.0", path = "../charon-core" }
+charon-game = { version = "0.1.0", path = "../charon-game" }
+charon-physics = { version = "0.1.0", path = "../charon-physics" }
+charon-render = { version = "0.1.0", path = "../charon-render" }
+charon-world = { version = "0.1.0", path = "../charon-world" }
+egui = { version = "0.37.0", features = ["default_fonts"] }
+egui-wgpu = "0.37.0"
+egui-winit = "0.37.0"
+pollster = "1.0.1"
+ron = "0.12.3"
+serde = { version = "1.0.229", features = ["derive"] }
+wgpu = "30.0.1"
+winit = "0.30.13"

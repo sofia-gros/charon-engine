@@ -49,6 +49,10 @@ pub const SALT_FIRE_DIR: u32 = 12;
 pub const SALT_FIRE: u32 = 13;
 /// 着地した粉体がその場に止まるか (摩擦)。
 pub const SALT_STICK: u32 = 14;
+/// 地表の 1 次元値ノイズ。
+pub const SALT_TERRAIN: u32 = 15;
+/// 洞窟の 2 次元値ノイズ。
+pub const SALT_CAVE: u32 = 16;
 
 #[cfg(test)]
 mod tests {

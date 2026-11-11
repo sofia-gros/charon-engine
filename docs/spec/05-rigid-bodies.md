@@ -90,6 +90,12 @@ displace(cell, wx, wy, body):
         q = (wx, wy) + dir * i
         if world.get(q).material == EMPTY かつ q はこの剛体がこれからスタンプする場所でない:
             world.set(q, cell に FLAG_FALLING を立て vy = 0); 力積を加える; return
+    # 1b. 密に詰まった内容物を前方へ連鎖して押す
+    # 上限は max(body.width, body.height) + 1 セル。新しいスタンプの空洞を優先する。
+    # dir 上の連続した Powder / Liquid セルの先に、スタンプ予定でない EMPTY があれば:
+    # 空きから手前へ world.swap を繰り返し、各移動セルに FLAG_FALLING を立て vy = 0 とする
+    # 移動したセルそれぞれの密度で力積を加える; return
+    # 途中に BOUNDARY、FLAG_BODY、Solid、スタンプ予定のセルがあれば中断する
     # 2. 近くの空きを探す (距離の近い順、同距離は上→右→下→左の順)
     半径 1..=3 の正方形の輪を順に調べ、最初の空きに置く; 力積を加える; return
     # 3. 置き場所がない
@@ -98,13 +104,16 @@ displace(cell, wx, wy, body):
 
 「これからスタンプする場所でない」の判定は、逆写像をもう 1 回計算して行う
 (`body.cells` のその位置が `EMPTY` かどうか)。
+速度 `v` はその剛体のスタンプ開始時の線速度・角速度から計算する。力積はスタンプの全セルを
+処理した後に座標順で加える。途中の力積によって、既に移動した剛体の進行方向を同じスタンプ中に
+反転させないためである。
 
 力積: 押しのけたセル 1 個につき、剛体のその点に `-v * density * CELL_MASS_SCALE` の力積を加える
 (`CELL_MASS_SCALE = 1.0 / (1000.0 * CELLS_PER_METER * CELLS_PER_METER)`)。
 水や砂の中を動く剛体が減速するのはこの力積による。
 
 C の形の例での動き: C の内側 (空洞) は `body.cells` が `EMPTY` なのでスタンプされず、中身には触れない。
-C が動くと壁が中身に重なり、中身は壁の進行方向へ押される。つまり中身は容器と一緒に運ばれる。
+C が動くと壁が中身に重なり、中身は壁の進行方向へ押される。密な列は 1b で空洞内の空きへ順にずらすため、後方の空きへ押し出されずに容器と一緒に運ばれる。
 開口部が下を向けば、中身の下に壁がなくなり、仕様 02 の規則で普通に落ちる。
 
 ## 5. セル → 剛体の力
@@ -118,7 +127,9 @@ for pos in body.stamped:
         n = world.get(pos + (dx, dy)); nm = materials.get(n.material)
         if n.flags に FLAG_BODY: continue
         if nm.phase == Liquid:
-            depth = n から真上に液体が何セル続くか (n 自身を含む。上限 48)
+            surface_y = n と 4 近傍でつながる液体領域の最上段のセルの y
+            face_y = pos.y + 0.5 + dy * 0.5     # 上面は pos.y、下面は pos.y + 1
+            depth = clamp(face_y - surface_y, 0, 48)
             p = nm.density * depth * PRESSURE_SCALE
             力 = (-dx, -dy) * p を、点 pos に加える          # 面を押す向き
         else if nm.phase == Powder かつ FLAG_FALLING なし かつ (dx, dy) == (0, -1):
@@ -127,6 +138,9 @@ for pos in body.stamped:
 ```
 
 `PRESSURE_SCALE = 重力加速度 * CELL_MASS_SCALE` (1 セル分の液柱の重さに相当)。
+rapier の `add_force_at_point` は次 tick にも力が残る。各面の力は `dt = 1/60` を掛けた
+`force * dt` をその tick に `apply_impulse_at_point` で 1 回だけ加え、入力で与えた力を消さず、
+水の圧力を tick 間で蓄積させない。
 
 これで次が成り立つ。
 
@@ -135,7 +149,15 @@ for pos in body.stamped:
 - **水入りのコップ**: 中の水が底を押し下げる。側面の力は左右で打ち消す。水の分だけ重くなる。
 - **砂入りの容器**: 砂の柱の高さに比例して底が重くなる。
 
-`depth` の計算は列ごとに結果を使い回してよい (同じ列を何度も数えない)。
+液体領域は、材質 ID が違っても `phase == Liquid` で `FLAG_BODY` のないセルを上下左右に
+たどって作る。未読み込みの `BOUNDARY`、固体、粉体、剛体は領域を分ける。密閉された領域も
+最上段のセル上端を仮の水面とする。同じ領域のすべての面で `surface_y` を共有し、力の密度は
+従来どおり面に接する材質の `nm.density` を使う。これにより底面の真上を剛体が塞いでも、
+側方でつながる外水面から底面の深さを測れる。上面と底面の深さの差は剛体の高さになり、
+同じ液体に全没した物体への正味の浮力は押しのけた液体の重さになる。領域探索は毎 tick の
+現在のワールドについて行い、固定の上下左右順でたどる。計算済みの領域と `surface_y` は
+その tick の力計算中だけ使い回す。粉体の高さは従来どおり真上の連続セルで数える。
+
 剛体のセル数が多い場合の最適化として、スタンプを 1 つおきに間引いて力を 2 倍にしてもよいが、
 最初は間引かずに実装し、ベンチマークを見てから判断する。
 

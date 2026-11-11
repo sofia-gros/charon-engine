@@ -1,0 +1,35 @@
+[package]
+name = "charon-sandbox"
+description = "Charon Engine の動作確認用サンドボックス"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "charon-sandbox"
+path = "src/main.rs"
+
+[package.metadata.android]
+package = "dev.charon.sandbox"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+
+[package.metadata.android.application]
+label = "Charon Sandbox"
+
+[dependencies]
+charon-app = { version = "0.1.0", path = "../../crates/charon-app" }
+charon-core = { version = "0.1.0", path = "../../crates/charon-core" }
+charon-physics = { version = "0.1.0", path = "../../crates/charon-physics" }
+charon-world = { version = "0.1.0", path = "../../crates/charon-world" }
+winit = { version = "0.30.13", features = ["android-native-activity"] }

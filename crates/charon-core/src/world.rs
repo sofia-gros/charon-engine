@@ -7,6 +7,7 @@ use crate::cell::{Cell, FLAG_FALLING, FLAG_FLOW_RIGHT, FLAG_PARITY, MaterialId};
 use crate::chunk::{Chunk, add_rect, wake_region};
 use crate::coords::{CHUNK_MASK, CellPos, ChunkPos};
 use crate::material::MaterialTable;
+use crate::reaction::{ReactionError, ReactionTable};
 use crate::rng::{SALT_FLOW, SALT_LIFE, SALT_SHADE, hash};
 use crate::sim::SCAN;
 
@@ -15,19 +16,54 @@ use crate::sim::SCAN;
 pub struct World {
     pub(crate) chunks: HashMap<ChunkPos, Box<Chunk>>,
     pub(crate) materials: Arc<MaterialTable>,
+    pub(crate) reactions: Option<Arc<ReactionTable>>,
     pub(crate) seed: u64,
     pub(crate) tick: u64,
+    pub(crate) last_tick_cells: usize,
 }
 
 impl World {
     /// 空のワールド。
     pub fn new(materials: Arc<MaterialTable>, seed: u64) -> Self {
-        Self { chunks: HashMap::new(), materials, seed, tick: 0 }
+        // 独自の材質表が同梱の反応を参照できない場合は反応なしで開始する。
+        // 読み込みエラーを扱う呼び出し元は try_new を使う。
+        let reactions = ReactionTable::builtin(&materials).ok().map(Arc::new);
+        Self { chunks: HashMap::new(), materials, reactions, seed, tick: 0, last_tick_cells: 0 }
+    }
+
+    /// 同梱の反応の読み込みに失敗した場合はエラーを返す。
+    pub fn try_new(materials: Arc<MaterialTable>, seed: u64) -> Result<Self, ReactionError> {
+        let reactions = Arc::new(ReactionTable::builtin(&materials)?);
+        Ok(Self {
+            chunks: HashMap::new(),
+            materials,
+            reactions: Some(reactions),
+            seed,
+            tick: 0,
+            last_tick_cells: 0,
+        })
     }
 
     /// 全セルが空のチャンクを追加する。既にあれば何もしない。
     pub fn insert_chunk(&mut self, pos: ChunkPos) {
         self.chunks.entry(pos).or_insert_with(|| Box::new(Chunk::new()));
+    }
+
+    /// ディスクまたは生成器のチャンクを組み込む。周囲の境界も起こす。
+    pub fn insert_loaded_chunk(&mut self, pos: ChunkPos, chunk: Chunk) {
+        self.chunks.insert(pos, Box::new(chunk));
+        let origin = pos.origin();
+        for i in 0..crate::coords::CHUNK_SIZE {
+            self.keep_awake(CellPos::new(origin.x + i, origin.y));
+            self.keep_awake(CellPos::new(origin.x + i, origin.y + crate::coords::CHUNK_MASK));
+            self.keep_awake(CellPos::new(origin.x, origin.y + i));
+            self.keep_awake(CellPos::new(origin.x + crate::coords::CHUNK_MASK, origin.y + i));
+        }
+    }
+
+    /// 退避するチャンクを World から取り出す。
+    pub fn take_chunk(&mut self, pos: ChunkPos) -> Option<Chunk> {
+        self.chunks.remove(&pos).map(|chunk| *chunk)
     }
 
     /// セルを読む。チャンクがなければ `BOUNDARY` のセルを返す。
@@ -60,6 +96,24 @@ impl World {
         }
     }
 
+    /// 読み込まれた 2 セルを `set` 経由で入れ替え、数と dirty を保つ。
+    /// 読み込まれていない境界には触れない。
+    pub fn swap(&mut self, a: CellPos, b: CellPos) {
+        if a == b {
+            return;
+        }
+        let first = self.get(a);
+        let second = self.get(b);
+        if first == second
+            || first.material == MaterialId::BOUNDARY
+            || second.material == MaterialId::BOUNDARY
+        {
+            return;
+        }
+        self.set(a, second);
+        self.set(b, first);
+    }
+
     /// セルの値は変えずに、周囲 5×5 を次の tick の処理範囲に加える。
     pub fn keep_awake(&mut self, pos: CellPos) {
         let cpos = pos.chunk();
@@ -80,6 +134,11 @@ impl World {
         self.tick
     }
 
+    /// `world.ron` から復帰するときだけ保存済みの tick を設定する。
+    pub fn restore_tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
+
     /// ワールドの seed。
     pub fn seed(&self) -> u64 {
         self.seed
@@ -95,9 +154,27 @@ impl World {
         self.chunks.get(&pos).map(|c| &**c)
     }
 
+    /// 地形コライダーを再生成したチャンクの変更フラグを下ろす。
+    pub fn clear_collider_dirty(&mut self, pos: ChunkPos) {
+        if let Some(chunk) = self.chunks.get_mut(&pos) {
+            chunk.collider_dirty = false;
+        }
+    }
+
+    /// 描画へ送る必要がある矩形を取り出す。セルは公開の `chunk` で読む。
+    pub fn take_render_dirty(&mut self, pos: ChunkPos) -> Option<crate::chunk::Rect> {
+        self.chunks.get_mut(&pos)?.render_dirty.take()
+    }
+
     /// `dirty` または `next_dirty` が `Some` のチャンクの数。0 なら世界全体が休眠している。
     pub fn awake_chunks(&self) -> usize {
         self.chunks.values().filter(|c| c.dirty.is_some() || c.next_dirty.is_some()).count()
+    }
+
+    /// 直前の tick で走査したセル数。休眠中の tick では 0。
+    /// `dirty` の矩形で `update_cell` を呼んだ回数で、空セルも含む。
+    pub fn last_tick_cells(&self) -> usize {
+        self.last_tick_cells
     }
 
     /// 読み込まれているチャンクの位置。昇順。
@@ -204,6 +281,25 @@ mod tests {
     }
 
     #[test]
+    fn swap_preserves_cells_and_ignores_boundary() {
+        let mut w = world();
+        w.insert_chunk(ChunkPos::new(0, 0));
+        let (a, b) = (CellPos::new(3, 5), CellPos::new(4, 5));
+        let sand = w.make_cell(id(&w, "sand"), a);
+        let water = w.make_cell(id(&w, "water"), b);
+        w.set(a, sand);
+        w.set(b, water);
+        w.swap(a, b);
+        assert_eq!(w.get(a), water);
+        assert_eq!(w.get(b), sand);
+        w.swap(a, CellPos::new(64, 5));
+        w.swap(a, a);
+        assert_eq!(w.get(a), water);
+        assert_eq!(w.get(b), sand);
+        assert!(w.chunk(ChunkPos::new(0, 0)).unwrap().next_dirty.is_some());
+    }
+
+    #[test]
     fn keep_awake_marks_5x5() {
         let mut w = world();
         w.insert_chunk(ChunkPos::new(0, 0));
@@ -261,6 +357,18 @@ mod tests {
         // 止まった粉体は含める
         w.set(p, sand.with(FLAG_FALLING, false));
         assert!(w.chunk(ChunkPos::new(0, 0)).unwrap().collider_dirty);
+        w.clear_collider_dirty(ChunkPos::new(0, 0));
+        assert!(!w.chunk(ChunkPos::new(0, 0)).unwrap().collider_dirty);
+
+        // 動いている剛体のスタンプは地形コライダーを作り直さない。
+        let stone = w.make_cell(id(&w, "stone"), p).with(crate::cell::FLAG_BODY, true);
+        w.set(p, stone);
+        assert!(w.chunk(ChunkPos::new(0, 0)).unwrap().collider_dirty, "止まった砂は消えた");
+        w.clear_collider_dirty(ChunkPos::new(0, 0));
+        w.set(p, Cell::default());
+        assert!(!w.chunk(ChunkPos::new(0, 0)).unwrap().collider_dirty);
+        w.set(p, stone);
+        assert!(!w.chunk(ChunkPos::new(0, 0)).unwrap().collider_dirty);
     }
 
     #[test]

@@ -2,9 +2,13 @@
 
 use std::sync::Arc;
 
-use crate::cell::FLAG_BODY;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
+use crate::cell::{Cell, FLAG_BODY, FLAG_BURNING, FLAG_FALLING, FLAG_PARITY, MaterialId};
 use crate::coords::ChunkPos;
 use crate::material::{MaterialTable, Phase};
+use crate::rng::{SALT_FIRE, SALT_FIRE_DIR, SALT_LIFE, SALT_REACT, SALT_REACT_DIR, chance};
 use crate::sim::Neighborhood;
 use crate::sim::movement::{move_fluid, move_powder};
 use crate::world::World;
@@ -15,22 +19,36 @@ pub fn chunk_phase(pos: ChunkPos) -> u8 {
 }
 
 impl World {
-    /// 1 tick 進める。
+    /// 1 tick 進める。`parallel` feature が有効なら、同じフェーズのチャンクを並列に処理する。
     pub fn step(&mut self) {
+        self.step_with_mode(cfg!(feature = "parallel"));
+    }
+
+    /// 並列実装と比較するための逐次更新。両方とも同じ更新関数を使う。
+    pub fn step_serial(&mut self) {
+        self.step_with_mode(false);
+    }
+
+    fn step_with_mode(&mut self, parallel: bool) {
+        self.last_tick_cells = 0;
+        let mut any_dirty = false;
         for chunk in self.chunks.values_mut() {
             chunk.dirty = chunk.next_dirty.take();
+            any_dirty |= chunk.dirty.is_some();
         }
 
-        let materials = Arc::clone(&self.materials);
-        for phase in 0..9u8 {
-            self.step_phase(phase, &materials);
+        if any_dirty {
+            let materials = Arc::clone(&self.materials);
+            for phase in 0..9u8 {
+                self.last_tick_cells += self.step_phase(phase, &materials, parallel);
+            }
         }
 
         self.tick += 1;
     }
 
     /// 1 フェーズ分を処理する (仕様 02 §2)。
-    fn step_phase(&mut self, phase: u8, materials: &MaterialTable) {
+    fn step_phase(&mut self, phase: u8, materials: &MaterialTable, parallel: bool) -> usize {
         let mut centers: Vec<ChunkPos> = self
             .chunks
             .iter()
@@ -38,7 +56,7 @@ impl World {
             .map(|(pos, _)| *pos)
             .collect();
         if centers.is_empty() {
-            return;
+            return 0;
         }
         // HashMap の反復順を結果に影響させない。
         centers.sort_unstable();
@@ -50,13 +68,28 @@ impl World {
                 let chunks = std::array::from_fn(|slot| {
                     self.chunks.remove(&Neighborhood::slot_pos(center, slot))
                 });
-                Neighborhood::new(center, chunks, materials, self.seed, self.tick)
+                Neighborhood::new(
+                    center,
+                    chunks,
+                    materials,
+                    self.reactions.as_deref(),
+                    self.seed,
+                    self.tick,
+                )
             })
             .collect();
 
-        for nb in &mut neighborhoods {
-            update_chunk(nb);
-        }
+        #[cfg(feature = "parallel")]
+        let processed: usize = if parallel {
+            neighborhoods.par_iter_mut().map(update_chunk).sum()
+        } else {
+            neighborhoods.iter_mut().map(update_chunk).sum()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let processed: usize = {
+            let _ = parallel;
+            neighborhoods.iter_mut().map(update_chunk).sum()
+        };
 
         for nb in neighborhoods {
             let center = nb.center;
@@ -66,13 +99,14 @@ impl World {
                 }
             }
         }
+        processed
     }
 }
 
 /// 中心チャンクの `dirty` の範囲を走査する (仕様 02 §3)。
-fn update_chunk(nb: &mut Neighborhood<'_>) {
+fn update_chunk(nb: &mut Neighborhood<'_>) -> usize {
     let Some(rect) = nb.take_center_dirty() else {
-        return;
+        return 0;
     };
     // 行は下から上。
     for y in (rect.min_y as i32..=rect.max_y as i32).rev() {
@@ -83,6 +117,7 @@ fn update_chunk(nb: &mut Neighborhood<'_>) {
             update_cell(nb, x, y);
         }
     }
+    (usize::from(rect.max_x - rect.min_x) + 1) * (usize::from(rect.max_y - rect.min_y) + 1)
 }
 
 /// 1 セルを更新する (仕様 02 §4)。
@@ -124,12 +159,154 @@ fn update_cell(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
     }
 }
 
-// ---- M2 で実装する (仕様 03) ----
+/// 材質を変える共通処理 (仕様 03 §1)。温度と色だけを引き継ぎ、寿命を引き直す。
+pub fn convert(
+    nb: &Neighborhood<'_>,
+    x: i32,
+    y: i32,
+    cell: Cell,
+    new_material: MaterialId,
+) -> Cell {
+    let life = match nb.materials().get(new_material).lifetime {
+        Some((min, max)) => {
+            let span = (max - min) as u32 + 1;
+            min + (nb.hash(x, y, SALT_LIFE) % span) as u8
+        }
+        None => 0,
+    };
+    Cell {
+        material: new_material,
+        flags: (cell.flags & FLAG_PARITY) | FLAG_FALLING,
+        shade: cell.shade,
+        temp: cell.temp,
+        vy: 0,
+        life,
+    }
+}
 
-fn step_lifetime(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32) {}
-fn step_heat(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32) {}
-fn step_reaction(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32) {}
-fn step_burning(_nb: &mut Neighborhood<'_>, _x: i32, _y: i32) {}
+// ---- 仕様 03: 寿命 → 熱 → 反応 → 燃焼 ----
+
+fn step_lifetime(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
+    let mut cell = nb.get(x, y);
+    if cell.life == 0 || cell.has(FLAG_BURNING) {
+        return;
+    }
+    nb.keep_awake(x, y);
+    if nb.tick() & 3 != 0 {
+        return;
+    }
+    cell.life -= 1;
+    if cell.life == 0 {
+        let into = nb.materials().get(cell.material).decay_into;
+        cell = convert(nb, x, y, cell, into);
+    }
+    nb.set(x, y, cell);
+}
+fn step_heat(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
+    for (dx, dy) in [(1, 0), (0, 1), (-1, 0), (0, -1)] {
+        let mut cell = nb.get(x, y);
+        let mat = nb.materials().get(cell.material);
+        let mut other = nb.get(x + dx, y + dy);
+        let om = nb.materials().get(other.material);
+        if other.material == MaterialId::BOUNDARY || other.has(FLAG_BODY) {
+            continue;
+        }
+        // 空セルは自分から更新しないため、空との組だけ左・上も扱う。
+        if (dx < 0 || dy < 0) && om.phase != Phase::Empty {
+            continue;
+        }
+        let k = mat.conductivity.min(om.conductivity) as i32;
+        let transfer = (other.temp as i32 - cell.temp as i32) * k / 1024;
+        if transfer == 0 {
+            continue;
+        }
+        // 両方の i16 を守りながら、温度の総和を必ず保存する。
+        let low = (i16::MIN as i32 - cell.temp as i32).max(other.temp as i32 - i16::MAX as i32);
+        let high = (i16::MAX as i32 - cell.temp as i32).min(other.temp as i32 - i16::MIN as i32);
+        let transfer = transfer.clamp(low, high);
+        if transfer == 0 {
+            continue;
+        }
+        cell.temp = (cell.temp as i32 + transfer) as i16;
+        other.temp = (other.temp as i32 - transfer) as i16;
+        nb.set(x, y, cell);
+        nb.set(x + dx, y + dy, other);
+    }
+
+    let cell = nb.get(x, y);
+    let mat = nb.materials().get(cell.material);
+    let into = if let Some(t) = mat.boil.filter(|t| cell.temp >= t.at) {
+        Some(t.into)
+    } else if let Some(t) = mat.melt.filter(|t| cell.temp >= t.at) {
+        Some(t.into)
+    } else {
+        mat.freeze.filter(|t| cell.temp <= t.at).map(|t| t.into)
+    };
+    if let Some(into) = into {
+        nb.set(x, y, convert(nb, x, y, cell, into));
+    }
+}
+fn step_reaction(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
+    let Some(reactions) = nb.reactions() else { return };
+    let cell = nb.get(x, y);
+    if !reactions.is_reactive(cell.material) {
+        return;
+    }
+    const DIRS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    if !DIRS.iter().any(|&(dx, dy)| {
+        let other = nb.get(x + dx, y + dy);
+        !other.has(FLAG_BODY) && reactions.get(cell.material, other.material).is_some()
+    }) {
+        return;
+    }
+    nb.keep_awake(x, y);
+    let (dx, dy) = DIRS[(nb.hash(x, y, SALT_REACT_DIR) & 3) as usize];
+    let other = nb.get(x + dx, y + dy);
+    if other.has(FLAG_BODY) {
+        return;
+    }
+    let Some(reaction) = reactions.get(cell.material, other.material) else { return };
+    if !chance(nb.hash(x, y, SALT_REACT), reaction.prob) {
+        return;
+    }
+    nb.set(x, y, convert(nb, x, y, cell, reaction.out_a));
+    nb.set(x + dx, y + dy, convert(nb, x + dx, y + dy, other, reaction.out_b));
+}
+fn step_burning(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
+    let mut cell = nb.get(x, y);
+    let mat = nb.materials().get(cell.material);
+    if !cell.has(FLAG_BURNING) {
+        if mat.ignite_at.is_some_and(|at| cell.temp >= at) {
+            cell.flags |= FLAG_BURNING;
+            cell.life = mat.burn_time.max(1);
+            nb.set(x, y, cell);
+        }
+        return;
+    }
+
+    nb.keep_awake(x, y);
+    let difference = (mat.burn_temp as i32 - cell.temp as i32).clamp(-50, 50);
+    cell.temp = (cell.temp as i32 + difference) as i16;
+    let dirs = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    let (dx, dy) = dirs[(nb.hash(x, y, SALT_FIRE_DIR) & 3) as usize];
+    let target = nb.get(x + dx, y + dy);
+    if target.material == MaterialId::EMPTY
+        && !target.has(FLAG_BODY)
+        && chance(nb.hash(x, y, SALT_FIRE), 64)
+        && let Some(fire) = nb.materials().fire
+    {
+        nb.set(x + dx, y + dy, nb.make_cell(fire, x + dx, y + dy));
+    }
+    if nb.tick() & 3 == 0 {
+        cell.life -= 1;
+    }
+    if cell.life == 0 {
+        cell = convert(nb, x, y, cell, mat.burn_into);
+    }
+    if cell != nb.get(x, y) {
+        nb.set(x, y, cell);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -145,6 +322,38 @@ mod tests {
             }
         }
         w
+    }
+
+    #[test]
+    fn convert_preserves_temp_and_shade_and_rerolls_life() {
+        let m = MaterialTable::builtin().unwrap();
+        let nb = Neighborhood::new(
+            ChunkPos::new(1, -1),
+            std::array::from_fn(|_| Some(Box::new(crate::chunk::Chunk::new()))),
+            &m,
+            None,
+            42,
+            9,
+        );
+        let original = Cell {
+            material: m.id("water").unwrap(),
+            flags: FLAG_PARITY | crate::cell::FLAG_BURNING | crate::cell::FLAG_FLOW_RIGHT,
+            shade: 137,
+            temp: 456,
+            vy: 22,
+            life: 99,
+        };
+        let smoke = m.id("smoke").unwrap();
+        let changed = convert(&nb, 3, 4, original, smoke);
+        assert_eq!(changed.material, smoke);
+        assert_eq!((changed.temp, changed.shade, changed.vy), (456, 137, 0));
+        assert_eq!(changed.flags, FLAG_PARITY | FLAG_FALLING);
+        assert!((30..=90).contains(&changed.life));
+        assert_eq!(changed, convert(&nb, 3, 4, original, smoke));
+
+        let stone = convert(&nb, 3, 4, original, m.id("stone").unwrap());
+        assert_eq!(stone.life, 0);
+        assert_eq!(stone.flags, FLAG_PARITY | FLAG_FALLING);
     }
 
     #[test]
@@ -182,6 +391,33 @@ mod tests {
         assert_eq!(w.awake_chunks(), 4);
         w.step();
         assert_eq!(w.awake_chunks(), 0);
+    }
+
+    #[test]
+    fn sleeping_10000_chunks_skip_all_phases() {
+        let mut world = World::new(Arc::new(MaterialTable::builtin().unwrap()), 1);
+        for y in 0..100 {
+            for x in 0..100 {
+                world.insert_chunk(ChunkPos::new(x, y));
+            }
+        }
+        assert_eq!(world.awake_chunks(), 0);
+        world.step();
+        assert_eq!(world.tick(), 1);
+        assert_eq!(world.awake_chunks(), 0);
+        assert_eq!(world.last_tick_cells(), 0);
+    }
+
+    #[test]
+    fn last_tick_cells_counts_scanned_area_and_resets() {
+        let mut world = world_3x3();
+        assert_eq!(world.last_tick_cells(), 0);
+        world.keep_awake(CellPos::new(10, 10));
+        world.step();
+        assert_eq!(world.last_tick_cells(), 25);
+        assert_eq!(world.awake_chunks(), 0);
+        world.step();
+        assert_eq!(world.last_tick_cells(), 0);
     }
 
     #[test]

@@ -201,6 +201,8 @@ fn builtin_material(name: &str, phase: Phase, density: u16, conductivity: u8) ->
 pub struct MaterialTable {
     materials: Vec<Material>,
     by_name: HashMap<String, MaterialId>,
+    /// 起動時に一度だけ解決した炎の ID。定義がなければ炎を生成しない。
+    pub fire: Option<MaterialId>,
 }
 
 impl MaterialTable {
@@ -284,7 +286,22 @@ impl MaterialTable {
             });
         }
 
-        Ok(Self { materials, by_name })
+        // 高温で A -> B、低温で B -> A のしきい値が重なると毎 tick 振動する。
+        for (i, material) in materials.iter().enumerate() {
+            for hot in [material.boil, material.melt].into_iter().flatten() {
+                let target = &materials[hot.into.0 as usize];
+                if target.freeze.is_some_and(|cold| cold.into.0 as usize == i && cold.at >= hot.at)
+                {
+                    return Err(MaterialError::Invalid {
+                        material: material.name.clone(),
+                        reason: "相変化が往復して振動します",
+                    });
+                }
+            }
+        }
+
+        let fire = by_name.get("fire").copied();
+        Ok(Self { materials, by_name, fire })
     }
 
     /// リポジトリの `assets/materials.ron` を埋め込んで読む。

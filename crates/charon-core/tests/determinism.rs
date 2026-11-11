@@ -31,6 +31,16 @@ fn deterministic() {
 }
 
 #[test]
+fn reaction_heat_deterministic() {
+    for seed in 1..=8u64 {
+        let kinds = ['w', 'l', 'a', 'W', 'f', 't'];
+        let a = hash_trace(&mut scene(seed, &kinds), 300);
+        let b = hash_trace(&mut scene(seed, &kinds), 300);
+        assert_eq!(a, b, "反応と熱の決定性: seed {seed}");
+    }
+}
+
+#[test]
 fn different_seeds_differ() {
     let kinds = ['s', 'w'];
     // 同じ配置から始めても、seed が違えば乱数が変わり、途中経過が変わる
@@ -71,4 +81,5 @@ fn golden_hashes() {
     check_golden("sand_and_water", scene(1, &['s', 'w']), 400);
     check_golden("all_liquids", scene(2, &['w', 'o', 'm']), 400);
     check_golden("powders_and_gas", scene(3, &['s', 'd', 'h', 'g']), 400);
+    check_golden("reaction_and_heat", scene(4, &['w', 'l', 'a', 'W', 'f', 't']), 400);
 }

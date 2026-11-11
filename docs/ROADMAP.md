@@ -15,6 +15,7 @@
 | [04-world-save](spec/04-world-save.md) | チャンクの読み込み・退避、保存形式、生成 |
 | [05-rigid-bodies](spec/05-rigid-bodies.md) | 剛体とセルの相互作用、浮力、パーティクル |
 | [06-rendering-platform](spec/06-rendering-platform.md) | wgpu、シェーダー、Android、メインループ |
+| [07-game-layer](spec/07-game-layer.md) | エンティティ、生成、建築、剛体熱、MOD、同期、Web |
 
 テストの書き方は [`docs/TESTING.md`](TESTING.md) にある。
 
@@ -44,13 +45,13 @@ FallingSandEngine の調査で見つかった問題に、それぞれ対応さ�
 |---|---|---|
 | M0 | 環境整備 | 完了 |
 | M1 | シミュレーション核 (1 スレッド) | 完了 |
-| M2 | 反応と熱 | 次に着手 |
-| M3 | 並列化と性能 | |
-| M4 | 描画とサンドボックス (Android を含む) | |
-| M5 | 無限ワールドと保存 | |
-| M6 | 剛体とパーティクル | |
-| M7 | ライティングと後処理 | |
-| M8 | ゲーム層 | 概要のみ。着手前に仕様を書く |
+| M2 | 反応と熱 | 完了 |
+| M3 | 並列化と性能 | 完了 (100 万セルの性能目標は未達、実測と見直し案を BENCHMARKS.md に記録) |
+| M4 | 描画とサンドボックス (Android を含む) | 完了（Android 実機確認は依頼者の指示で免除、Linux/macOS は未検証） |
+| M5 | 無限ワールドと保存 | 完了（Windows 実機で移動・復帰・再起動を確認、Android 実機は依頼者の指示で免除） |
+| M6 | 剛体とパーティクル | 完了（Windows の T6.8 実機操作・撮影は依頼者の指示で免除、未検証。Android 実機も免除、未検証） |
+| M7 | ライティングと後処理 | 実装・自動テスト完了（T7.4 の Android 60 fps 実測は依頼者の指示で免除、未検証。Windows GUI 目視・撮影も未実施） |
+| M8 | ゲーム層 | 仕様 07 を追加。T8.1〜T8.4 の自動テストを実装、T8.5 以降は未完了。Windows GUI 目視・撮影は未検証 |
 
 ---
 
@@ -120,6 +121,10 @@ M1 の完了条件: 上の全テストが通り、`scripts/check.sh` が通る�
 | T4.8 | Android ビルド。`docs/BUILD_ANDROID.md` を書く | 実機かエミュレーターで起動し、タッチで砂を置ける。ホームに戻って復帰してもクラッシュしない |
 | T4.9 | 各プラットフォームでの手動確認 | `docs/PLATFORM_CHECK.md` に結果を記録 |
 
+M4 の実機結果は `docs/PLATFORM_CHECK.md` に記録した。2026-11-11 の依頼者指示により、
+T4.8 と T4.9 の Android 実機・エミュレーター検証は免除する（成功とみなすものではない）。
+Linux と macOS の実機は未検証で、結果を明記した。
+
 ## M5 無限ワールドと保存
 
 読む仕様: 04 の全部。
@@ -131,6 +136,11 @@ M1 の完了条件: 上の全テストが通り、`scripts/check.sh` が通る�
 | T5.3 | `ChunkGenerator`、`FlatGenerator`、`NoiseGenerator` (仕様 04 §4) | `generator_is_pure` |
 | T5.4 | 読み込みと退避 (仕様 04 §2)。作業スレッドと固定の遅延 | `walk_away_and_back`、`streaming_is_deterministic` |
 | T5.5 | サンドボックスに組み込む。カメラを動かすと世界が広がる | 遠くまで移動して戻っても状態が保たれる。終了して再起動しても同じ |
+
+M5 の Windows 実機確認: カメラ移動後に生成地形が表示され、元の位置へ戻ると元のエリアが保持された。
+通常終了後に `saves/default/world.ron` とリージョンファイルを作成し、再起動して同じ地形を復元した。
+画像は `docs/screenshots/T5.5-initial.png`、`T5.5-pan.png`、`T5.5-return.png`、`T5.5-restart.png`。
+Android 実機確認は依頼者の 2026-11-11 の指示により免除し、未検証として扱う。
 
 ## M6 剛体とパーティクル
 
@@ -148,6 +158,11 @@ M1 の完了条件: 上の全テストが通り、`scripts/check.sh` が通る�
 | T6.8 | 1 tick の順序を仕様 05 §2 のとおりに統合。サンドボックスで剛体をつかんで動かせるようにする | `deterministic`。手で C 字の容器を回して中身が落ちることを確認 |
 | T6.9 | 剛体の保存 (`bodies.bin`) | 保存して読み込むと、剛体の位置・形・速度が同じ |
 
+T6.8 の Windows 実機操作・スクリーンショットは、2026-11-11 の依頼者判断で未検証のまま
+免除して後続タスクへ進む。自動テストは通過したが実機動作の成功とはみなさない。
+Android 実機検証も従来の依頼者指示で免除し、未検証として扱う。
+詳細は [`PLATFORM_CHECK.md`](PLATFORM_CHECK.md) に記録した。
+
 ## M7 ライティングと後処理
 
 読む仕様: 06 §5。
@@ -159,18 +174,27 @@ M1 の完了条件: 上の全テストが通り、`scripts/check.sh` が通る�
 | T7.3 | 後処理の例を 1 つ (ブルーム) | WGSL ファイル 1 つとパスの登録 1 行で追加できている |
 | T7.4 | モバイルでの計測 | Android の実機で 60 フレーム毎秒を保てる設定を既定にする。結果を `docs/BENCHMARKS.md` に記録 |
 
-## M8 ゲーム層 (概要)
+T7.4 の Android 実機・エミュレーター計測は依頼者の継続指示により未検証として免除した。
+60 fps 達成も、実機測定に基づく既定値の最適化も主張しない。
+Windows の新しいライティング画面も操作ツールのアクセスが拒否されたため目視・撮影は未実施。
+GPU オフスクリーンテストでは、空の見える地点が洞窟内より明るいことを確認した。
 
-M8 はまだ仕様がない。**着手する前に、M1〜M7 と同じ粒度の仕様を `docs/spec/` に書くこと。**
-対象は次のとおり。
+## M8 ゲーム層
 
-- エンティティとプレイヤー (当たり判定はスタンプの仕組みを使える)
-- バイオームと構造物の生成
-- 背景レイヤー、建築
-- 剛体の温度、爆発
-- MOD (データの追加読み込み) とスクリプト
-- マルチプレイ (決定性を前提にした入力同期)
-- Web 対応
+読む仕様: [07 の全部](spec/07-game-layer.md)。既存機能との接点では、各節の先頭に記載した先行仕様も読む。仕様 07 を書くことが実装の前提であり、完了条件は下表のテスト名で確認する。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T8.1 | `crates/charon-game`、`EntityId`、`Entity`、`EntityWorld` (07 §2.1) | `entity_ids_are_monotonic`、`entity_hash_is_stable` |
+| T8.2 | `PlayerInput` とプレイヤーの整数移動・スタンプとの衝突 (07 §2.2) | `player_lands_on_solid`、`player_hits_body_stamp`、`player_jump_and_negative_coords`、`invalid_input_is_atomic` |
+| T8.3 | バイオームと境界をまたぐ構造物生成 (07 §3) | `biome_boundary_is_pure`、`structure_crosses_chunk_border`、`biome_materials_are_named` |
+| T8.4 | 背景レイヤー、建築、保存、描画順 (07 §4) | `building_does_not_overwrite`、`background_does_not_affect_simulation`、`background_roundtrip` |
+| T8.5 | 剛体と前景の温度交換、爆発 (07 §5) | `body_heat_is_conserved`、`body_heat_roundtrip`、`explosion_conserves_cells`、`explosion_damages_body` |
+| T8.6 | MOD の材質・反応追加と安全な規則データ (07 §6) | `mods_load_in_sorted_order`、`duplicate_mod_material_is_rejected`、`script_rules_are_deterministic`、`script_rule_limit_is_enforced` |
+| T8.7 | 同一ビルドの決定的入力同期 (07 §7) | `lockstep_waits_for_all_inputs`、`lockstep_order_is_stable`、`lockstep_rejects_mismatch` |
+| T8.8 | Web ビルド、同期チャンク生成、実ブラウザーでの保存と操作 (07 §8) | `web_core_compiles`、`web_streaming_tick_is_deterministic`、`web_save_roundtrip`、`web_input_and_resume` |
+
+Web の実機結果と異種 OS の入力同期は、自動テストだけから成功を推定しない。Android 実機検証は依頼者の継続指示により免除し、未検証と記録する。
 
 ---
 

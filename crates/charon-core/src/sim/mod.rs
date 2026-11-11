@@ -5,4 +5,4 @@ pub mod neighborhood;
 mod step;
 
 pub use neighborhood::{MAX_REACH, Neighborhood, SCAN};
-pub use step::chunk_phase;
+pub use step::{chunk_phase, convert};

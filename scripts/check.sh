@@ -23,6 +23,9 @@ check_target() {
     fi
 }
 check_target aarch64-linux-android
+if rustup target list --installed | grep -qx aarch64-linux-android; then
+    run cargo check -p charon-render -p charon-app -p charon-sandbox --lib --target aarch64-linux-android
+fi
 check_target wasm32-unknown-unknown --no-default-features
 
 echo; echo "すべての確認が通りました。"

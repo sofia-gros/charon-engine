@@ -31,6 +31,24 @@ fn mass_is_conserved() {
 }
 
 #[test]
+fn everything_sleeps() {
+    const ALL: [char; 15] =
+        ['#', 'W', 'i', 's', 'd', 'h', 'w', 'm', 'o', 'l', 'a', 't', 'g', 'k', 'f'];
+    for seed in 1..=32u64 {
+        let mut world = world_from_ascii(&box_art(64, 64), seed);
+        for y in 0..64 {
+            for x in 1..=64 {
+                let h = hash(seed, 0, x, y, 0);
+                if h & 1 == 0 {
+                    place(&mut world, x, y, ALL[((h >> 8) % ALL.len() as u32) as usize]);
+                }
+            }
+        }
+        assert_sleeps(&mut world, 20_000);
+    }
+}
+
+#[test]
 fn random_world_goes_to_sleep() {
     for seed in 1..=8u64 {
         let mut world = world_from_ascii(&box_art(100, 100), seed);
