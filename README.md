@@ -11,13 +11,13 @@
 ![Rust](https://img.shields.io/badge/rust-1.99%2B%20(stable)-orange?logo=rust)
 ![Edition](https://img.shields.io/badge/edition-2024-orange)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-success)
-![Status](https://img.shields.io/badge/status-M3%20%E5%AE%8C%E4%BA%86%20%2F%20M4%20%E7%9D%80%E6%89%8B%E5%89%8D-blue)
+![Status](https://img.shields.io/badge/status-M8%20%E5%AE%9F%E8%A3%85%E6%B8%88%E3%81%BF%20%2F%20Web%E5%AE%9F%E6%A9%9F%E6%9C%AA%E6%A4%9C%E8%A8%BC-blue)
 
-![Windows](https://img.shields.io/badge/Windows-planned-lightgrey?logo=windows)
-![Linux](https://img.shields.io/badge/Linux-planned-lightgrey?logo=linux&logoColor=white)
-![macOS](https://img.shields.io/badge/macOS-planned-lightgrey?logo=apple)
-![Android](https://img.shields.io/badge/Android-planned-lightgrey?logo=android)
-![Web](https://img.shields.io/badge/Web-later-lightgrey?logo=webassembly)
+![Windows](https://img.shields.io/badge/Windows-%E8%B5%B7%E5%8B%95%E7%A2%BA%E8%AA%8D-blue?logo=windows)
+![Linux](https://img.shields.io/badge/Linux-%E6%9C%AA%E6%A4%9C%E8%A8%BC-lightgrey?logo=linux&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-%E6%9C%AA%E6%A4%9C%E8%A8%BC-lightgrey?logo=apple)
+![Android](https://img.shields.io/badge/Android-%E5%9E%8B%E6%A4%9C%E6%9F%BB%E6%B8%88%E3%81%BF-blue?logo=android)
+![Web](https://img.shields.io/badge/Web-wasm%E3%83%93%E3%83%AB%E3%83%89%E7%A2%BA%E8%AA%8D-blue?logo=webassembly)
 ![wgpu](https://img.shields.io/badge/renderer-wgpu%20%2B%20WGSL-informational)
 
 [ロードマップ](docs/ROADMAP.md) ・ [仕様](docs/spec/) ・ [テストの書き方](docs/TESTING.md) ・ [実装者向けの規則](CLAUDE.md)
@@ -27,9 +27,8 @@
 ---
 
 > [!NOTE]
-> **M3 (並列化・性能検証) まで実装済みです。** 剛体・描画はまだです。100 万セルの性能目標は未達で、実測と見直し案は[ベンチマーク記録](docs/BENCHMARKS.md)を参照してください。
-> `cargo run -p charon-core --example piles` で粉体の山の形を文字で見られます。
-> 進み具合は[現在の状態](#現在の状態)を見てください。
+> **M8 まで実装・自動テスト済みです。** Windows サンドボックスは起動を確認しましたが、最新の GUI 操作・撮影は未検証です。Web は wasm ビルドまで確認し、ブラウザー上の保存・操作は後日検証します。Android 実機も未検証です。詳しくは[現在の状態](#現在の状態)と[プラットフォーム確認](docs/PLATFORM_CHECK.md)をご覧ください。
+> 100 万セルの性能目標は未達です。実測と見直し案は[ベンチマーク記録](docs/BENCHMARKS.md)にあります。
 
 ## 目次
 
@@ -52,7 +51,7 @@
 | **摩擦と粘性** | 材質ごとに崩れやすさ、流れやすさを設定できる。スライムはゆっくり垂れる |
 | **反応・熱・燃焼** | 「水 + 溶岩 → 蒸気 + 石」のような反応、熱の伝導、融解と沸騰、燃え広がる火 |
 | **剛体との相互作用** | 容器に砂や水をためて運べる。傾ければこぼれる。船は浮き、水を入れたコップは重くなる |
-| **決定的** | 同じ seed なら、OS やスレッド数が違っても同じ結果になる。リプレイとマルチプレイの土台 |
+| **決定的なシミュレーション核** | 同じ seed なら並列 feature の有無でセルの結果が一致する。剛体を含む異種 OS 間の同期は未検証 |
 | **`unsafe` なしの並列化** | 9 フェーズ更新で、各スレッドにチャンクの所有権を丸ごと渡す |
 | **休眠** | 動いていない領域は CPU も GPU も使わない |
 | **どこでも動く描画** | wgpu + WGSL。コンピュートシェーダーを使わないので、モバイルや古い GPU でも動く |
@@ -111,7 +110,7 @@ flowchart LR
 剛体は毎 tick、セルの格子に形を書き込みます。書き込まれた壁は、砂や水から見ると普通の固体です。
 だから「C」の形の容器に入れた砂は壁で止まり、開口部が下を向けば、特別な処理なしに落ちます。
 
-### クレートの構成 (予定)
+### クレートの構成
 
 ```mermaid
 flowchart TD
@@ -124,7 +123,7 @@ flowchart TD
     physics --> core
 ```
 
-`charon-core` は他のクレートに依存しません。現在は M3 までのシミュレーション核が実装済みです。
+`charon-core` は描画・ウィンドウに依存しません。M8 までの機能は各クレートで実装済みで、Web の実ブラウザー確認は保留中です。
 
 ## 材質はデータで定義する
 
@@ -158,13 +157,13 @@ flowchart TD
 | M1 | シミュレーション核: 粉体・液体・気体、摩擦、粘性、休眠 | ✅ 完了 |
 | M2 | 反応、熱、相変化、燃焼 | ✅ 完了 |
 | M3 | 並列化と性能 (100 万セルの性能目標は未達) | ✅ 検証完了 |
-| M4 | 描画とサンドボックス (Windows / Linux / macOS / Android) | ⏳ 次に着手 |
-| M5 | 無限ワールドと保存 | ・ |
-| M6 | 剛体とパーティクル | ・ |
-| M7 | ライティングと後処理 | ・ |
-| M8 | ゲーム層 (エンティティ、ワールド生成、MOD、マルチプレイ、Web) | ・ |
+| M4 | 描画とサンドボックス (Windows / Linux / macOS / Android) | ✅ 実装済み。Linux / macOS と Android 実機は未検証 |
+| M5 | 無限ワールドと保存 | ✅ 実装済み。Windows で移動・再起動を確認 |
+| M6 | 剛体とパーティクル | ✅ 実装済み。Windows の剛体 GUI 操作は未検証 |
+| M7 | ライティングと後処理 | ✅ 実装・自動テスト済み。Android 60 fps は未計測 |
+| M8 | ゲーム層 (エンティティ、ワールド生成、MOD、入力同期、Web) | ✅ 実装・自動テスト済み。Web の保存・ポインター操作は実ブラウザーで未検証 |
 
-各マイルストーンのタスクと完了条件は [docs/ROADMAP.md](docs/ROADMAP.md) にあります。
+各マイルストーンのタスクと完了条件は [docs/ROADMAP.md](docs/ROADMAP.md) に、実機確認の結果と未実施項目は [docs/PLATFORM_CHECK.md](docs/PLATFORM_CHECK.md) にあります。T8.8 は Windows 実行ファイルの起動まで確認済みで、GUI 操作・撮影と Web 実機確認は後日実施します。
 
 ### 性能の目標
 
@@ -186,6 +185,14 @@ M3 時点の実測は [docs/BENCHMARKS.md](docs/BENCHMARKS.md) にあります (
 ```bash
 rustup target add aarch64-linux-android wasm32-unknown-unknown
 ```
+
+### Windows サンドボックスを起動
+
+```bash
+cargo run -p charon-sandbox --bin charon-sandbox
+```
+
+ワールドの保存先は起動時の作業ディレクトリにある `saves/default` です。最新の Windows GUI での配置・復帰や撮影は未検証です。
 
 ### 確認
 
@@ -224,16 +231,21 @@ python3 tools/prototype/run.py
 ```
 charon-engine/
 ├── crates/
-│   └── charon-core/        シミュレーション核 (描画に依存しない)
-├── assets/
-│   ├── materials.ron       材質の定義
-│   └── reactions.ron       反応の定義
+│   ├── charon-core/        シミュレーション核
+│   ├── charon-world/       チャンク生成・保存・背景
+│   ├── charon-physics/     剛体・パーティクル
+│   ├── charon-render/      wgpu 描画
+│   ├── charon-app/         入力・ウィンドウ・メインループ
+│   └── charon-game/        エンティティ・入力同期
+├── apps/sandbox/           Windows / Android / Web の動作確認用アプリ
+├── assets/                 材質と反応の定義
 ├── docs/
 │   ├── ROADMAP.md          マイルストーンとタスク
+│   ├── PLATFORM_CHECK.md   実機確認と未実施項目
 │   ├── TESTING.md          テストの書き方
-│   └── spec/               実装の仕様 (01〜06)
+│   └── spec/               実装の仕様 (01〜07)
 ├── tools/prototype/        移動規則の Python 試作
-├── scripts/check.sh        コミット前の確認
+├── scripts/                チェックと Web ビルド
 └── CLAUDE.md               実装者向けの規則
 ```
 
@@ -250,6 +262,8 @@ charon-engine/
 | [仕様 04: ワールドと保存](docs/spec/04-world-save.md) | チャンクの読み込み、保存形式、生成 |
 | [仕様 05: 剛体](docs/spec/05-rigid-bodies.md) | 剛体とセルの相互作用、浮力、パーティクル |
 | [仕様 06: 描画とプラットフォーム](docs/spec/06-rendering-platform.md) | wgpu、シェーダー、Android、メインループ |
+| [仕様 07: ゲーム層](docs/spec/07-game-layer.md) | エンティティ、MOD、入力同期、Web |
+| [プラットフォーム確認](docs/PLATFORM_CHECK.md) | 実機で確認したことと、後日検証する項目 |
 
 ## 謝辞
 
