@@ -73,6 +73,11 @@ impl<'a> Neighborhood<'a> {
         )
     }
 
+    /// ワールドの seed。
+    pub(crate) fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// 現在の tick。
     pub fn tick(&self) -> u64 {
         self.tick

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::cell::{Cell, FLAG_FALLING, FLAG_FLOW_RIGHT, FLAG_PARITY, MaterialId};
+use crate::cell::{Cell, FLAG_BODY, FLAG_FALLING, FLAG_FLOW_RIGHT, FLAG_PARITY, MaterialId};
 use crate::chunk::{Chunk, add_rect, wake_region};
 use crate::coords::{CHUNK_MASK, CellPos, ChunkPos};
 use crate::material::MaterialTable;
@@ -42,6 +42,22 @@ impl World {
             tick: 0,
             last_tick_cells: 0,
         })
+    }
+
+    /// 起動時に解決済みの反応を持つワールドを作る。
+    pub fn with_reactions(
+        materials: Arc<MaterialTable>,
+        reactions: Arc<ReactionTable>,
+        seed: u64,
+    ) -> Self {
+        Self {
+            chunks: HashMap::new(),
+            materials,
+            reactions: Some(reactions),
+            seed,
+            tick: 0,
+            last_tick_cells: 0,
+        }
     }
 
     /// 全セルが空のチャンクを追加する。既にあれば何もしない。
@@ -94,6 +110,28 @@ impl World {
                 }
             }
         }
+    }
+
+    /// 規則による材質変化。反応と同じ convert を使い、変わらないセルは書かない。
+    pub fn convert(&mut self, pos: CellPos, new_material: MaterialId) -> bool {
+        let cell = self.get(pos);
+        if cell.material == MaterialId::BOUNDARY
+            || cell.has(FLAG_BODY)
+            || cell.material == new_material
+            || usize::from(new_material.0) >= self.materials.len()
+        {
+            return false;
+        }
+        let converted = crate::sim::convert_cell(
+            &self.materials,
+            self.seed,
+            self.tick,
+            pos,
+            cell,
+            new_material,
+        );
+        self.set(pos, converted);
+        true
     }
 
     /// 読み込まれた 2 セルを `set` 経由で入れ替え、数と dirty を保つ。

@@ -1,5 +1,7 @@
 //! 仕様 07 §2.1: セルと独立した、決定的なエンティティの格納。
 
+pub mod mods;
+
 use std::collections::BTreeMap;
 
 use charon_core::cell::{FLAG_BODY, MaterialId};

@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 charon-core = { version = "0.1.0", path = "../charon-core" }
+ron = "0.12.3"
+serde = { version = "1.0.229", features = ["derive"] }
 
 [lints]
 workspace = true

@@ -166,6 +166,17 @@ struct RawMaterial {
     emission: [u8; 3],
 }
 
+/// ローカル定義への短い参照だけを名前空間化する。組み込み名と他 MOD の完全修飾名は保つ。
+pub(crate) fn namespace_reference(
+    id: &str,
+    local: &std::collections::HashSet<String>,
+    name: &mut String,
+) {
+    if local.contains(name) {
+        *name = format!("{id}:{name}");
+    }
+}
+
 /// 組み込みの材質 (`empty`、`boundary`) の共通部分。
 fn builtin_material(name: &str, phase: Phase, density: u16, conductivity: u8) -> Material {
     Material {
@@ -210,6 +221,37 @@ impl MaterialTable {
     pub fn from_ron(src: &str) -> Result<Self, MaterialError> {
         let raws: Vec<RawMaterial> =
             ron::from_str(src).map_err(|e| MaterialError::Parse(e.to_string()))?;
+        Self::from_raws(raws)
+    }
+
+    /// 組み込み材質の後ろに、渡された順で名前空間付きの MOD 材質を追加する。
+    /// すべての定義を集めてから参照を解決するため、MOD 間の前方参照も使える。
+    pub fn from_mods(mods: &[(&str, &str)]) -> Result<Self, MaterialError> {
+        let mut raws: Vec<RawMaterial> =
+            ron::from_str(include_str!("../../../assets/materials.ron"))
+                .map_err(|e| MaterialError::Parse(e.to_string()))?;
+        for &(id, src) in mods {
+            let mut added: Vec<RawMaterial> =
+                ron::from_str(src).map_err(|e| MaterialError::Parse(e.to_string()))?;
+            let local: std::collections::HashSet<_> =
+                added.iter().map(|material| material.name.as_str().to_owned()).collect();
+            for material in &mut added {
+                for transition in [&mut material.melt, &mut material.freeze, &mut material.boil]
+                    .into_iter()
+                    .flatten()
+                {
+                    namespace_reference(id, &local, &mut transition.into);
+                }
+                namespace_reference(id, &local, &mut material.burn_into);
+                namespace_reference(id, &local, &mut material.decay_into);
+                material.name = format!("{id}:{}", material.name);
+            }
+            raws.extend(added);
+        }
+        Self::from_raws(raws)
+    }
+
+    fn from_raws(raws: Vec<RawMaterial>) -> Result<Self, MaterialError> {
         if raws.len() + 2 > u16::MAX as usize {
             return Err(MaterialError::TooMany);
         }

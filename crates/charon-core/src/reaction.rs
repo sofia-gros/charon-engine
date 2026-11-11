@@ -72,6 +72,34 @@ impl ReactionTable {
     pub fn from_ron(src: &str, materials: &MaterialTable) -> Result<Self, ReactionError> {
         let raws: Vec<RawReaction> =
             ron::from_str(src).map_err(|e| ReactionError::Parse(e.to_string()))?;
+        Self::from_raws(raws, materials)
+    }
+
+    /// 組み込み反応と MOD 反応をまとめ、全材質の ID が確定してから参照を解決する。
+    pub fn from_mods(
+        mods: &[(&str, &str)],
+        materials: &MaterialTable,
+    ) -> Result<Self, ReactionError> {
+        let mut raws: Vec<RawReaction> =
+            ron::from_str(include_str!("../../../assets/reactions.ron"))
+                .map_err(|e| ReactionError::Parse(e.to_string()))?;
+        for &(id, src) in mods {
+            let mut added: Vec<RawReaction> =
+                ron::from_str(src).map_err(|e| ReactionError::Parse(e.to_string()))?;
+            for raw in &mut added {
+                for name in [&mut raw.a, &mut raw.b, &mut raw.out_a, &mut raw.out_b] {
+                    let qualified = format!("{id}:{name}");
+                    if materials.id(&qualified).is_some() {
+                        *name = qualified;
+                    }
+                }
+            }
+            raws.extend(added);
+        }
+        Self::from_raws(raws, materials)
+    }
+
+    fn from_raws(raws: Vec<RawReaction>, materials: &MaterialTable) -> Result<Self, ReactionError> {
         let mut table = Self::empty(materials)?;
         for raw in raws {
             let id = |name: &str| {

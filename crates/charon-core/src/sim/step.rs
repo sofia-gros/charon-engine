@@ -6,9 +6,9 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::cell::{Cell, FLAG_BODY, FLAG_BURNING, FLAG_FALLING, FLAG_PARITY, MaterialId};
-use crate::coords::ChunkPos;
+use crate::coords::{CellPos, ChunkPos};
 use crate::material::{MaterialTable, Phase};
-use crate::rng::{SALT_FIRE, SALT_FIRE_DIR, SALT_LIFE, SALT_REACT, SALT_REACT_DIR, chance};
+use crate::rng::{SALT_FIRE, SALT_FIRE_DIR, SALT_REACT, SALT_REACT_DIR, chance};
 use crate::sim::Neighborhood;
 use crate::sim::movement::{move_fluid, move_powder};
 use crate::world::World;
@@ -167,20 +167,33 @@ pub fn convert(
     cell: Cell,
     new_material: MaterialId,
 ) -> Cell {
-    let life = match nb.materials().get(new_material).lifetime {
-        Some((min, max)) => {
-            let span = (max - min) as u32 + 1;
-            min + (nb.hash(x, y, SALT_LIFE) % span) as u8
-        }
-        None => 0,
-    };
+    let origin = nb.center.origin();
+    convert_cell(
+        nb.materials(),
+        nb.seed(),
+        nb.tick(),
+        CellPos::new(origin.x + x, origin.y + y),
+        cell,
+        new_material,
+    )
+}
+
+/// 通常の反応と tick 開始時の規則で同じ材質変化を使う。
+pub(crate) fn convert_cell(
+    materials: &MaterialTable,
+    seed: u64,
+    tick: u64,
+    pos: CellPos,
+    cell: Cell,
+    new_material: MaterialId,
+) -> Cell {
     Cell {
         material: new_material,
         flags: (cell.flags & FLAG_PARITY) | FLAG_FALLING,
         shade: cell.shade,
         temp: cell.temp,
         vy: 0,
-        life,
+        life: crate::world::roll_life(materials.get(new_material).lifetime, seed, tick, pos),
     }
 }
 
