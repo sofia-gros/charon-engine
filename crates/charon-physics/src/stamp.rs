@@ -17,12 +17,12 @@ pub(crate) struct StampTransform {
 }
 
 impl StampTransform {
-    fn new(translation: [f32; 2], angle: f32) -> Self {
+    pub(crate) fn new(translation: [f32; 2], angle: f32) -> Self {
         let (sin, cos) = angle.sin_cos();
         Self { translation, sin, cos }
     }
 
-    fn local_index(self, body: &PixelBody, pos: CellPos) -> Option<usize> {
+    pub(crate) fn local_index(self, body: &PixelBody, pos: CellPos) -> Option<usize> {
         let dx = pos.x as f32 + 0.5 - self.translation[0];
         let dy = pos.y as f32 + 0.5 - self.translation[1];
         let bx = (self.cos * dx + self.sin * dy + body.origin[0]).floor() as i32;

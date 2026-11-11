@@ -3,12 +3,15 @@
 mod contour;
 mod damage;
 mod displace;
+mod explosion;
 mod forces;
+mod heat;
 mod particle;
 mod save;
 mod stamp;
 mod terrain;
 
+pub use explosion::{ExplosionError, explode};
 pub use particle::{PARTICLE_LIMIT, Particle};
 pub use save::BodySaveError;
 
@@ -232,6 +235,7 @@ impl PhysicsEngine {
     pub fn step(&mut self, world: &mut charon_core::world::World) -> Result<(), BodyError> {
         self.split_damaged(world)?;
         self.apply_cell_forces(world);
+        self.exchange_body_heat(world);
         let active: Vec<_> = self
             .bodies
             .iter()
