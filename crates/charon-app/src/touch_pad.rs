@@ -22,6 +22,20 @@ pub(crate) struct PadOutput {
     pub toggle_paint: bool,
 }
 
+impl PadOutput {
+    /// 2 つの入力 (タッチとゲームパッド) を重ねる。歩く向きは動いている方、狙いは `other` を優先する。
+    pub(crate) fn merge(self, other: Self) -> Self {
+        Self {
+            horizontal: if other.horizontal != 0 { other.horizontal } else { self.horizontal },
+            jump: self.jump || other.jump,
+            fire: self.fire || other.fire,
+            tool: self.tool || other.tool,
+            aim: other.aim.or(self.aim),
+            toggle_paint: self.toggle_paint || other.toggle_paint,
+        }
+    }
+}
+
 /// スワイプとみなす、上向きのずれ (スティックの半径に対する割合)。
 const SWIPE_UP: f32 = 0.7;
 /// 歩き始めるずれ (スティックの半径に対する割合)。

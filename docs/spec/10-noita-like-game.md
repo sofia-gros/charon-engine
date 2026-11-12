@@ -414,7 +414,7 @@ Android (とタッチ画面のデスクトップ) で `charon-demo` を遊ぶた
 ### 11.2 ゲームパッド
 
 - **Android:** ゲームパッドのボタンはキーとして届く (`KEYCODE_BUTTON_*`)。`A` = ジャンプ、`X`・`R1`・`R2` = 武器、`B`・`L1`・`L2` = 道具、`Y` = 武器 / ブラシの切り替え。十字キーは矢印キー (歩く・ジャンプ) と同じ。撃つ向きは、狙いのスティックがないので、歩いている向きの少し上 `(±1000, −300)`。アナログスティックは winit が届けないため未対応。
-- **デスクトップのゲームパッド (XInput など):** 未対応。依存クレート (`gilrs`) の追加が必要で、現時点では見送っている。
+- **デスクトップのゲームパッド (XInput など):** `gilrs` (`charon-app::gamepad`、Android・Web では使わない) が最初に見つけたゲームパッドを毎フレーム読む。左スティック・十字キーで歩く (上に倒す・十字キーの上・`A` でジャンプ)、`X`・`R1`・`R2` が武器、`B`・`L1`・`L2` が道具、右スティックで狙う (しきい値 0.3、スティックの上が画面の上)、`Y` が武器 / ブラシの切り替え。右スティックがないときの撃つ向きは、歩いている向きの少し上。タッチと重ねて使える。
 
 ### 11.3 テスト
 
@@ -425,6 +425,8 @@ Android (とタッチ画面のデスクトップ) で `charon-demo` を遊ぶた
 | `buttons_hold_and_paint_toggles_once` | `JUMP` は押している間、`PAINT` の切り替えは 1 度だけ |
 | `touches_outside_the_pad_are_left_to_the_camera_and_brush` | 部品の外のタッチは部品のものにならない |
 | `android_gamepad_buttons_map_to_actions` | Android のボタンが武器・道具・切り替えになり、知らないボタンは無視する |
+| `sticks_and_buttons_map_to_actions` | デスクトップのゲームパッドのスティック・十字キー・ボタンが歩く・ジャンプ・武器・道具・切り替えになり、触れなければ何もしない |
+| `right_stick_aims_with_screen_down_positive` | 右スティックの上が画面の上 (y 負) になり、小さな傾きでは狙いを変えない |
 | `demo_renders_touch_pad` | RTX 4060 のオフスクリーン描画で、仮想パッドが重ね描きに出る ([`M13-touch-pad.png`](../screenshots/M13-touch-pad.png)) |
 
 Android 実機での確認は未実施。

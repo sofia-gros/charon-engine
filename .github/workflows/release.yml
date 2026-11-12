@@ -44,9 +44,13 @@ jobs:
         with:
           targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
-      - run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      # ubuntu-latest には Android SDK が入っている。`android-actions/setup-android` は SDK の更新で失敗したので使わない。
+      - name: Android SDK と NDK を入れる
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - run: cargo install --git https://github.com/rust-mobile/cargo-apk --package cargo-apk --locked
       # リリースビルドの署名に使うデバッグ用の鍵 (本番の配布用の鍵ではない)。
       - name: デバッグ用の鍵を作る

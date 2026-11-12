@@ -7,6 +7,8 @@ pub mod demo;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod demo_render;
 mod demo_ui;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+mod gamepad;
 mod gesture;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod headless_tests;
@@ -390,6 +392,9 @@ struct App {
     gestures: TouchGestures,
     /// 画面の仮想スティックとボタン (仕様 10 §10)。
     touch_pad: TouchPad,
+    /// デスクトップのゲームパッド (仕様 10 §11.2)。使えない環境では `None`。
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    gamepad: Option<gamepad::Gamepad>,
     /// 最後に歩いた向き (-1 か 1)。ゲームパッドのボタンで撃つ向きに使う。
     facing: i8,
     timer: FixedTimestep,
@@ -451,6 +456,8 @@ impl App {
                 }
                 pad
             },
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            gamepad: gamepad::Gamepad::new(),
             facing: 1,
             timer: FixedTimestep::default(),
             previous: None,
@@ -782,8 +789,12 @@ impl App {
         }
         // 画面のスティック・ボタン (仕様 10 §10)。キーボード・マウスの操作と、使っている方が優先される形で重ねる。
         self.touch_pad.set_viewport([size.width as f32, size.height as f32]);
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        let pad_input = self.gamepad.as_mut().map(gamepad::Gamepad::poll).unwrap_or_default();
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        let pad_input = PadOutput::default();
         let pad = if self.options.follow_player && !self.free_camera {
-            self.touch_pad.output()
+            self.touch_pad.output().merge(pad_input)
         } else {
             PadOutput::default()
         };

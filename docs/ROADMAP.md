@@ -283,7 +283,7 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 | T13.2 | Android の入口を参照デモにする (MOD を埋め込み、内部ストレージへ書き出す)、`run_demo_with` | `cargo check --target aarch64-linux-android` |
 | T13.3 | `v*` のタグで Windows (zip)・Android (apk) をビルドして Releases に載せる GitHub Actions (`release.yml`)。最初のタグ `v0.0.1` | タグの push で Release に 2 つの成果物が付く |
 
-デスクトップのゲームパッド (XInput など) は、依存クレート (`gilrs`) の追加が必要で、見送った。Android 実機での確認は未実施。
+デスクトップのゲームパッド (XInput など) は `gilrs` (2026-11-13 に追加を承認) で対応した (`sticks_and_buttons_map_to_actions`、`right_stick_aims_with_screen_down_positive`)。実際のゲームパッドをつないだ確認と Android 実機での確認は未実施。
 
 ---
 
