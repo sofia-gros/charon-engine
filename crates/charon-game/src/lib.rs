@@ -2,6 +2,7 @@
 
 pub mod lockstep;
 pub mod mods;
+pub mod projectile;
 pub mod vitals;
 
 use std::collections::BTreeMap;
