@@ -1,6 +1,6 @@
 //! 1 tick の更新。描画ループと画面なしのテストが同じ手順を使う (仕様 06 §6、仕様 07 §2、仕様 05 §2)。
 
-use std::time::Instant;
+use web_time::Instant;
 
 use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::world::World;

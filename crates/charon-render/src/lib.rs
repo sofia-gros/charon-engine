@@ -68,7 +68,10 @@ impl GpuContext {
         height: u32,
     ) -> Result<Self, GpuError> {
         descriptor.backends = wgpu::Backends::all();
-        let instance = wgpu::Instance::new(descriptor);
+        // ブラウザーに `navigator.gpu` があっても、アダプターが取れない環境 (Linux の Chrome など) がある。
+        // `Instance::new` は `navigator.gpu` の有無だけで WebGPU 専用に確定するため、アダプターを検出して
+        // から作り、取れなければ WebGL2 へ落とす。サーフェス (canvas) の生成より前に行う必要がある。
+        let instance = wgpu::util::new_instance_with_webgpu_detection(descriptor).await;
         let surface = instance.create_surface(target).map_err(GpuError::Surface)?;
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -146,6 +149,15 @@ impl GpuContext {
     pub fn surface_config(&self) -> Option<&wgpu::SurfaceConfiguration> {
         self.config.as_ref()
     }
+
+    /// サーフェスのフレームに対する描画先ビュー。形式は `surface_config().format` (sRGB) で、
+    /// 実体が非 sRGB のサーフェス (WebGPU のキャンバス) でも、パスが想定する形式で描ける。
+    pub fn frame_view(&self, frame: &wgpu::Texture) -> wgpu::TextureView {
+        frame.create_view(&wgpu::TextureViewDescriptor {
+            format: self.config.as_ref().map(|config| config.format),
+            ..Default::default()
+        })
+    }
 }
 
 fn requested_limits(adapter: &wgpu::Limits) -> wgpu::Limits {
@@ -156,8 +168,25 @@ fn requested_limits(adapter: &wgpu::Limits) -> wgpu::Limits {
     }
 }
 
-fn srgb_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
-    formats.iter().copied().find(wgpu::TextureFormat::is_srgb)
+/// サーフェスの形式の選び方。`render` はパスとビューが使う sRGB 形式、`surface` は実際に configure する形式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SurfaceFormats {
+    render: wgpu::TextureFormat,
+    surface: wgpu::TextureFormat,
+}
+
+fn surface_formats(formats: &[wgpu::TextureFormat]) -> Option<SurfaceFormats> {
+    // sRGB を直接受け付けるサーフェス (多くのネイティブ、WebGL2) はそのまま使う。
+    if let Some(&format) = formats.iter().find(|format| format.is_srgb()) {
+        return Some(SurfaceFormats { render: format, surface: format });
+    }
+    // WebGPU のキャンバスは sRGB 形式を直接は受け付けない (`bgra8unorm` などだけ)。
+    // 非 sRGB 形式で configure し、対になる sRGB 形式のビューへ描く。
+    formats.iter().find_map(|&format| {
+        let srgb = format.add_srgb_suffix();
+        (srgb != format && srgb.is_srgb())
+            .then_some(SurfaceFormats { render: srgb, surface: format })
+    })
 }
 
 fn configure_surface(
@@ -169,12 +198,19 @@ fn configure_surface(
 ) -> Result<Option<wgpu::SurfaceConfiguration>, GpuError> {
     let mut config =
         surface.get_default_config(adapter, width, height).ok_or(GpuError::UnsupportedSurface)?;
-    config.format =
-        srgb_format(&surface.get_capabilities(adapter).formats).ok_or(GpuError::UnsupportedSrgb)?;
+    let formats = surface_formats(&surface.get_capabilities(adapter).formats)
+        .ok_or(GpuError::UnsupportedSrgb)?;
+    config.format = formats.surface;
+    if formats.render != formats.surface {
+        config.view_formats = vec![formats.render];
+    }
     if width == 0 || height == 0 {
         return Ok(None);
     }
     surface.configure(device, &config);
+    // 呼び出し側が参照する設定には、描画先 (ビュー) の形式を見せる。
+    config.format = formats.render;
+    config.view_formats = Vec::new();
     Ok(Some(config))
 }
 
@@ -353,13 +389,35 @@ mod tests {
     }
 
     #[test]
-    fn srgb_format_is_required() {
+    fn srgb_surface_is_used_directly() {
         use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8UnormSrgb};
         assert_eq!(
-            srgb_format(&[Bgra8Unorm, Bgra8UnormSrgb, Rgba8UnormSrgb]),
-            Some(Bgra8UnormSrgb)
+            surface_formats(&[Bgra8Unorm, Bgra8UnormSrgb, Rgba8UnormSrgb]),
+            Some(SurfaceFormats { render: Bgra8UnormSrgb, surface: Bgra8UnormSrgb })
         );
-        assert_eq!(srgb_format(&[Bgra8Unorm]), None);
+    }
+
+    /// WebGPU のキャンバスは `bgra8unorm` / `rgba8unorm` / `rgba16float` だけを受け付ける。
+    #[test]
+    fn webgpu_canvas_renders_through_an_srgb_view() {
+        use wgpu::TextureFormat::{
+            Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba8UnormSrgb, Rgba16Float,
+        };
+        assert_eq!(
+            surface_formats(&[Rgba8Unorm, Bgra8Unorm, Rgba16Float]),
+            Some(SurfaceFormats { render: Rgba8UnormSrgb, surface: Rgba8Unorm })
+        );
+        assert_eq!(
+            surface_formats(&[Bgra8Unorm, Rgba8Unorm]),
+            Some(SurfaceFormats { render: Bgra8UnormSrgb, surface: Bgra8Unorm })
+        );
+    }
+
+    #[test]
+    fn surface_without_an_srgb_pair_is_rejected() {
+        use wgpu::TextureFormat::Rgba16Float;
+        assert_eq!(surface_formats(&[Rgba16Float]), None);
+        assert_eq!(surface_formats(&[]), None);
     }
 
     #[test]

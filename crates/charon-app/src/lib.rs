@@ -32,7 +32,7 @@ use std::path::PathBuf;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::Instant;
 
 use charon_core::cell::MaterialId;
 use charon_core::coords::{CellPos, ChunkPos};
@@ -76,6 +76,50 @@ pub fn run(
     event_loop.run_app(&mut App::new(world, brush_material, make_world))
 }
 
+/// 保存前のパネル表示。
+#[cfg(any(target_arch = "wasm32", test))]
+const NOT_SAVED: &str = "Not saved";
+
+/// Sandbox パネルに出す保存状態。パネルの文字は egui の標準フォントで描くため、日本語は文字化けする。
+/// そのため ASCII だけにする (ホストページの状態欄 `#status` は日本語でよい)。
+#[cfg(any(target_arch = "wasm32", test))]
+fn save_status_text(result: Result<(), String>, tick: u64) -> String {
+    match result {
+        Ok(()) => format!("Saved (tick {tick})"),
+        Err(err) => format!("Not saved: {err}"),
+    }
+}
+
+/// 保存データを読み込んで再開したときのパネル表示。
+#[cfg(any(target_arch = "wasm32", test))]
+fn load_status_text(tick: u64) -> String {
+    format!("Loaded saved world (tick {tick})")
+}
+
+/// panic をブラウザーのコンソールと状態欄に出す。
+///
+/// フックがないと wasm の panic は `unreachable` というトラップにしかならず、原因が分からない上に、
+/// 状態欄は起動時の「実行中」のまま残って、止まったことが見えない。
+#[cfg(target_arch = "wasm32")]
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let message = format!("停止しました (panic): {info}");
+        web_sys::console::error_1(&message.clone().into());
+        set_web_status(&message);
+    }));
+}
+
+/// ホストページの状態欄 (`#status`) を書き換える。
+#[cfg(target_arch = "wasm32")]
+fn set_web_status(text: &str) {
+    if let Some(status) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("status"))
+    {
+        status.set_text_content(Some(text));
+    }
+}
+
 /// ブラウザー上で同じ描画・入力ループを使い、保存だけ Web アダプターへ渡す。
 #[cfg(target_arch = "wasm32")]
 pub fn run_web(
@@ -86,6 +130,7 @@ pub fn run_web(
     generator: Arc<dyn ChunkGenerator>,
     physics: PhysicsEngine,
 ) -> Result<(), String> {
+    install_panic_hook();
     let materials = Arc::clone(world.materials());
     let mut app = App::new(world, brush_material, make_world);
     app.physics = physics;
@@ -117,13 +162,13 @@ pub fn run_web(
                     app.world.restore_tick(metadata.tick);
                     app.background = background;
                     app.physics = physics;
-                    app.web_status = format!("保存済み: tick {} を読み込みました", metadata.tick);
+                    app.web_status = load_status_text(metadata.tick);
                 }
-                Err(err) => app.web_status = format!("未保存: 保存データを復元できません: {err}"),
+                Err(err) => app.web_status = format!("Not saved: cannot restore saved data: {err}"),
             }
         }
         Ok(None) => {}
-        Err(err) => app.web_status = format!("未保存: {err}"),
+        Err(err) => app.web_status = save_status_text(Err(err), 0),
     }
     let streamer = Streamer::with_memory_store(
         Arc::clone(&store),
@@ -313,7 +358,7 @@ impl App {
             #[cfg(target_arch = "wasm32")]
             gpu_generation: Rc::new(Cell::new(0)),
             #[cfg(target_arch = "wasm32")]
-            web_status: "未保存".to_owned(),
+            web_status: NOT_SAVED.to_owned(),
             passes: None,
             gui: None,
             world,
@@ -469,10 +514,7 @@ impl App {
 
     #[cfg(target_arch = "wasm32")]
     fn update_web_save_status(&mut self, result: Result<(), String>) {
-        self.web_status = match result {
-            Ok(()) => format!("保存済み: tick {}", self.world.tick()),
-            Err(err) => format!("未保存: {err}"),
-        };
+        self.web_status = save_status_text(result, self.world.tick());
         if let Some(gui) = self.gui.as_mut() {
             gui.controls.web_status.clone_from(&self.web_status);
         }
@@ -721,7 +763,7 @@ impl App {
                 &mut self.bg_populated,
             );
         }
-        let view = frame.texture.create_view(&Default::default());
+        let view = gpu.frame_view(&frame.texture);
         let scene_width = window.inner_size().width.div_ceil(zoom.max(1));
         let scene_height = window.inner_size().height.div_ceil(zoom.max(1));
         let visible =
@@ -1070,15 +1112,22 @@ impl ApplicationHandler for App {
             let ready = self.gpu_pending.borrow_mut().take();
             if let Some(result) = ready {
                 match result {
-                    Ok(gpu) => self.gpu = Some(gpu),
+                    Ok(mut gpu) => {
+                        // 初期化の途中で届いた `Resized` は、`self.gpu` がまだないため捨てられている。
+                        // `GpuContext::new` に渡したのは `resumed` 時点のサイズ (0×0 のことがある) なので、
+                        // 準備ができた時点の大きさで構成し直す。これがないとサーフェスが未構成のまま、
+                        // 再描画が要求されずにループが止まる。
+                        let size = window.inner_size();
+                        if let Err(err) = gpu.resize(size.width, size.height) {
+                            set_web_status(&format!("GPU の初期化に失敗: {err}"));
+                            event_loop.exit();
+                            return;
+                        }
+                        self.gpu = Some(gpu);
+                    }
                     Err(err) => {
                         eprintln!("GPU の初期化に失敗: {err}");
-                        if let Some(status) = web_sys::window()
-                            .and_then(|web| web.document())
-                            .and_then(|document| document.get_element_by_id("status"))
-                        {
-                            status.set_text_content(Some(&format!("GPU の初期化に失敗: {err}")));
-                        }
+                        set_web_status(&format!("GPU の初期化に失敗: {err}"));
                         event_loop.exit();
                         return;
                     }
@@ -1093,12 +1142,7 @@ impl ApplicationHandler for App {
                     gui.controls.web_status = self.web_status.clone();
                     self.gui = Some(gui);
                 }
-                if let Some(status) = web_sys::window()
-                    .and_then(|web| web.document())
-                    .and_then(|document| document.get_element_by_id("status"))
-                {
-                    status.set_text_content(Some("実行中 — ワールドの保存は Sandbox パネルから"));
-                }
+                set_web_status("実行中 — ワールドの保存は Sandbox パネルから");
             }
         }
         let consumed = self.gui.as_mut().is_some_and(|gui| gui.on_event(&window, &event));
@@ -1270,6 +1314,22 @@ impl ApplicationHandler for App {
 mod tests {
     use super::*;
     use charon_core::testkit::{box_art, material_of, world_from_ascii};
+
+    /// パネルは egui の標準フォントで描く。日本語は文字化け (□) になるので、状態表示は ASCII に保つ。
+    #[test]
+    fn panel_status_text_is_ascii() {
+        for text in [
+            NOT_SAVED.to_owned(),
+            save_status_text(Ok(()), 1357),
+            save_status_text(Err("cannot write persistent storage".to_owned()), 0),
+            load_status_text(1357),
+        ] {
+            assert!(text.is_ascii(), "{text:?}");
+        }
+        assert_eq!(save_status_text(Ok(()), 7), "Saved (tick 7)");
+        assert_eq!(load_status_text(7), "Loaded saved world (tick 7)");
+        assert_eq!(save_status_text(Err("x".to_owned()), 0), "Not saved: x");
+    }
 
     #[test]
     #[allow(clippy::unwrap_used)] // テストの前提が崩れた場合はその場で失敗させる。
