@@ -96,7 +96,7 @@ fn biome_height(seed: u64, x: i32) -> i32 {
 }
 
 /// 必ず World::set を使って、dirty・衝突・描画の更新も含めてチャンクを作る。
-fn generate_cells(
+pub(crate) fn generate_cells(
     seed: u64,
     pos: ChunkPos,
     materials: &MaterialTable,
