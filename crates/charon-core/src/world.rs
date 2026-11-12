@@ -20,15 +20,31 @@ pub struct World {
     pub(crate) seed: u64,
     pub(crate) tick: u64,
     pub(crate) last_tick_cells: usize,
+    /// 更新する範囲 `(中心のチャンク, 半径)`。`None` なら全チャンク。範囲の外のチャンクは眠らず、更新を保留する。
+    pub(crate) active: Option<(ChunkPos, i32)>,
 }
 
 impl World {
+    /// 更新する範囲を決める (Terraria と同じく、プレイヤーの周りだけ砂や水を動かす)。
+    /// 範囲の外のチャンクは更新されず、保留された変化は範囲に入ったときに処理される。
+    pub fn set_active_region(&mut self, region: Option<(ChunkPos, i32)>) {
+        self.active = region;
+    }
+
     /// 空のワールド。
     pub fn new(materials: Arc<MaterialTable>, seed: u64) -> Self {
         // 独自の材質表が同梱の反応を参照できない場合は反応なしで開始する。
         // 読み込みエラーを扱う呼び出し元は try_new を使う。
         let reactions = ReactionTable::builtin(&materials).ok().map(Arc::new);
-        Self { chunks: HashMap::new(), materials, reactions, seed, tick: 0, last_tick_cells: 0 }
+        Self {
+            chunks: HashMap::new(),
+            materials,
+            reactions,
+            seed,
+            tick: 0,
+            last_tick_cells: 0,
+            active: None,
+        }
     }
 
     /// 同梱の反応の読み込みに失敗した場合はエラーを返す。
@@ -41,6 +57,7 @@ impl World {
             seed,
             tick: 0,
             last_tick_cells: 0,
+            active: None,
         })
     }
 
@@ -57,6 +74,7 @@ impl World {
             seed,
             tick: 0,
             last_tick_cells: 0,
+            active: None,
         }
     }
 

@@ -32,8 +32,12 @@ impl World {
     fn step_with_mode(&mut self, parallel: bool) {
         self.last_tick_cells = 0;
         let mut any_dirty = false;
-        for chunk in self.chunks.values_mut() {
-            chunk.dirty = chunk.next_dirty.take();
+        let active = self.active;
+        for (pos, chunk) in &mut self.chunks {
+            // 範囲の外のチャンクは、保留した変化 (`next_dirty`) をそのまま残す。
+            let inside =
+                active.is_none_or(|(c, r)| (pos.x - c.x).abs() <= r && (pos.y - c.y).abs() <= r);
+            chunk.dirty = if inside { chunk.next_dirty.take() } else { None };
             any_dirty |= chunk.dirty.is_some();
         }
 

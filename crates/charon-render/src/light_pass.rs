@@ -1,7 +1,8 @@
 //! 仕様 06 §5: 光源の準備と 4 近傍のピンポン伝播。
 
 use charon_core::cell::{Cell, FLAG_BODY, FLAG_BURNING, MaterialId};
-use charon_core::coords::CellPos;
+use charon_core::chunk::Chunk;
+use charon_core::coords::{CHUNK_MASK, CellPos, ChunkPos};
 use charon_core::material::{MaterialTable, Phase};
 use charon_core::world::World;
 
@@ -34,6 +35,34 @@ fn source_cell(cell: Cell, materials: &MaterialTable, sky_visible: bool) -> [u8;
     [emission[0], emission[1], emission[2], occlusion]
 }
 
+/// 直前に引いたチャンクを覚えておく読み出し (近くを続けて読むとき、ハッシュ引きを省く)。
+struct CellReader<'a> {
+    world: &'a World,
+    last: Option<(ChunkPos, Option<&'a Chunk>)>,
+}
+
+impl<'a> CellReader<'a> {
+    fn new(world: &'a World) -> Self {
+        Self { world, last: None }
+    }
+
+    fn get(&mut self, pos: CellPos) -> Cell {
+        let key = pos.chunk();
+        let chunk = match self.last {
+            Some((k, chunk)) if k == key => chunk,
+            _ => {
+                let chunk = self.world.chunk(key);
+                self.last = Some((key, chunk));
+                chunk
+            }
+        };
+        match chunk {
+            Some(chunk) => chunk.get((pos.x & CHUNK_MASK) as u8, (pos.y & CHUNK_MASK) as u8),
+            None => Cell::BOUNDARY,
+        }
+    }
+}
+
 fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
     let width = scene[0].div_ceil(4);
     let height = scene[1].div_ceil(4);
@@ -43,6 +72,7 @@ fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
         .map(|pos| pos.origin().y)
         .min()
         .unwrap_or(origin[1].floor() as i32);
+    let mut reader = CellReader::new(world);
     let mut bytes = Vec::with_capacity(width as usize * height as usize * 4);
     let mut sky_open = vec![true; width as usize];
     let mut scanned_until = top;
@@ -51,7 +81,7 @@ fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
         for x in 0..width {
             let wx = (origin[0].floor() as i32).saturating_add((x * 4 + 2) as i32);
             for above in scanned_until..wy {
-                let cell = world.get(CellPos::new(wx, above));
+                let cell = reader.get(CellPos::new(wx, above));
                 if cell.has(FLAG_BODY)
                     || !matches!(
                         world.materials().get(cell.material).phase,
@@ -62,7 +92,7 @@ fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
                     break;
                 }
             }
-            let center = world.get(CellPos::new(wx, wy));
+            let center = reader.get(CellPos::new(wx, wy));
             let mut source = source_cell(center, world.materials(), sky_open[x as usize]);
             // 1 セル幅の火も四分の一解像度で失わない。
             for dy in 0..4 {
@@ -74,7 +104,7 @@ fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
                         (origin[0].floor() as i32).saturating_add((x * 4 + dx) as i32),
                         (origin[1].floor() as i32).saturating_add((y * 4 + dy) as i32),
                     );
-                    let emitted = source_cell(world.get(pos), world.materials(), false);
+                    let emitted = source_cell(reader.get(pos), world.materials(), false);
                     for channel in 0..3 {
                         source[channel] = source[channel].max(emitted[channel]);
                     }

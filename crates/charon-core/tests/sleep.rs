@@ -16,6 +16,31 @@ fn settles_to_sleep() {
     }
 }
 
+/// 更新範囲の外のチャンクは動かず、範囲に入ると動いて眠る (Terraria と同じく、遠くの砂や水は計算しない)。
+#[test]
+fn outside_active_region_is_frozen() {
+    use charon_core::coords::{CellPos, ChunkPos};
+    let snapshot = |world: &charon_core::world::World| -> Vec<u16> {
+        (0..64)
+            .flat_map(|y| (0..64).map(move |x| (x, y)))
+            .map(|(x, y)| world.get(CellPos::new(x, y)).material.0)
+            .collect()
+    };
+    for seed in SEEDS {
+        let mut world = world_from_ascii(&box_art(60, 40), seed);
+        pour(&mut world, 15, 's', 100);
+        world.set_active_region(Some((ChunkPos::new(20, 20), 1)));
+        let before = snapshot(&world);
+        for _ in 0..60 {
+            world.step();
+        }
+        assert_eq!(snapshot(&world), before, "seed {seed}: 範囲の外で動いた");
+        world.set_active_region(None);
+        assert_sleeps(&mut world, 3000);
+        assert_ne!(snapshot(&world), before, "seed {seed}: 範囲に入っても動かない");
+    }
+}
+
 #[test]
 fn full_pool_sleeps() {
     for seed in SEEDS {

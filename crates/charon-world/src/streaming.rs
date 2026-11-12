@@ -338,6 +338,11 @@ impl Streamer {
         })
     }
 
+    /// 今の読み込み半径 (チャンク)。
+    pub fn load_radius(&self) -> i32 {
+        self.load_radius
+    }
+
     /// 画面サイズや拡大率の変化に合わせて読み込み半径を更新する。
     pub fn set_load_radius(&mut self, radius: i32) {
         self.load_radius = radius.max(0);

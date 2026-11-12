@@ -99,6 +99,9 @@ impl Sim<'_> {
     ) -> Result<(), String> {
         if let Some(state) = self.streaming.as_mut() {
             state.streamer.tick(self.world, &[camera]).map_err(|err| err.to_string())?;
+            // 砂や水を動かすのは、画面のまわりだけ (読み込み半径より 2 チャンク内側)。
+            let radius = state.streamer.load_radius();
+            self.world.set_active_region(Some((camera, (radius - 2).max(1))));
         }
         if !*self.initialized {
             let world = &*self.world;
