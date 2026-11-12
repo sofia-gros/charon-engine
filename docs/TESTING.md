@@ -24,6 +24,7 @@ Charon Engine は、仕様の「必須テスト」が通ることを完了条件
 | `tests/heat.rs` | 03 §2、§3 | T2.3、T2.4 |
 | `tests/parallel.rs` | 02 §2 (`parallel_matches_serial`) | T3.1、T3.2 |
 | `tests/benchmark_fixture.rs` | 08 §2 (`benchmark_fixture_updates_cells`) | T9.1 |
+| `tests/optimization.rs` | 08 §4 (`optimization_matches_baseline`) | T9.3 |
 
 テスト関数の名前は、仕様の表にある名前と同じにする (検索できるようにするため)。
 
