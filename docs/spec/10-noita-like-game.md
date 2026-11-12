@@ -116,7 +116,7 @@ pub struct ProjectileWorld { /* BTreeMap<ProjectileId, Projectile>、next_id */ 
 
 - 検査 (違反は `SpellError::Invalid { spell, reason }`、検査は名前の昇順ではなく記載順で最初の違反): `name` は ASCII 英数字・`_` の 1..=64 文字、`mana_cost` 0..=10000、`cast_delay` 0..=600、`speed` 1..=512、`gravity` -64..=64、`life` 1..=3600、`damage` 0..=10000、`spread` 0..=128、`Explode` の半径 1..=16。呪文は 1..=256 個、名前の重複は `SpellError::Duplicate(name)`、`Deposit` の材質名が表になければ `SpellError::UnknownMaterial { spell, material }`。構文エラーは `SpellError::Parse`。
 - 読み込んだ呪文は `SpellId(u16)` (記載順の添字) で参照する。`get(id)`、`id(name)`、`len()`、`iter()` を提供する。
-- MOD のディレクトリから `spells.ron` を自動で読む処理は、仕様 07 §6 の変更になるため T11.3 では行わない。呼び出し側が `parse` に渡す。
+- MOD のディレクトリから `spells.ron` を読む処理と、既定の定義・層・上書きは §7 (T11.7)。この節の `parse` は §7 の `layer` の 1 層分にあたる。
 
 ### 5.2 杖 (`Wand`)
 
@@ -179,7 +179,7 @@ pub struct GameState {
 
 ### 6.3 デモ・サンドボックス
 
-- デモでは、プレイヤーに体力 100・杖 (呪文 3 種、`assets/spells/demo.ron`)・マナ 100 を持たせる。**右ボタンを押している間、カーソルの方向へ撃つ** (狙いはプレイヤーの中心からカーソルのセルの中心への向き)。杖は呪文の並びを順に撃つ。UI が右ボタンの押下を使ったときは撃たない。自由カメラ (`F`) の間は撃たない。
+- デモでは、プレイヤーに体力・杖を持たせる (値と呪文はゲーム側の定義、§7.4)。**右ボタンを押している間、カーソルの方向へ撃つ** (狙いはプレイヤーの中心からカーソルのセルの中心への向き)。杖は呪文の並びを順に撃つ。UI が右ボタンの押下を使ったときは撃たない。自由カメラ (`F`) の間は撃たない。
 - 画面の上端の中央に **体力・息・マナのバー、次の呪文の名前、飛んでいる弾の数** を出す (`Wand` パネル。体力 0 のときは `DEAD`)。体力 0 のプレイヤーは入力を受けない (歩けず、撃てない)。
 - 弾はエンティティの描画パスの 2×2 セルの点として描く (色は呪文ごとではなく固定)。爆発はパーティクルが散る。
 - 世界を作り直す (`Main Menu`) と、体力・杖・弾は初期状態に戻る。
@@ -198,8 +198,67 @@ pub struct GameState {
 
 ウィンドウでの右ボタン操作は、画面操作の許可がなければ未検証として記録する。
 
-## 7. 後続 (T11.4〜T11.5) の方針
+## 7. T11.7: エンジンの定義層とゲーム側の追加・上書き (`charon-game::defs`)
 
-- **T11.4 敵**: `Vitals` を持つエンティティに、整数だけの AI (向かう・跳ぶ・間合いで撃つ) を足す。乱数は `rng::hash`。T11.6 の画面で当たり判定を確認してから着手する。
+**原則**: このリポジトリは**エンジン**で、ゲームではない。エンジンは (1) 呪文・杖・敵の**既定の定義**を RON で持ち、(2) それを読み込み・追加・上書きする **API** を提供する。武器も敵も、ゲーム側がその API を呼んで使う。デモ (`charon-demo`) も「ゲーム」の 1 つであり、デモ固有の呪文・杖・体力はエンジンのコードに書かず、ゲーム側の RON と、`AppOptions` で渡す設定だけで表す。材質・反応の `assets/materials.ron`・`assets/reactions.ron` (組み込み) と MOD による追加 (仕様 07 §6) と同じ形にそろえる。
+
+### 7.1 定義の種類と形式
+
+| ファイル | 内容 | 既定 (エンジン、`assets/`) |
+|---|---|---|
+| `spells.ron` | 呪文 (§5.1 の形式) | `spark`、`bomb`、`sand_shot`、`water_shot` |
+| `wands.ron` | 杖のひな形 | `basic` (`spark`)、`bomber` (`bomb`) |
+| `enemies.ron` | 敵の種類 (データのみ。動きは T11.4) | `walker`、`shooter` |
+
+```ron
+// wands.ron
+[(name: "basic", spells: ["spark"], mana_max: 100, mana_regen: 1, recharge: 0)]
+// enemies.ron
+[(name: "shooter", width: 8, height: 16, max_hp: 30, walk_speed: 16, jump_speed: 80,
+  sight: 160, attack: Some("spark"), attack_interval: 60)]
+```
+
+- どの項目にも、省略できる `replace: bool` (既定は `false`) がある。
+- 杖: `spells` は 1..=16 個の呪文名、`mana_max` 1..=10000、`mana_regen` 0..=65535、`recharge` 0..=65535 (省略時 0)。
+- 敵: `width`・`height` 1..=32、`max_hp` 1..=10000、`walk_speed` 0..=96、`jump_speed` 0..=96 (1/16 セル / tick)、`sight` 0..=1024 (セル)、`attack` は呪文名か `None`、`attack_interval` 0..=3600 (`attack` があるときは 1 以上)。
+- 範囲の外、構文エラーは、定義の名前を含むエラーにする (`DefsError`)。
+
+### 7.2 層 (レイヤー) と上書き
+
+`Definitions { spells, wands, enemies }` は、定義を**層で重ねる**。
+
+- `Definitions::engine_defaults(&MaterialTable) -> Result<Definitions, DefsError>`: 埋め込んだ既定 (§7.1) を読む。
+- `Definitions::layer(&mut self, files: DefinitionFiles, materials, namespace: Option<&str>) -> Result<(), DefsError>`: `DefinitionFiles { spells, wands, enemies }` (それぞれ RON 文字列の `Option`) を 1 層として重ねる。**失敗したときは `self` を変えない**。
+  - `replace: false` (既定): 名前は `namespace` が `Some(id)` なら `id:name` になる。すでにある名前なら `DefsError::Duplicate`。新しい定義は末尾に足す。
+  - `replace: true`: 名前は**そのまま** (名前空間を付けない) で、すでにある定義でなければ `DefsError::ReplaceMissing`。定義の中身を置き換えるが、**呪文は表の中の位置 (`SpellId`) を保つ**ので、すでに作った杖は壊れない。
+  - 1 つの層の中で同じ名前を 2 回書いたら `Duplicate`。
+- 杖と敵が参照する呪文名と、呪文の `Deposit` が参照する材質名は、まず `名前空間:名前`、次にそのままの名前の順で探す (仕様 07 §6 の材質と同じ)。層を重ねる時点で解決でき、見つからなければ `DefsError::UnknownSpell` / `UnknownMaterial`。同じ層で足す呪文を参照してよい。
+- 取り出し: `Definitions::wand(&self, name) -> Result<Wand, DefsError>` は名前から杖を作る (`Wand::new`)。`enemy(&self, name) -> Option<&EnemyDef>`、`wand_names()`、`enemy_names()`。名前は重なった結果の名前 (`id:name` を含む)。
+- `Definitions::content_hash() -> u64`: 全定義の中身を FNV-1a 64-bit で流す。上書きで中身が変わると、名前が同じでもハッシュが変わる。
+
+### 7.3 MOD からの読み込み (仕様 07 §6 の変更)
+
+データ MOD のディレクトリは、`manifest.ron`・`materials.ron`・`reactions.ron` に加えて、**省略できる** `spells.ron`・`wands.ron`・`enemies.ron` を読む。`ModPack::load` は `Definitions::engine_defaults` を作り、MOD を **MOD ID の昇順**で 1 層ずつ、`namespace = Some(MOD の ID)` で重ねる。結果は `ModPack::definitions`。ファイルがなければその種類の層は空。読み込みの失敗は材質と同じく起動全体のエラー (`ModError::Definitions`)。
+
+### 7.4 ゲームへの渡し方 (`charon-app`・デモ)
+
+- `GameState::from_definitions(&Definitions)` は呪文表を取り込む。
+- `AppOptions` に `definitions: Option<Arc<Definitions>>` と `player: Option<PlayerLoadout>` を持たせる。`PlayerLoadout { max_hp: i32, wand: String }`。プレイヤーの生成時に、`definitions.wand(&loadout.wand)` で杖を作り、`Vitals::new(max_hp)` と合わせて `GameState::add_character` する。定義が足りないとき (杖の名前がない、など) は報告して、体力と杖なしで続ける。
+- エンジンの実行部分 (`charon-app` の `lib.rs`・`sim.rs`・`ui.rs`) には、呪文名・杖の名前・体力・マナの値を**書かない**。デモは「ゲーム側」で、`assets/mods/fse_demo/` に `spells.ron`・`wands.ron` を置き、`PlayerLoadout` を `charon-app` の `demo.rs` (デモのエントリー) で組み立てる。
+- `ConnectionInfo` は、呪文名の一覧の代わりに `definitions: u64` (`content_hash`) を持ち、`with_definitions(&Definitions)` で設定する。定義の中身が違う接続は `connect` で `Mismatch` になる。
+
+| テスト | 確認 |
+|---|---|
+| `engine_defaults_load` | 既定の呪文・杖・敵がすべて読め、`wand` で杖が作れ、`SpellId` が記載順 |
+| `layer_adds_and_replaces` | 名前空間付きで追加され、`replace: true` は中身だけ置き換えて `SpellId` を保つ。置き換え前に作った杖が新しい中身で撃てる |
+| `layer_rejects_bad_data` | 重複・`replace` の対象なし・未定義の呪文/材質・範囲外・構文エラーを拒否し、失敗した層は何も変えない |
+| `content_hash_tracks_overrides` | 上書きで名前が同じでもハッシュが変わり、同じ層を同じ順で重ねれば一致する |
+| `mod_definitions_load_in_id_order` | MOD のファイルが ID 昇順に重なり、列挙順に依存しない。ファイルがなくても読める |
+| `lockstep_rejects_different_definitions` | 定義の中身が違う接続を拒否する (`lockstep_game_hash_is_order_independent` を置き換える) |
+| `demo_definitions_come_from_the_game_files` | デモの杖は `fse_demo` の RON から作られ、エンジン既定の `bomb` を上書きした結果が反映される |
+
+## 8. 後続 (T11.4〜T11.5) の方針
+
+- **T11.4 敵**: `EnemyDef` (§7.1) から、`Vitals` を持つエンティティを `spawn_enemy(defs, name, position)` の API で作り、整数だけの AI (向かう・跳ぶ・間合いで撃つ) で動かす。乱数は `rng::hash`。T11.6 の画面で当たり判定を確認してから着手する。
 - **T11.5 掘る道具・浮遊**: 掘るは `Payload` の一種 (半径内のセルをパーティクルへ移す)。浮遊は `PlayerInput` の拡張 (燃料を消費し、`vy` を上向きに足す)。
 - いずれも着手前に、この文書へ表のテスト名と式を書く。

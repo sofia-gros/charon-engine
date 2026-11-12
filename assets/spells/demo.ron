@@ -1,9 +1,0 @@
-// デモの杖の呪文 (仕様 10 §5・§6.3)。杖は並びを順に撃つ。
-[
-    (name: "spark", mana_cost: 5, cast_delay: 6, speed: 128, gravity: 0, life: 60,
-     damage: 8, spread: 0, payload: None),
-    (name: "bomb", mana_cost: 30, cast_delay: 30, speed: 96, gravity: 2, life: 120,
-     damage: 20, spread: 8, payload: Explode(radius: 6)),
-    (name: "sand_shot", mana_cost: 10, cast_delay: 10, speed: 96, gravity: 2, life: 90,
-     damage: 0, spread: 16, payload: Deposit(material: "sand")),
-]

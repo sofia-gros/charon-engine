@@ -20,7 +20,7 @@ mod ui;
 pub use player::{KeyState, follow_origin, try_spawn_player};
 pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
-use sim::{Sim, game_for, sprites};
+use sim::{Sim, sprites};
 pub use timestep::FixedTimestep;
 use timestep::advance_frame;
 
@@ -37,7 +37,9 @@ use std::time::Instant;
 use charon_core::cell::MaterialId;
 use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::world::World;
+use charon_game::defs::Definitions;
 use charon_game::game::{GameInput, GameState};
+use charon_game::wand::SpellTable;
 use charon_game::{EntityId, EntityWorld};
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::{
@@ -141,7 +143,7 @@ pub fn run_web(
 }
 
 /// 参照デモ向けの設定 (仕様 09)。既定値は従来のサンドボックスと同じ挙動。
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct AppOptions {
     /// カメラがプレイヤーを追い、キー入力でプレイヤーを動かす。`F` で自由カメラに切り替える。
     pub follow_player: bool,
@@ -153,8 +155,18 @@ pub struct AppOptions {
     pub demo: bool,
     /// 読み込んだチャンクの背景 (`green biome` の文字) を作る生成器。
     pub background: Option<charon_world::demo::DemoGenerator>,
-    /// 杖の呪文の表 (RON、仕様 10 §5)。あるとき、プレイヤーは体力と杖を持ち、右ボタンで撃つ。
-    pub spells: Option<&'static str>,
+    /// ゲームが読み込んだ呪文・杖・敵の定義 (仕様 10 §7)。エンジンの既定に MOD を重ねたもの。
+    pub definitions: Option<Arc<Definitions>>,
+    /// プレイヤーの初期装備。`definitions` とともにあるとき、プレイヤーは体力と杖を持ち、右ボタンで撃つ。
+    pub player: Option<PlayerLoadout>,
+}
+
+/// ゲームがエンジンに渡すプレイヤーの初期装備 (仕様 10 §7.4)。値も杖の名前もゲーム側が決める。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerLoadout {
+    pub max_hp: i32,
+    /// `Definitions::wand` に渡す杖の名前。
+    pub wand: String,
 }
 
 /// `Main Menu` の `Singleplayer` / `Random Seed` で作り直した、新しい世界の一式。
@@ -217,8 +229,9 @@ pub fn run_with_streaming_options(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let background = BackgroundWorld::load(&save_root, world.materials(), &metadata.materials)?;
     let mut app = App::new(world, brush_material, make_world);
-    app.options = options;
     app.spawn_pending = options.player_spawn;
+    app.options = options;
+    app.reset_game();
     app.restart = restart;
     app.background = background;
     app.streaming = Some(StreamingState { streamer, save_root, metadata });
@@ -314,7 +327,6 @@ impl App {
     fn new(world: World, brush_material: MaterialId, make_world: fn(u64) -> World) -> Self {
         #[cfg(target_arch = "wasm32")]
         let _ = make_world;
-        let game = game_for(None, world.materials());
         Self {
             window: None,
             gpu: None,
@@ -332,7 +344,7 @@ impl App {
             options: AppOptions::default(),
             keys: KeyState::default(),
             player: None,
-            game,
+            game: GameState::new(SpellTable::default()),
             firing: false,
             cursor: [0.0, 0.0],
             spawn_pending: None,
@@ -364,7 +376,11 @@ impl App {
     // 呼び出し元 (リプレイ・世界の作り直し) は native 専用。Web では使わない。
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn reset_game(&mut self) {
-        self.game = game_for(self.options.spells, self.world.materials());
+        self.game = self
+            .options
+            .definitions
+            .as_deref()
+            .map_or_else(|| GameState::new(SpellTable::default()), GameState::from_definitions);
         self.firing = false;
     }
 
@@ -700,6 +716,7 @@ impl App {
             player: &mut self.player,
             spawn: &mut self.spawn_pending,
             game: &mut self.game,
+            loadout: self.options.definitions.as_deref().zip(self.options.player.as_ref()),
         };
         let step = || {
             if stream_error.is_none()

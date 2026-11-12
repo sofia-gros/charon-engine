@@ -98,6 +98,8 @@ pub fn step_player(entity: &mut Entity, input: PlayerInput, world: &World);
 
 データ MOD は明示したディレクトリの `manifest.ron` と `materials.ron`、`reactions.ron` だけを読む。`manifest.ron` は `id: String` と `version: u32` (1)、`id` は ASCII 英数字・`_`・`-` の 1..=64 文字。ディレクトリ名の昇順で読み、起動時に一度だけ組み込み材質の後ろへ追加する。材質・反応の相互参照は全 MOD の読み込み後に解決する。名前は `id:name` に名前空間化し、組み込みと MOD 同士の重複はエラー。読み込み失敗は MOD だけを無視せず、起動全体をエラーにする。保存では既存の材質名の対応を使う。スクリプトはネットワーク・ファイル・時計・スレッド・浮動小数点・任意のネイティブコードを実行しない。version 1 のスクリプトは `script.ron` に定義する `Rule { every: u16, x: i32, y: i32, from: String, into: String }` の列のみ (`every` は 1..=1024)。tick 開始時、MOD の ID 順・規則の記載順に、`tick % every == 0` かつその座標の材質名が `from` なら、仕様 03 §1 の `convert` を呼ぶ。1 tick に最大 1024 規則を実行する。ユーザーによる `script.ron` の指定がない MOD は規則なし。これより広い言語処理は version 1 の範囲外とし、ネイティブコードを走らせない。
 
+**追加 (仕様 10 §7、T11.7):** MOD のディレクトリは、上のファイルに加えて**省略できる** `spells.ron`・`wands.ron`・`enemies.ron` を読む。`ModPack::load` はエンジンの既定の定義 (`assets/spells.ron` ほか) を作り、MOD を **MOD ID の昇順**で、名前を `id:name` にして重ねる。`replace: true` の項目は既定または前の層の同名の定義を置き換える。結果は `ModPack::definitions`。形式・検査・エラーは仕様 10 §7。
+
 | テスト | 確認 |
 |---|---|
 | `mods_load_in_sorted_order` | 配置・列挙の順番に依存せず同じ ID と材質名になる |

@@ -4,13 +4,14 @@ use charon_core::cell::Cell;
 use charon_core::coords::CellPos;
 use charon_core::testkit::{box_art, material_of, world_from_ascii};
 use charon_core::world::World;
+use charon_game::defs::{DefinitionFiles, Definitions};
 use charon_game::game::{GameInput, GameState};
 use charon_game::lockstep::{
     ConnectionInfo, Lockstep, LockstepError, TickInput, synchronization_hash,
 };
 use charon_game::mods::{ModManifest, ModPack};
 use charon_game::vitals::Vitals;
-use charon_game::wand::{SpellId, SpellTable, Wand};
+use charon_game::wand::SpellTable;
 use charon_game::{EntityId, EntityWorld, PlayerInput};
 use charon_physics::PhysicsEngine;
 use charon_world::background::BackgroundWorld;
@@ -306,13 +307,8 @@ fn script_precedes_player_collision() {
     }
 }
 
-const SPELLS: &str = r#"[
-    (name: "spark", mana_cost: 5, cast_delay: 6, speed: 128, gravity: 0, life: 60,
-     damage: 10, spread: 0, payload: None),
-]"#;
-
-fn spell_table(world: &World) -> SpellTable {
-    SpellTable::parse(SPELLS, world.materials(), None).unwrap()
+fn engine_defs(world: &World) -> Definitions {
+    Definitions::engine_defaults(world.materials()).unwrap()
 }
 
 #[test]
@@ -359,14 +355,13 @@ fn lockstep_packet_v2_roundtrip() {
 
 fn game_trace(seed: u64, reversed: bool) -> Vec<u64> {
     let (mut world, mut entities, mut physics, background, players) = scene(seed);
-    let table = spell_table(&world);
-    let mut game = GameState::new(table.clone());
+    let defs = engine_defs(&world);
+    let mut game = GameState::from_definitions(&defs);
     for id in players {
-        let wand = Wand::new(vec![SpellId(0)], 100, 1, 0, &table).unwrap();
-        game.add_character(id, Vitals::new(100).unwrap(), wand);
+        game.add_character(id, Vitals::new(100).unwrap(), defs.wand("basic").unwrap());
     }
     let info = ConnectionInfo::new(&world, &[], "same-binary".to_string(), "parallel".to_string())
-        .with_spells(&table);
+        .with_definitions(&defs);
     let mut lockstep = Lockstep::new(&players, &world, &entities, None, info.clone()).unwrap();
     for player in players {
         lockstep.connect(player, &info).unwrap();
@@ -402,16 +397,6 @@ fn lockstep_game_hash_is_order_independent() {
         assert_eq!(game_trace(seed, false), game_trace(seed, true), "seed={seed}");
     }
 
-    // 呪文表が違う接続は拒否される。
-    let (world, entities, _, _, players) = scene(1);
-    let table = spell_table(&world);
-    let with =
-        ConnectionInfo::new(&world, &[], "b".to_string(), "p".to_string()).with_spells(&table);
-    let without = ConnectionInfo::new(&world, &[], "b".to_string(), "p".to_string());
-    let mut lockstep = Lockstep::new(&players, &world, &entities, None, with.clone()).unwrap();
-    assert!(matches!(lockstep.connect(players[0], &without), Err(LockstepError::Mismatch)));
-    lockstep.connect(players[0], &with).unwrap();
-
     // 杖を持たない参加者が撃とうとすると、何も更新せずに拒否される。
     let (mut world, mut entities, mut physics, background, players) = scene(1);
     let mut game = GameState::new(SpellTable::default());
@@ -434,4 +419,39 @@ fn lockstep_game_hash_is_order_independent() {
         .unwrap_err();
     assert!(matches!(err, LockstepError::Game(charon_game::game::GameError::InvalidAction)));
     assert_eq!((world.tick(), world.state_hash(), entities.state_hash()), before);
+}
+
+/// 仕様 10 §7.4: 定義の中身が違う接続は拒否する。名前が同じでも、上書きで中身が違えば拒否する。
+#[test]
+fn lockstep_rejects_different_definitions() {
+    let (world, entities, _, _, players) = scene(1);
+    let base = engine_defs(&world);
+    let mut overridden = base.clone();
+    overridden
+        .layer(
+            DefinitionFiles {
+                spells: Some(
+                    r#"[(name: "spark", replace: true, mana_cost: 5, cast_delay: 6, speed: 128,
+                         gravity: 0, life: 60, damage: 99, spread: 0, payload: None)]"#,
+                ),
+                ..Default::default()
+            },
+            world.materials(),
+            None,
+        )
+        .unwrap();
+    let info = |defs: Option<&Definitions>| {
+        let info = ConnectionInfo::new(&world, &[], "b".to_string(), "p".to_string());
+        match defs {
+            Some(defs) => info.with_definitions(defs),
+            None => info,
+        }
+    };
+    let mut lockstep = Lockstep::new(&players, &world, &entities, None, info(Some(&base))).unwrap();
+    assert!(matches!(lockstep.connect(players[0], &info(None)), Err(LockstepError::Mismatch)));
+    assert!(matches!(
+        lockstep.connect(players[0], &info(Some(&overridden))),
+        Err(LockstepError::Mismatch)
+    ));
+    lockstep.connect(players[0], &info(Some(&base))).unwrap();
 }

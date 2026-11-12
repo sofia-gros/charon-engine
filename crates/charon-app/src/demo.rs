@@ -13,7 +13,7 @@ use charon_world::save::WorldMeta;
 use charon_world::streaming::Streamer;
 use winit::event_loop::EventLoop;
 
-use crate::{AppOptions, DemoSession, RestartFn, run_with_streaming_options};
+use crate::{AppOptions, DemoSession, PlayerLoadout, RestartFn, run_with_streaming_options};
 
 /// デモの MOD と保存先の場所。
 #[derive(Clone, Debug)]
@@ -38,8 +38,10 @@ impl DemoConfig {
     }
 }
 
-/// デモの杖の呪文の表 (仕様 10 §6.3)。
-pub(crate) const DEMO_SPELLS: &str = include_str!("../../../assets/spells/demo.ron");
+/// デモ (ゲーム側) のプレイヤーの装備 (仕様 10 §7.4)。杖は `fse_demo` の `wands.ron` の定義。
+pub(crate) fn demo_loadout() -> PlayerLoadout {
+    PlayerLoadout { max_hp: 100, wand: "fse_demo:starter".to_owned() }
+}
 
 /// 組み立てたデモ。`session` を `run_with_streaming_options` に渡す。
 #[derive(Debug)]
@@ -122,7 +124,8 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             rainbow_sand: Some(demo_materials.rainbow_sand),
             demo: true,
             background: Some(DemoGenerator { materials: demo_materials }),
-            spells: Some(DEMO_SPELLS),
+            definitions: Some(Arc::new(pack.definitions.clone())),
+            player: Some(demo_loadout()),
         },
         brush: demo_materials.rainbow_sand,
     })
@@ -161,7 +164,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use charon_core::coords::ChunkPos;
-    use charon_game::game::GameInput;
+    use charon_game::game::{GameInput, GameState};
     use charon_game::{EntityWorld, PlayerInput};
 
     use super::*;
@@ -212,7 +215,7 @@ mod tests {
         let mut entities = EntityWorld::new();
         let mut player = None;
         let mut spawn = options.player_spawn;
-        let mut game = crate::sim::game_for(options.spells, world.materials());
+        let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
         let mut physics_ms = 0.0;
         for _ in 0..ticks {
             let mut sim = Sim {
@@ -224,6 +227,7 @@ mod tests {
                 player: &mut player,
                 spawn: &mut spawn,
                 game: &mut game,
+                loadout: options.definitions.as_deref().zip(options.player.as_ref()),
             };
             sim.tick(
                 ChunkPos::new(0, 3),
@@ -260,6 +264,38 @@ mod tests {
         assert_ne!(run(1, 150).0, run(2, 150).0);
     }
 
+    /// 仕様 10 §7: デモ (ゲーム側) の杖と呪文は `fse_demo` の RON から来て、エンジン既定の `bomb` を上書きする。
+    #[test]
+    fn demo_definitions_come_from_the_game_files() {
+        use charon_game::defs::Definitions;
+        use charon_game::projectile::Payload;
+        use charon_game::wand::SpellId;
+
+        let dir = TestDir::new();
+        let open = open_demo(&config(&dir), 1).unwrap();
+        let defs = open.options.definitions.as_deref().unwrap();
+        let loadout = open.options.player.as_ref().unwrap();
+        assert_eq!(loadout, &demo_loadout());
+
+        // エンジンの既定は半径 6、デモのファイルが 8 に上書きする。位置 (SpellId) は同じ。
+        let engine = Definitions::engine_defaults(open.session.world.materials()).unwrap();
+        let radius = |defs: &Definitions| match defs.spells.get(SpellId(1)).unwrap().payload {
+            Payload::Explode { radius } => radius,
+            other => panic!("bomb が爆発ではない: {other:?}"),
+        };
+        assert_eq!(radius(&engine), 6);
+        assert_eq!(radius(defs), 8);
+        assert_eq!(defs.spells.id("bomb"), Some(SpellId(1)));
+        // ゲームの追加は名前空間付き。杖はデモの呪文を先に探す。
+        assert!(defs.spells.id("fse_demo:rainbow_shot").is_some());
+        let starter = defs.wand_def(&loadout.wand).unwrap();
+        assert_eq!(starter.spells, ["spark", "fse_demo:rainbow_shot", "bomb"]);
+        let wand = defs.wand(&loadout.wand).unwrap();
+        assert_eq!(wand.spells.len(), 3);
+        // エンジンの既定の杖・敵も残っている。
+        assert!(defs.wand("basic").is_ok() && defs.enemy("shooter").is_some());
+    }
+
     /// 仕様 10 §6.3: 右ボタン相当の入力で弾が出て、爆発のセルがパーティクルになる (画面なし)。
     #[test]
     fn demo_wand_fires_in_scene() {
@@ -272,7 +308,7 @@ mod tests {
             let mut entities = EntityWorld::new();
             let mut player = None;
             let mut spawn = options.player_spawn;
-            let mut game = crate::sim::game_for(options.spells, world.materials());
+            let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
             let mut physics_ms = 0.0;
             let (mut shots, mut max_particles) = (0, 0);
             for tick in 0..260 {
@@ -291,6 +327,7 @@ mod tests {
                     player: &mut player,
                     spawn: &mut spawn,
                     game: &mut game,
+                    loadout: options.definitions.as_deref().zip(options.player.as_ref()),
                 }
                 .tick(ChunkPos::new(0, 3), PlayerInput::default(), action, &mut physics_ms)
                 .unwrap();

@@ -24,7 +24,7 @@ use charon_world::demo::{
 };
 use charon_world::generator::ChunkGenerator;
 
-use crate::demo::{DEMO_SPELLS, demo_bodies};
+use crate::demo::{demo_bodies, demo_loadout};
 use crate::demo_ui::{DemoUi, FrameStats, Overlay};
 use crate::sim::Sim;
 use crate::ui::Controls;
@@ -58,7 +58,7 @@ impl Scene {
             physics: PhysicsEngine::new(),
             generator,
             populated: BTreeSet::new(),
-            game: crate::sim::game_for(Some(DEMO_SPELLS), &pack.materials),
+            game: GameState::from_definitions(&pack.definitions),
             player: None,
         }
     }
@@ -98,6 +98,7 @@ fn room_scene(pack: &ModPack) -> (Scene, CellPos) {
     let (mut initialized, mut player, mut spawn, mut streaming) =
         (false, None, Some(PLAYER_SPAWN), None);
     let mut physics_ms = 0.0;
+    let loadout = demo_loadout();
     for _ in 0..150 {
         Sim {
             world: &mut scene.world,
@@ -108,6 +109,7 @@ fn room_scene(pack: &ModPack) -> (Scene, CellPos) {
             player: &mut player,
             spawn: &mut spawn,
             game: &mut scene.game,
+            loadout: Some((&pack.definitions, &loadout)),
         }
         .tick(center.chunk(), PlayerInput::default(), GameInput::default(), &mut physics_ms)
         .unwrap();

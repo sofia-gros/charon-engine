@@ -53,6 +53,11 @@ impl GameState {
         }
     }
 
+    /// 定義 (仕様 10 §7) の呪文表を取り込んだ、キャラクターのいない状態。
+    pub fn from_definitions(definitions: &crate::defs::Definitions) -> Self {
+        Self::new(definitions.spells.clone())
+    }
+
     /// 体力と杖を持つキャラクターとして登録する。
     pub fn add_character(&mut self, id: EntityId, vitals: Vitals, wand: Wand) {
         self.vitals.insert(id, vitals);

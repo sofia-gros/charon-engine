@@ -1,0 +1,5 @@
+// デモ (ゲーム側) の杖。呪文は fse_demo の呪文を先に、なければエンジンの既定の呪文を探す。
+[
+    (name: "starter", spells: ["spark", "rainbow_shot", "bomb"],
+     mana_max: 100, mana_regen: 1, recharge: 0),
+]

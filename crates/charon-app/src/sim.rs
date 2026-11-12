@@ -3,33 +3,16 @@
 use std::time::Instant;
 
 use charon_core::coords::{CellPos, ChunkPos};
-use charon_core::material::MaterialTable;
 use charon_core::world::World;
+use charon_game::defs::Definitions;
 use charon_game::game::{GameInput, GameState};
-use charon_game::vitals::{MAX_HP, Vitals};
-use charon_game::wand::{SpellId, SpellTable, Wand};
+use charon_game::vitals::Vitals;
 use charon_game::{EntityId, EntityWorld, PlayerInput};
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::EntitySprite;
 
-use crate::StreamingState;
 use crate::player::try_spawn_player;
-
-/// プレイヤーの杖のマナの最大値。
-const WAND_MANA: u32 = 100;
-
-/// 呪文の RON から `GameState` を作る。`None` や読めないときは呪文なし (撃てない) で、後者は報告する。
-pub(crate) fn game_for(spells: Option<&str>, materials: &MaterialTable) -> GameState {
-    let table = match spells.map(|text| SpellTable::parse(text, materials, None)) {
-        Some(Ok(table)) => table,
-        Some(Err(err)) => {
-            eprintln!("呪文の表を読めません: {err}");
-            SpellTable::default()
-        }
-        None => SpellTable::default(),
-    };
-    GameState::new(table)
-}
+use crate::{PlayerLoadout, StreamingState};
 
 /// エンティティと飛んでいる弾の描画用の矩形。弾は 2×2 セルの点。
 pub(crate) fn sprites(entities: &EntityWorld, game: &GameState) -> Vec<EntitySprite> {
@@ -63,6 +46,8 @@ pub(crate) struct Sim<'a> {
     pub(crate) spawn: &'a mut Option<[i32; 2]>,
     /// 体力・杖・弾 (仕様 10 §6.1)。
     pub(crate) game: &'a mut GameState,
+    /// ゲームが渡した定義とプレイヤーの装備 (仕様 10 §7.4)。なければ体力も杖も持たない。
+    pub(crate) loadout: Option<(&'a Definitions, &'a PlayerLoadout)>,
 }
 
 impl Sim<'_> {
@@ -135,17 +120,22 @@ impl Sim<'_> {
         result
     }
 
-    /// 呪文の表があれば、プレイヤーに体力と杖 (表の呪文を記載順に) を持たせる。
+    /// ゲームが渡した装備 (仕様 10 §7.4) があれば、プレイヤーに体力と杖を持たせる。
+    /// 定義が足りないときは報告して、体力と杖なしで続ける。
     fn register_character(&mut self, id: EntityId) {
-        let len = self.game.spells.len().min(16);
-        if len == 0 || self.game.wands.contains_key(&id) {
+        let Some((definitions, loadout)) = self.loadout else { return };
+        if self.game.wands.contains_key(&id) {
             return;
         }
-        let spells: Vec<SpellId> = (0..len).map(|i| SpellId(i as u16)).collect();
-        if let (Ok(vitals), Ok(wand)) =
-            (Vitals::new(MAX_HP), Wand::new(spells, WAND_MANA, 1, 0, &self.game.spells))
-        {
-            self.game.add_character(id, vitals, wand);
+        match (Vitals::new(loadout.max_hp), definitions.wand(&loadout.wand)) {
+            (Ok(vitals), Ok(wand)) => self.game.add_character(id, vitals, wand),
+            (vitals, wand) => {
+                eprintln!(
+                    "プレイヤーの装備を作れません: 体力 {:?}、杖 {:?}",
+                    vitals.err(),
+                    wand.err()
+                );
+            }
         }
     }
 }

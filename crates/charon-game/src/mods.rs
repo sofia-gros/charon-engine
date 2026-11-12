@@ -11,6 +11,8 @@ use charon_core::material::{MaterialError, MaterialTable};
 use charon_core::reaction::{ReactionError, ReactionTable};
 use charon_core::world::World;
 
+use crate::defs::{DefinitionFiles, Definitions, DefsError};
+
 /// `script.ron` は利用者が明示的に許可したときだけ読む。
 #[derive(Clone, Debug)]
 pub struct ModDirectory {
@@ -33,6 +35,7 @@ pub enum ModError {
     DuplicateId(String),
     Materials(MaterialError),
     Reactions(ReactionError),
+    Definitions(DefsError),
     UnknownRuleMaterial(String),
     InvalidEvery(u16),
     RuleLimit,
@@ -47,6 +50,7 @@ impl std::fmt::Display for ModError {
             Self::DuplicateId(id) => write!(f, "重複する MOD ID: {id}"),
             Self::Materials(err) => write!(f, "{err}"),
             Self::Reactions(err) => write!(f, "{err}"),
+            Self::Definitions(err) => write!(f, "{err}"),
             Self::UnknownRuleMaterial(name) => write!(f, "未定義の規則材質: {name}"),
             Self::InvalidEvery(every) => write!(f, "規則の every は 1..=1024: {every}"),
             Self::RuleLimit => write!(f, "1 tick の規則実行数が 1024 を超えました"),
@@ -80,6 +84,8 @@ pub struct ModPack {
     pub manifests: Vec<ModManifest>,
     pub materials: Arc<MaterialTable>,
     pub reactions: Arc<ReactionTable>,
+    /// エンジンの既定に、MOD の呪文・杖・敵を MOD ID の昇順で重ねたもの (仕様 10 §7.3)。
+    pub definitions: Definitions,
     rules: Vec<Rule>,
 }
 
@@ -87,11 +93,23 @@ struct Source {
     manifest: ModManifest,
     materials: String,
     reactions: String,
+    spells: Option<String>,
+    wands: Option<String>,
+    enemies: Option<String>,
     script: Option<(PathBuf, String)>,
 }
 
 fn read(path: PathBuf) -> Result<String, ModError> {
     fs::read_to_string(&path).map_err(|source| ModError::Read { path, source })
+}
+
+/// なければ `None`。読めないときだけエラー。
+fn read_optional(path: PathBuf) -> Result<Option<String>, ModError> {
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(ModError::Read { path, source }),
+    }
 }
 
 fn resolve(name: &str, id: &str, materials: &MaterialTable) -> Result<MaterialId, ModError> {
@@ -129,6 +147,9 @@ impl ModPack {
                 manifest,
                 materials: read(directory.path.join("materials.ron"))?,
                 reactions: read(directory.path.join("reactions.ron"))?,
+                spells: read_optional(directory.path.join("spells.ron"))?,
+                wands: read_optional(directory.path.join("wands.ron"))?,
+                enemies: read_optional(directory.path.join("enemies.ron"))?,
                 script: if directory.script {
                     let path = directory.path.join("script.ron");
                     Some((path.clone(), read(path)?))
@@ -153,6 +174,21 @@ impl ModPack {
         let manifests = sources.iter().map(|source| source.manifest.clone()).collect();
         // 読み込みはディレクトリ順だが、実行は MOD ID 順・記載順。
         sources.sort_by(|a, b| a.manifest.id.cmp(&b.manifest.id));
+        let mut definitions =
+            Definitions::engine_defaults(&materials).map_err(ModError::Definitions)?;
+        for source in &sources {
+            definitions
+                .layer(
+                    DefinitionFiles {
+                        spells: source.spells.as_deref(),
+                        wands: source.wands.as_deref(),
+                        enemies: source.enemies.as_deref(),
+                    },
+                    &materials,
+                    Some(&source.manifest.id),
+                )
+                .map_err(ModError::Definitions)?;
+        }
         let mut rules = Vec::new();
         for source in sources {
             if let Some((path, text)) = source.script {
@@ -172,7 +208,7 @@ impl ModPack {
                 }
             }
         }
-        Ok(Self { manifests, materials, reactions, rules })
+        Ok(Self { manifests, materials, reactions, definitions, rules })
     }
 
     /// 同じ材質・反応表を使うワールドを作る。

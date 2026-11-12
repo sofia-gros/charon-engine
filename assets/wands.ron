@@ -1,0 +1,6 @@
+// エンジンが既定で持つ杖のひな形 (仕様 10 §7.1)。
+// ゲームは MOD の wands.ron で足したり、`replace: true` で上書きしたりできる。
+[
+    (name: "basic", spells: ["spark"], mana_max: 100, mana_regen: 1, recharge: 0),
+    (name: "bomber", spells: ["bomb"], mana_max: 60, mana_regen: 1, recharge: 20),
+]

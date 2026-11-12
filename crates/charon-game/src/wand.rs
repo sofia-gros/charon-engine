@@ -9,6 +9,25 @@ use serde::Deserialize;
 
 use crate::projectile::{Payload, ProjectileError, ProjectileId, ProjectileWorld};
 
+/// 内容ハッシュ用の FNV-1a 64-bit (仕様 10 §7.2)。
+pub(crate) struct Fnv(u64);
+
+impl Fnv {
+    pub(crate) fn new() -> Self {
+        Self(0xcbf29ce484222325)
+    }
+
+    pub(crate) fn bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+
+    pub(crate) fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 /// 呪文の散らしに使う乱数の salt。
 pub const SALT_SPREAD: u32 = 0x5350_5244;
 const MAX_SPELLS: usize = 256;
@@ -23,8 +42,16 @@ pub struct SpellId(pub u16);
 pub enum SpellError {
     Parse(String),
     Duplicate(String),
-    UnknownMaterial { spell: String, material: String },
-    Invalid { spell: String, reason: &'static str },
+    /// `replace: true` なのに、置き換える呪文がない。
+    ReplaceMissing(String),
+    UnknownMaterial {
+        spell: String,
+        material: String,
+    },
+    Invalid {
+        spell: String,
+        reason: &'static str,
+    },
     Count(usize),
 }
 
@@ -33,6 +60,7 @@ impl std::fmt::Display for SpellError {
         match self {
             Self::Parse(e) => write!(f, "呪文の定義を読めません: {e}"),
             Self::Duplicate(n) => write!(f, "呪文 \"{n}\" が重複しています"),
+            Self::ReplaceMissing(n) => write!(f, "置き換える呪文 \"{n}\" がありません"),
             Self::UnknownMaterial { spell, material } => {
                 write!(f, "呪文 \"{spell}\" が未定義の材質 \"{material}\" を参照しています")
             }
@@ -54,6 +82,9 @@ enum PayloadDef {
 #[derive(Deserialize)]
 struct SpellDef {
     name: String,
+    /// 真なら、すでにある同名の呪文を置き換える (名前は名前空間を付けずそのまま)。
+    #[serde(default)]
+    replace: bool,
     mana_cost: i64,
     cast_delay: i64,
     speed: i64,
@@ -87,33 +118,67 @@ fn invalid(spell: &str, reason: &'static str) -> SpellError {
     SpellError::Invalid { spell: spell.to_owned(), reason }
 }
 
+/// 材質名を、まず `namespace:name`、次にそのままの名前で探す (仕様 07 §6、仕様 10 §7.2)。
+pub(crate) fn resolve_material(
+    materials: &MaterialTable,
+    namespace: Option<&str>,
+    name: &str,
+) -> Option<charon_core::cell::MaterialId> {
+    namespace.and_then(|id| materials.id(&format!("{id}:{name}"))).or_else(|| materials.id(name))
+}
+
 impl SpellTable {
-    /// 仕様 10 §5.1。`namespace` が `Some(id)` なら名前を `id:name` にする。
+    /// 空の表に 1 層だけ重ねる (仕様 10 §5.1)。呪文が 0 個なら `SpellError::Count(0)`。
     pub fn parse(
         text: &str,
         materials: &MaterialTable,
         namespace: Option<&str>,
     ) -> Result<Self, SpellError> {
+        let mut table = Self::default();
+        table.layer(text, materials, namespace)?;
+        if table.is_empty() {
+            return Err(SpellError::Count(0));
+        }
+        Ok(table)
+    }
+
+    /// 仕様 10 §7.2: RON の配列を 1 層として重ねる。失敗したときは `self` を変えない。
+    ///
+    /// `replace: false` の呪文は `namespace` を付けた名前で末尾に足し、すでにあれば `Duplicate`。
+    /// `replace: true` の呪文は名前をそのまま使い、すでにある呪文の中身を置き換える (位置は保つ)。
+    pub fn layer(
+        &mut self,
+        text: &str,
+        materials: &MaterialTable,
+        namespace: Option<&str>,
+    ) -> Result<(), SpellError> {
         let defs: Vec<SpellDef> =
             ron::from_str(text).map_err(|e| SpellError::Parse(e.to_string()))?;
-        if !(1..=MAX_SPELLS).contains(&defs.len()) {
-            return Err(SpellError::Count(defs.len()));
-        }
-        let mut seen = BTreeSet::new();
-        let mut spells = Vec::with_capacity(defs.len());
+        let mut next = self.spells.clone();
+        let mut in_layer = BTreeSet::new();
         for def in defs {
             let name = def.name;
-            if !(1..=64).contains(&name.len())
-                || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            {
-                return Err(invalid(&name, "名前は ASCII 英数字と _ の 1..=64 文字です"));
-            }
-            let full = match namespace {
-                Some(id) => format!("{id}:{name}"),
-                None => name.clone(),
+            let full = if def.replace {
+                name.clone()
+            } else {
+                if !(1..=64).contains(&name.len())
+                    || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    return Err(invalid(&name, "名前は ASCII 英数字と _ の 1..=64 文字です"));
+                }
+                match namespace {
+                    Some(id) => format!("{id}:{name}"),
+                    None => name.clone(),
+                }
             };
-            if !seen.insert(full.clone()) {
+            if !in_layer.insert(full.clone()) {
                 return Err(SpellError::Duplicate(full));
+            }
+            let slot = next.iter().position(|s| s.name == full);
+            match (def.replace, slot) {
+                (true, None) => return Err(SpellError::ReplaceMissing(full)),
+                (false, Some(_)) => return Err(SpellError::Duplicate(full)),
+                _ => {}
             }
             let range = |value: i64, lo: i64, hi: i64, reason: &'static str| {
                 if (lo..=hi).contains(&value) { Ok(value) } else { Err(invalid(&name, reason)) }
@@ -133,15 +198,17 @@ impl SpellTable {
                 }
                 PayloadDef::Deposit { material } => {
                     let id =
-                        materials.id(&material).ok_or_else(|| SpellError::UnknownMaterial {
-                            spell: name.clone(),
-                            material: material.clone(),
+                        resolve_material(materials, namespace, &material).ok_or_else(|| {
+                            SpellError::UnknownMaterial {
+                                spell: name.clone(),
+                                material: material.clone(),
+                            }
                         })?;
                     Payload::Deposit { material: id }
                 }
             };
             // 範囲は上で検査済みなので、以下の変換は切り捨てを起こさない。
-            spells.push(Spell {
+            let spell = Spell {
                 name: full,
                 mana_cost: mana_cost as u32,
                 cast_delay: cast_delay as u16,
@@ -151,9 +218,42 @@ impl SpellTable {
                 damage: damage as i32,
                 spread: spread as u8,
                 payload,
-            });
+            };
+            match slot {
+                Some(index) => next[index] = spell,
+                None => next.push(spell),
+            }
         }
-        Ok(Self { spells })
+        if next.len() > MAX_SPELLS {
+            return Err(SpellError::Count(next.len()));
+        }
+        self.spells = next;
+        Ok(())
+    }
+
+    /// 仕様 10 §7.2: 全呪文の中身を FNV-1a 64-bit で流す。
+    pub fn content_hash(&self) -> u64 {
+        let mut hash = Fnv::new();
+        for s in &self.spells {
+            hash.bytes(s.name.as_bytes());
+            hash.bytes(&[0]);
+            hash.bytes(&s.mana_cost.to_le_bytes());
+            hash.bytes(&s.cast_delay.to_le_bytes());
+            hash.bytes(&s.speed.to_le_bytes());
+            hash.bytes(&s.gravity.to_le_bytes());
+            hash.bytes(&s.life.to_le_bytes());
+            hash.bytes(&s.damage.to_le_bytes());
+            hash.bytes(&[s.spread]);
+            match s.payload {
+                Payload::None => hash.bytes(&[0]),
+                Payload::Explode { radius } => hash.bytes(&[1, radius]),
+                Payload::Deposit { material } => {
+                    hash.bytes(&[2]);
+                    hash.bytes(&material.0.to_le_bytes());
+                }
+            }
+        }
+        hash.finish()
     }
 
     pub fn len(&self) -> usize {

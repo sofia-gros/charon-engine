@@ -7,9 +7,9 @@ use charon_core::world::World;
 use charon_physics::{BodyError, CELLS_PER_METER, PhysicsEngine};
 use charon_world::background::BackgroundWorld;
 
+use crate::defs::Definitions;
 use crate::game::{GameError, GameInput, GameState};
 use crate::mods::{ModError, ModManifest, ModPack};
-use crate::wand::SpellTable;
 use crate::{EntityError, EntityId, EntityWorld, PlayerInput};
 
 pub const PROTOCOL_VERSION: u16 = 2;
@@ -83,8 +83,8 @@ pub struct ConnectionInfo {
     pub version: u16,
     pub materials: Vec<String>,
     pub mods: Vec<ModManifest>,
-    /// 呪文名を記載順に。呪文表が違う接続を拒否するため (仕様 10 §6.2)。
-    pub spells: Vec<String>,
+    /// 呪文・杖・敵の定義の中身のハッシュ。定義が違う接続を拒否するため (仕様 10 §7.4)。
+    pub definitions: u64,
     pub seed: u64,
     pub binary: String,
     pub features: String,
@@ -98,10 +98,10 @@ fn sorted_mods(mods: &[ModManifest]) -> Vec<ModManifest> {
 }
 
 impl ConnectionInfo {
-    /// 呪文表の名前を接続情報に加える。
+    /// 定義の中身 (`Definitions::content_hash`) を接続情報に加える。
     #[must_use]
-    pub fn with_spells(mut self, table: &SpellTable) -> Self {
-        self.spells = table.iter().map(|spell| spell.name.clone()).collect();
+    pub fn with_definitions(mut self, definitions: &Definitions) -> Self {
+        self.definitions = definitions.content_hash();
         self
     }
 
@@ -110,7 +110,7 @@ impl ConnectionInfo {
             version: PROTOCOL_VERSION,
             materials: charon_world::material_names(world.materials()),
             mods: sorted_mods(mods),
-            spells: Vec::new(),
+            definitions: 0,
             seed: world.seed(),
             binary,
             features: format!("core.parallel={};{features}", charon_core::PARALLEL_ENABLED),

@@ -56,7 +56,7 @@ FallingSandEngine の調査で見つかった問題に、それぞれ対応さ�
 | M8 | ゲーム層 | T8.1〜T8.8 の実装と自動テストを完了。T8.8 の実ブラウザー動作・保存は依頼者の指示で後日検証（未検証）。Windows GUI の操作・撮影も未検証 |
 | M9 | デスクトップ性能の計測と改善 | T9.1〜T9.4 の計測と T9.5 の RTX 4060 オフスクリーン描画検証を完了。最適化案は不採用。100 万セル / 8 ms は未達 (T9.6 で約 35〜41 ms まで短縮)、休眠 10,000 チャンク / 0.2 ms は達成。Windows GUI 操作は未検証 |
 | M10 | 参照デモ場面 (`charon-demo`) | T10.1〜T10.6 の実装と自動テストを完了。RTX 4060 (Vulkan) のオフスクリーン描画で 5 場面を確認。ウィンドウでのマウス・キー操作の目視は未検証 (操作許可が得られなかった)。Web・Android・Linux は未検証 |
-| M11 | Noita 型ゲームの中核 (体力・飛び道具・杖・敵・掘る) | T11.1〜T11.3 と T11.6 (体力・環境ダメージ・飛び道具・爆発ダメージ・杖と呪文・ゲーム状態の組み込み) の実装と自動テストを完了。デモは右ボタンで撃てる (ウィンドウ操作は未検証)。T11.4 (敵) と T11.5 (掘る・浮遊) は未着手 |
+| M11 | Noita 型ゲームの中核 (体力・飛び道具・杖・敵・掘る) | T11.1〜T11.3、T11.6、T11.7 (体力・環境ダメージ・飛び道具・爆発ダメージ・杖と呪文・ゲーム状態の組み込み・定義層) の実装と自動テストを完了。デモは右ボタンで撃てる (ウィンドウ操作は未検証)。T11.4 (敵) と T11.5 (掘る・浮遊) は未着手 |
 
 ---
 
@@ -246,11 +246,12 @@ T10.6 では RTX 4060 (Vulkan) で 5 場面をオフスクリーンに描き、�
 | T11.1 | 体力・息と、熱・溺れによる環境ダメージ (10 §3) | `hot_cells_damage_entity`、`drowning_needs_submerged_head`、`breath_recovers_in_air`、`damage_and_heal_saturate`、`vitals_hash_is_stable` |
 | T11.2 | 飛び道具 (爆発・材質を置く)、爆発のダメージ (10 §4) | `projectile_flies_and_falls`、`projectile_explodes_on_solid`、`projectile_hits_entity`、`explosion_damage_falls_off`、`projectile_expires_and_deposits`、`projectile_validation_and_limit` |
 | T11.3 | 杖 (マナ・詠唱間隔・再充填) と呪文の表 (RON、名前空間付き) (10 §5) | `spell_table_parses_and_resolves`、`spell_table_rejects_bad_data`、`wand_casts_in_order_and_recharges`、`wand_mana_limits_casting`、`aim_sets_velocity`、`spread_is_deterministic`、`failed_cast_changes_nothing` |
-| T11.4 | 敵 (歩く・追う・撃つ) | 同上 |
+| T11.7 | エンジンの定義層: 呪文・杖・敵の既定 (`assets/*.ron`)、層による追加と `replace` での上書き、MOD からの読み込み、定義の内容ハッシュを同期の照合に使う。デモ固有の定義をエンジンのコードから外す (10 §7)。T11.4 の前に行う | `engine_defaults_load`、`layer_adds_and_replaces`、`layer_rejects_bad_data`、`content_hash_tracks_overrides`、`mod_definitions_load_in_id_order`、`mod_definition_errors_stop_loading`、`lockstep_rejects_different_definitions`、`demo_definitions_come_from_the_game_files` |
+| T11.4 | 敵 (歩く・追う・撃つ)。種類は T11.7 の `EnemyDef`、API は `spawn_enemy` | 同上 |
 | T11.5 | 掘る道具と浮遊 | 同上 |
 | T11.6 | `GameState` と `Lockstep` (パケット version 2) への組み込み、デモの右ボタン発射・`Wand` パネル・弾の描画 (10 §6)。T11.4 の前に行い、当たり判定を画面で確かめられるようにする | `game_step_order_is_fixed`、`game_rejects_bad_actions_atomically`、`shooter_is_not_hit_by_own_shot`、`dead_characters_do_not_fire`、`lockstep_packet_v2_roundtrip`、`lockstep_game_hash_is_order_independent`、`demo_wand_fires_in_scene`、`demo_renders_wand_panel`、`aim_points_from_player_to_cursor` |
 
-T11.1〜T11.3 と T11.6 は自動テストまで完了 (`charon-game` の `vitals`・`projectile`・`wand`・`game` モジュールと `Lockstep`、`charon-app` のデモ)。デモの `Wand` パネルと弾は RTX 4060 (Vulkan) のオフスクリーン描画で確認した ([`M11-wand-panel.png`](screenshots/M11-wand-panel.png))。ウィンドウでの右ボタン操作は、画面操作の許可が得られておらず**未検証**。MOD ディレクトリから `spells.ron` を自動で読む処理は仕様 07 §6 の変更になるため行っておらず、呪文の表は呼び出し側が `SpellTable::parse` に渡す。サンドボックス本体 (`charon-sandbox`) には組み込んでおらず、`charon-demo` だけで撃てる。T11.4・T11.5 は未着手。完了したタスクだけを完了として扱う。
+T11.1〜T11.3、T11.6、T11.7 は自動テストまで完了 (`charon-game` の `vitals`・`projectile`・`wand`・`game` モジュールと `Lockstep`、`charon-app` のデモ)。デモの `Wand` パネルと弾は RTX 4060 (Vulkan) のオフスクリーン描画で確認した ([`M11-wand-panel.png`](screenshots/M11-wand-panel.png))。ウィンドウでの右ボタン操作は、画面操作の許可が得られておらず**未検証**。MOD ディレクトリから `spells.ron` を自動で読む処理は仕様 07 §6 の変更になるため行っておらず、呪文の表は呼び出し側が `SpellTable::parse` に渡す。サンドボックス本体 (`charon-sandbox`) には組み込んでおらず、`charon-demo` だけで撃てる。T11.4・T11.5 は未着手。完了したタスクだけを完了として扱う。
 
 ---
 

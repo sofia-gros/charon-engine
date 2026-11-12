@@ -1,0 +1,13 @@
+// エンジンが既定で持つ呪文 (仕様 10 §5.1・§7)。形式は docs/spec/10-noita-like-game.md。
+// ゲームは MOD の spells.ron で、新しい呪文を足したり (名前空間付き)、
+// `replace: true` でここの定義を上書きしたりできる。
+[
+    (name: "spark", mana_cost: 5, cast_delay: 6, speed: 128, gravity: 0, life: 60,
+     damage: 8, spread: 0, payload: None),
+    (name: "bomb", mana_cost: 30, cast_delay: 30, speed: 96, gravity: 2, life: 120,
+     damage: 20, spread: 8, payload: Explode(radius: 6)),
+    (name: "sand_shot", mana_cost: 10, cast_delay: 10, speed: 96, gravity: 2, life: 90,
+     damage: 0, spread: 16, payload: Deposit(material: "sand")),
+    (name: "water_shot", mana_cost: 10, cast_delay: 10, speed: 96, gravity: 2, life: 90,
+     damage: 0, spread: 16, payload: Deposit(material: "water")),
+]
