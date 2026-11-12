@@ -189,6 +189,13 @@ M9 の最終再計測 (Ryzen 7 2700 / Windows 11) は、並列で動く砂 1,048
 rustup target add aarch64-linux-android wasm32-unknown-unknown
 ```
 
+- **Linux でウィンドウを開く場合**: システムライブラリ `libxkbcommon-x11` (Debian / Ubuntu では `libxkbcommon-x11-0`) が必要です。
+  ない環境では起動直後に `Library libxkbcommon-x11.so could not be loaded.` で panic します。
+  GPU も Vulkan ドライバーもない環境では、`VK_ICD_FILENAMES` でソフトウェア Vulkan (SwiftShader など) の
+  ICD ファイルを指すと、描画テストを CPU で実行できます (物理 GPU の検証にはなりません)
+- **Web を動かす場合**: `wasm-bindgen-cli` が必要です。`Cargo.lock` の `wasm-bindgen` と**同じ版**を入れます
+  (現在は 0.2.130)
+
 ### Windows サンドボックスを起動
 
 ```bash
@@ -220,6 +227,35 @@ cargo run -p charon-sandbox --bin charon-demo
 |---|---|
 | ![部屋と剛体](docs/screenshots/M10-room-debug.png) | ![虹色の砂の山](docs/screenshots/M10-rainbow-pile.png) |
 | ![黄バイオーム](docs/screenshots/M10-yellow-biome.png) | ![赤バイオーム](docs/screenshots/M10-red-biome.png) |
+
+### Web サンドボックスを起動
+
+ブラウザーで動くサンドボックスです。WebGPU が使えるブラウザーでは WebGPU、使えなければ WebGL2 で描きます
+(アダプターを取得できない場合を含みます)。
+
+```bash
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+```
+
+```bash
+scripts/build-web.sh
+```
+
+```bash
+python3 -m http.server 8766 --directory apps/sandbox/web
+```
+
+`http://127.0.0.1:8766/` を開きます。ワールドはブラウザーの `localStorage` (`charon.world.v1`) に、Sandbox パネルの
+`Save world` で保存されます。
+
+実ブラウザーでの起動・描画ループ・キャンバスの大きさを自動で確かめるスモークテストがあります
+(Playwright と Chromium が必要。リポジトリの依存ではありません)。WebGPU のキャンバスへの描画は、
+ヘッドレスの Chromium ではデバイスが破棄されるため、このテストの対象外です。
+
+```bash
+node tools/web-smoke/smoke.js
+```
+
 ### 確認
 
 コミットの前に実行します。CI も同じスクリプトを実行します。
