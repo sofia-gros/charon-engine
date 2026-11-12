@@ -43,8 +43,9 @@ use charon_game::wand::SpellTable;
 use charon_game::{EntityId, EntityWorld};
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::{
-    BackgroundLayerPass, BackgroundPass, BackgroundSource, CellPass, CompositePass, EntityPass,
-    FullscreenPass, GpuContext, LightPass, PassList,
+    BackgroundLayerPass, BackgroundPass, BackgroundSource, CellPass, CompositePass,
+    DeepBackgroundClock, DeepBackgroundParams, DeepBackgroundPass, EntityPass, FullscreenPass,
+    GpuContext, LightPass, PassList,
 };
 use charon_world::background::BackgroundWorld;
 use charon_world::building::{BuildOp, Layer, apply_build};
@@ -159,6 +160,8 @@ pub struct AppOptions {
     pub definitions: Option<Arc<Definitions>>,
     /// プレイヤーの初期装備。`definitions` とともにあるとき、プレイヤーは体力と杖を持ち、右ボタンで撃つ。
     pub player: Option<PlayerLoadout>,
+    /// 背景のさらに奥で、視差で動く虹色の塊 (仕様 09 §9)。ゲームが渡す。`None` なら描かない。
+    pub deep_background: Option<DeepBackgroundParams>,
     /// 世界に置く敵。周囲のチャンクが読み込まれたら `GameState::spawn_enemy` で生成する (仕様 10 §8.5)。
     pub enemies: Vec<EnemySpawn>,
 }
@@ -306,6 +309,8 @@ struct App {
     player: Option<EntityId>,
     /// 体力・杖・弾 (仕様 10 §6)。
     game: GameState,
+    /// 背景の奥の塊を動かす時計 (`AppOptions::deep_background` があるとき)。
+    deep_clock: Option<DeepBackgroundClock>,
     /// 左ボタン (武器) を押している間 true。
     weapon_down: bool,
     /// 右ボタン (道具) を押している間 true。
@@ -363,6 +368,7 @@ impl App {
             keys: KeyState::default(),
             player: None,
             game: GameState::new(SpellTable::default()),
+            deep_clock: None,
             weapon_down: false,
             tool_down: false,
             cursor: [0.0, 0.0],
@@ -474,14 +480,17 @@ impl App {
         } else {
             (DEFAULT_CLEAR, charon_render::DEFAULT_AMBIENT)
         };
-        self.passes = Some(build_passes(
+        let (passes, clock) = build_passes_with(
             gpu,
             self.world.materials(),
             size.width,
             size.height,
             clear,
             ambient,
-        )?);
+            self.options.deep_background,
+        )?;
+        self.passes = Some(passes);
+        self.deep_clock = clock;
         Ok(())
     }
 
@@ -772,6 +781,10 @@ impl App {
         let tick_ms = now.elapsed().as_secs_f32() * 1000.0;
         let stats =
             FrameStats { frame_ms: elapsed.as_secs_f32() * 1000.0, tick_ms, phys_ms: physics_ms };
+        // 背景の奥の塊を、世界の tick に合わせて動かす (仕様 09 §9)。
+        if let Some(clock) = &self.deep_clock {
+            clock.set_tick(self.world.tick());
+        }
         passes.set_zoom(gpu, zoom);
         passes.set_light_quality(light_quality);
         let Some(surface) = gpu.surface() else { return };
@@ -861,6 +874,20 @@ pub fn build_passes(
     clear: wgpu::Color,
     ambient: f32,
 ) -> Result<PassList, String> {
+    build_passes_with(gpu, materials, width, height, clear, ambient, None).map(|(passes, _)| passes)
+}
+
+/// `build_passes` に、背景のさらに奥の虹色の塊 (仕様 09 §9) を足せるもの。`deep` があるとき、合成のあと・ブルームの
+/// 前に `DeepBackgroundPass` を置き、塊を動かす時計 (`DeepBackgroundClock`) も返す。
+pub fn build_passes_with(
+    gpu: &GpuContext,
+    materials: &charon_core::material::MaterialTable,
+    width: u32,
+    height: u32,
+    clear: wgpu::Color,
+    ambient: f32,
+    deep: Option<DeepBackgroundParams>,
+) -> Result<(PassList, Option<DeepBackgroundClock>), String> {
     let mut passes = PassList::new(gpu, width, height, 4);
     let layer_count = (width.div_ceil(64) + 1) * (height.div_ceil(64) + 1);
     let cells = CellPass::new(gpu, materials, PassList::scene_format(), layer_count)
@@ -872,9 +899,14 @@ pub fn build_passes(
     passes.add(EntityPass::new(gpu));
     passes.add(LightPass::new(gpu, passes.scene_size(), passes.light_format()));
     passes.add(CompositePass::with_ambient(gpu, ambient));
+    let clock = deep.map(|params| {
+        let (pass, clock) = DeepBackgroundPass::new(gpu, params);
+        passes.add(pass);
+        clock
+    });
     passes
         .add(FullscreenPass::post_process(gpu, include_str!("../../charon-render/src/bloom.wgsl")));
-    Ok(passes)
+    Ok((passes, clock))
 }
 
 /// 前景が退避されても、独立した背景チャンクは可視領域で描く。

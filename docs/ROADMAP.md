@@ -229,13 +229,15 @@ Android・Web・Windows GUI の延期中の実機項目は M9 の完了条件に
 | タスク | 作るもの | 完了条件 |
 |---|---|---|
 | T10.1 | 仕様 09、データ MOD `assets/mods/fse_demo`、`rainbow_index` | `demo_mod_loads`、`rainbow_index_is_periodic` |
-| T10.2 | `DemoGenerator` (洞窟・バイオーム・苔・塊・文字・部屋・背景) と `text_cells` | `demo_generator_is_pure`、`demo_room_is_open`、`demo_moss_and_blobs`、`demo_text_is_drawn`、`demo_background_label` |
+| T10.2 | `DemoGenerator` (洞窟・バイオーム・苔・塊・文字・部屋・背景) と `text_cells` | `demo_generator_is_pure`、`demo_room_is_open`、`demo_moss_and_ores`、`demo_text_is_drawn`、`demo_background_label` |
 | T10.3 | キーボード入力、プレイヤー操作、追従・自由カメラ、虹色ブラシ | `player_follows_camera`、`keyboard_maps_to_input` |
 | T10.4 | 参照画面の UI (メニュー、`Draw`、`Clipboard`、`Registries`、計測グラフ、`Debug` 表示) | `perf_history_is_bounded`、`rainbow_swatches_are_grouped`、`clipboard_copy_paste_roundtrip`、`terrain_edges_follow_solid_boundaries`、`random_seed_is_deterministic_and_changes`、`demo_ui_draws_a_frame` |
 | T10.5 | `charon-demo`、剛体 3 つ、プレイヤーの配置、`Tile Entity`。1 tick の更新を `Sim` に分離 | `demo_scene_is_deterministic`、`demo_bodies_are_valid_and_inside_the_room` |
 | T10.6 | 実 GPU のオフスクリーン描画、背景の文字、環境光の設定、参照フレームとの比較、記録 | `demo_renders_on_gpu`、`demo_background_is_populated_once`、`PLATFORM_CHECK.md` に結果と未検証項目 |
 
 T10.7 (2026-11-12 の依頼): 部屋の十字 (X 字) の剛体を、その場でくるくる回す。エンジンに `PhysicsEngine::set_spin` (運動学的な剛体として、位置を保ったまま一定の角速度で回す。`None` で動的に戻す) を足し、デモ (ゲーム側) が十字を床から浮かせて指定する。確認は `spinning_body_turns_in_place`、`spin_can_be_stopped_and_rejected`、`spinning_is_deterministic`、`demo_cross_spins` ([`M10-spinning-cross.png`](screenshots/M10-spinning-cross.png))。
+
+T10.8 (2026-11-12 の依頼): 参照の「動く虹色」は、前景のセルではなく**背景のさらに奥で動き回るアニメーションの shader** だった。前景の虹色の岩 (T10.2) を取り除き、エンジンに `DeepBackgroundPass` (視差で動き、自ら動き回り、光の影響を受けず、前景・背景のセルの後ろに隠れる) を足し、デモ (ゲーム側) が `AppOptions::deep_background` で渡す。砂の虹色 (ブラシ) は変えない。確認は `demo_moss_and_ores`、`demo_renders_deep_background`、`deep_background_is_behind_cells` ほか ([`M10-deep-rainbow.png`](screenshots/M10-deep-rainbow.png))。
 
 T10.6 では RTX 4060 (Vulkan) で 5 場面をオフスクリーンに描き、参照動画のフレームと見比べた。見え方は [`docs/screenshots/M10-*.png`](screenshots/) にある。参照のフレームはこのリポジトリに入れない。ウィンドウでの操作の目視、Web・Android・Linux の確認は未検証で、成功とは扱わない。
 

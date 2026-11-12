@@ -49,8 +49,6 @@ const BG_BAND: i32 = 200;
 const S_BIOME: u32 = 0x4445_4d30;
 const S_CAVE_A: u32 = 0x4445_4d31;
 const S_CAVE_B: u32 = 0x4445_4d32;
-const S_BLOB: u32 = 0x4445_4d33;
-const S_BLOB2: u32 = 0x4445_4d34;
 const S_GREEN: u32 = 0x4445_4d35;
 const S_GREEN2: u32 = 0x4445_4d36;
 const S_ORANGE: u32 = 0x4445_4d37;
@@ -360,16 +358,13 @@ impl DemoGenerator {
         Some(if near_open { moss.unwrap_or(m.stone) } else { m.stone })
     }
 
-    /// 空洞に浮かぶ虹色の岩と鉱床。ない場所は空。
+    /// 空洞の鉱床。ない場所は空。虹色の塊は前景のセルではなく、背景のさらに奥の shader (仕様 09 §9)。
     fn open_cell(&self, seed: u64, x: i32, y: i32) -> Option<MaterialId> {
         let m = &self.materials;
         if x.div_euclid(BIOME_WIDTH) == 0 {
-            return None; // 出発点の帯は塊を置かず、通路を空けておく。
+            return None; // 出発点の帯は鉱床を置かず、通路を空けておく。
         }
         let (bx, by) = (x.div_euclid(48), y.div_euclid(48));
-        if hash(seed, 0, bx, by, S_BLOB) & 3 == 0 && octave(seed, x, y, 12, S_BLOB2) < 64 {
-            return Some(rainbow_material(m.rainbow_rock, x));
-        }
         if hash(seed, 0, bx, by, S_GREEN) & 7 == 0 && octave(seed, x, y, 10, S_GREEN2) < 44 {
             return Some(m.green_ore);
         }

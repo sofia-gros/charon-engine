@@ -8,6 +8,7 @@ use charon_core::cell::{Cell, MaterialId};
 use charon_core::world::World;
 use charon_game::mods::{ModDirectory, ModPack};
 use charon_physics::PhysicsEngine;
+use charon_render::DeepBackgroundParams;
 use charon_world::demo::{DemoGenerator, DemoMaterials, PLAYER_SPAWN};
 use charon_world::save::WorldMeta;
 use charon_world::streaming::Streamer;
@@ -47,6 +48,23 @@ pub(crate) fn demo_loadout() -> PlayerLoadout {
         max_hp: 100,
         wand: "fse_demo:starter".to_owned(),
         hook: Some("grapple".to_owned()),
+    }
+}
+
+/// デモ (ゲーム側) の、背景のさらに奥で動く虹色の塊 (仕様 09 §9)。配置は世界の seed で決まる。
+/// 空の色は、シーンの背景色 (`DEMO_CLEAR`) と同じにする。
+pub(crate) fn demo_deep_background(seed: u64) -> DeepBackgroundParams {
+    DeepBackgroundParams {
+        seed: (seed as u32) ^ 0x5241_494E,
+        parallax: 0.5,
+        grid: 90.0,
+        density: 0.55,
+        min_radius: 6.0,
+        max_radius: 16.0,
+        drift: 0.02,
+        roam: 0.3,
+        brightness: 1.0,
+        empty: [crate::DEMO_CLEAR.r as f32, crate::DEMO_CLEAR.g as f32, crate::DEMO_CLEAR.b as f32],
     }
 }
 
@@ -159,6 +177,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
         3,
         metadata.materials.clone(),
     )?;
+    let metadata_seed = metadata.seed;
     Ok(OpenDemo {
         session: DemoSession { world, streamer, save_root: root, metadata, physics },
         options: AppOptions {
@@ -169,6 +188,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             background: Some(DemoGenerator { materials: demo_materials }),
             definitions: Some(Arc::new(pack.definitions.clone())),
             player: Some(demo_loadout()),
+            deep_background: Some(demo_deep_background(metadata_seed)),
             enemies: demo_enemies(),
         },
         brush: demo_materials.rainbow_sand,

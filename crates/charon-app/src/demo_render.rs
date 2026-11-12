@@ -17,7 +17,7 @@ use charon_game::mods::{ModDirectory, ModPack};
 use charon_game::projectile::Payload;
 use charon_game::{EntityId, EntityWorld};
 use charon_physics::PhysicsEngine;
-use charon_render::{GpuContext, LightQuality, PassList};
+use charon_render::{DeepBackgroundParams, GpuContext, LightQuality, PassList};
 use charon_world::background::BackgroundWorld;
 use charon_world::demo::{
     Biome, DemoGenerator, DemoMaterials, PLAYER_SPAWN, biome, tunnel_center, yellow_text_placement,
@@ -28,7 +28,7 @@ use crate::demo::{demo_bodies, demo_enemies, demo_loadout};
 use crate::demo_ui::{DemoUi, FrameStats, Overlay};
 use crate::sim::Sim;
 use crate::ui::Controls;
-use crate::{BackgroundAdapter, PointerEvent, apply_pointer, build_passes, visible_chunks};
+use crate::{BackgroundAdapter, PointerEvent, apply_pointer, visible_chunks};
 
 const WIDTH: u32 = 1600;
 const HEIGHT: u32 = 900;
@@ -45,6 +45,10 @@ struct Scene {
     populated: BTreeSet<ChunkPos>,
     game: GameState,
     player: Option<EntityId>,
+    /// 背景のさらに奥の虹色の塊 (仕様 09 §9)。`None` なら描かない。
+    deep: Option<DeepBackgroundParams>,
+    /// 塊を動かす時刻 (tick)。
+    tick: u64,
 }
 
 impl Scene {
@@ -60,6 +64,8 @@ impl Scene {
             populated: BTreeSet::new(),
             game: GameState::from_definitions(&pack.definitions),
             player: None,
+            deep: Some(crate::demo::demo_deep_background(SEED)),
+            tick: 0,
         }
     }
 
@@ -239,9 +245,19 @@ fn read_back(gpu: &GpuContext, texture: &wgpu::Texture) -> Vec<u8> {
 /// 世界だけを描いた画像 (RGBA8)。
 fn render_world(gpu: &GpuContext, scene: &mut Scene, center: CellPos) -> (wgpu::Texture, Vec<u8>) {
     let materials = std::sync::Arc::clone(scene.world.materials());
-    let mut passes: PassList =
-        build_passes(gpu, &materials, WIDTH, HEIGHT, crate::DEMO_CLEAR, crate::DEMO_AMBIENT)
-            .unwrap();
+    let (mut passes, clock): (PassList, _) = crate::build_passes_with(
+        gpu,
+        &materials,
+        WIDTH,
+        HEIGHT,
+        crate::DEMO_CLEAR,
+        crate::DEMO_AMBIENT,
+        scene.deep,
+    )
+    .unwrap();
+    if let Some(clock) = &clock {
+        clock.set_tick(scene.tick);
+    }
     passes.set_zoom(gpu, ZOOM);
     passes.set_light_quality(LightQuality::High);
     let chunks = scene.world.chunk_positions();
@@ -536,6 +552,137 @@ fn demo_renders_hook() {
     assert_ne!(ui_pixels, world_pixels);
     capture("hook", "world", &world_pixels);
     capture("hook", "ui", &ui_pixels);
+}
+
+/// 空の世界 (チャンクなし) の場面。画面の全体が「空」なので、奥の背景だけが見える。
+fn empty_scene(pack: &ModPack) -> (Scene, CellPos) {
+    (Scene::new(pack), CellPos::new(500, 300))
+}
+
+/// 彩度が高く明るい画素 (虹色の塊) の数。
+fn vivid(pixels: &[u8]) -> usize {
+    pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|px| {
+            let (max, min) = (px[0].max(px[1]).max(px[2]), px[0].min(px[1]).min(px[2]));
+            max > 90 && i32::from(max - min) * 100 > i32::from(max) * 50
+        })
+        .count()
+}
+
+/// 2 つの画像で、画素が (各色 `tolerance` 以内で) 同じ割合。比べる範囲は `(x0, y0, x1, y1)`、
+/// `b` は `a` を `(dx, dy)` だけずらして比べる (`a[x + dx, y + dy]` と `b[x, y]`)。
+fn same_fraction(
+    a: &[u8],
+    b: &[u8],
+    (x0, y0, x1, y1): (usize, usize, usize, usize),
+    (dx, dy): (usize, usize),
+    tolerance: i32,
+) -> f64 {
+    let (mut same, mut total) = (0usize, 0usize);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (y * WIDTH as usize + x) * 4;
+            let j = ((y + dy) * WIDTH as usize + x + dx) * 4;
+            total += 1;
+            if (0..3).all(|c| (i32::from(b[i + c]) - i32::from(a[j + c])).abs() <= tolerance) {
+                same += 1;
+            }
+        }
+    }
+    same as f64 / total as f64
+}
+
+/// 仕様 09 §9: 背景のさらに奥で、虹色の塊がアニメーションしながら動き回る。
+#[test]
+fn demo_renders_deep_background() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+
+    // (1) 空の画面に、虹色の塊が描かれる。横方向に色が変わる (赤から紫まで)。
+    let (mut scene, center) = empty_scene(&pack);
+    scene.deep = None;
+    let (_, plain) = render_world(&gpu, &mut scene, center);
+    assert_eq!(vivid(&plain), 0, "塊を描かなければ、空の画面は暗いだけ");
+    scene.deep = Some(crate::demo::demo_deep_background(SEED));
+    let (_, frame0) = render_world(&gpu, &mut scene, center);
+    let blobs = vivid(&frame0);
+    let hues = hues_in(&frame0, 0, 0, WIDTH as usize, HEIGHT as usize);
+    println!("deep: 虹色の画素 {blobs}、色相 {hues} 種類");
+    assert!(blobs > 8_000, "虹色の塊が見える ({blobs})");
+    assert!(hues >= 8, "赤から紫まで色が変わる ({hues} 種類)");
+    capture("deep", "world", &frame0);
+
+    // (2) 動き回る: 同じカメラでも、時間が進むと塊が動き、形もゆらぐ。
+    scene.tick = 240;
+    let (_, frame240) = render_world(&gpu, &mut scene, center);
+    let moved = 1.0 - same_fraction(&frame0, &frame240, (0, 0, 1600, 900), (0, 0), 6);
+    println!("deep: 240 tick で変わった画素の割合 {moved:.3}");
+    assert!(moved > 0.04, "塊が動き回る ({moved:.3})");
+    assert!(vivid(&frame240) > 8_000, "動いたあとも塊は見える");
+    scene.tick = 241;
+    let (_, frame241) = render_world(&gpu, &mut scene, center);
+    let step = 1.0 - same_fraction(&frame240, &frame241, (0, 0, 1600, 900), (0, 0), 6);
+    assert!(step < moved, "1 tick の動きは、240 tick の動きより小さい (滑らかに動く): {step:.4}");
+    // 同じ時刻・同じカメラなら、同じ画像 (決定的)。
+    scene.tick = 240;
+    let (_, again) = render_world(&gpu, &mut scene, center);
+    assert_eq!(again, frame240, "同じ入力で同じ画像");
+
+    // (3) 視差: カメラが 40 セル動くと、塊は半分の 20 セル (80 画素) だけ動く。
+    scene.tick = 0;
+    let shifted = CellPos::new(center.x + 40, center.y);
+    let (_, camera40) = render_world(&gpu, &mut scene, shifted);
+    let parallax = same_fraction(&frame0, &camera40, (0, 100, 1400, 800), (80, 0), 6);
+    println!("deep: 視差でずらして一致した画素の割合 {parallax:.4}");
+    assert!(parallax > 0.97, "塊はカメラの動きの半分だけ動く ({parallax:.4})");
+    let unshifted = same_fraction(&frame0, &camera40, (0, 100, 1400, 800), (0, 0), 6);
+    // 塊は画面の 1 割ほどなので、空の画素は同じ。それでも、ずらして比べたときの 1.0 とは違う。
+    assert!(
+        unshifted < 0.99 && unshifted < parallax - 0.01,
+        "ずらさずに比べると一致しない ({unshifted:.4})"
+    );
+}
+
+/// 仕様 09 §9: 塊は光の影響を受けず、前景のセルの後ろに隠れる。
+#[test]
+fn deep_background_is_behind_cells() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = empty_scene(&pack);
+    // 画面の中央に、石の長方形を置く (40 × 24 セル)。
+    let stone = scene.world.materials().id("stone").unwrap();
+    let (x0, y0) = (center.x - 20, center.y - 12);
+    for cy in y0.div_euclid(64)..=(y0 + 24).div_euclid(64) {
+        for cx in x0.div_euclid(64)..=(x0 + 40).div_euclid(64) {
+            scene.world.insert_chunk(ChunkPos::new(cx, cy));
+        }
+    }
+    for y in y0..y0 + 24 {
+        for x in x0..x0 + 40 {
+            let pos = CellPos::new(x, y);
+            let cell = scene.world.make_cell(stone, pos);
+            scene.world.set(pos, cell);
+        }
+    }
+    scene.deep = None;
+    let (_, without) = render_world(&gpu, &mut scene, center);
+    scene.deep = Some(crate::demo::demo_deep_background(SEED));
+    let (_, with) = render_world(&gpu, &mut scene, center);
+
+    // 石の内側 (縁から 8 画素はなす) は、塊の有無で画素がまったく変わらない。
+    let origin = Scene::origin(center);
+    let px = |cell: i32, o: f32| ((cell as f32 - o) * ZOOM as f32) as usize;
+    let (left, top) = (px(x0, origin[0]) + 8, px(y0, origin[1]) + 8);
+    let (right, bottom) = (px(x0 + 40, origin[0]) - 8, px(y0 + 24, origin[1]) - 8);
+    let inside = same_fraction(&without, &with, (left, top, right, bottom), (0, 0), 0);
+    assert_eq!(inside, 1.0, "前景のセルの後ろに隠れる (一致 {inside})");
+    // 石の外では、塊が描かれて画像が変わる。
+    let everything = same_fraction(&without, &with, (0, 0, 1600, 900), (0, 0), 0);
+    assert!(everything < 0.985, "石の外には塊がある ({everything})");
+    assert!(vivid(&with) > vivid(&without) + 5_000);
 }
 
 #[test]

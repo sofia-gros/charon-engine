@@ -66,6 +66,32 @@ defs.layer(
 エンジンの実行部分に呪文名や体力の値は書かれていません。デモ (`charon-demo`) も同じ手順で、
 `assets/mods/fse_demo/` の RON と `crates/charon-app/src/demo.rs` の `demo_loadout()` だけがゲーム側です。
 
+## 背景のさらに奥の shader (動き回る虹色)
+
+ゲームは、背景のさらに奥で動き回る shader を足せます (`charon-render` の `DeepBackgroundPass`)。光の影響を受けず、前景・背景のセルの後ろに隠れ、洞窟の空間にだけ見えます。`AppOptions` に渡します。
+
+```rust
+use charon_render::DeepBackgroundParams;
+
+let options = AppOptions {
+    deep_background: Some(DeepBackgroundParams {
+        seed: 7,
+        parallax: 0.5,   // カメラの動きに対する動きの割合 (奥ほど小さい)
+        grid: 90.0,      // 1 区画の大きさ (セル)。1 区画に最大 1 つ
+        density: 0.55,   // 塊のある区画の割合
+        min_radius: 6.0,
+        max_radius: 16.0,
+        drift: 0.02,     // 動き回る速さ (ラジアン / tick)
+        roam: 0.3,       // 動き回る範囲 (区画の大きさに対する割合)
+        brightness: 1.0,
+        empty: [0.012, 0.014, 0.02], // 背景のクリア色。この色の画素にだけ描く
+    }),
+    ..Default::default()
+};
+```
+
+アプリを使わず自分で `PassList` を組むときは `DeepBackgroundPass::new` を合成のあと・後処理の前に追加し、返ってくる `DeepBackgroundClock` に毎フレーム `set_tick(world.tick())` を渡します。
+
 ## 手と道具 (左手 = 武器、右手 = 道具)
 
 操作は 2 つの手に割り当てます。**左手は武器 (杖、左クリック)、右手は道具 (ワイヤーフック、右クリック)** で、独立して同時に使えます (手は割り当ての概念で、見た目には反映しません)。

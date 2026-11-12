@@ -134,14 +134,13 @@ fn demo_room_is_open() {
 }
 
 #[test]
-fn demo_moss_and_blobs() {
+fn demo_moss_and_ores() {
     let table = table();
     let generator = generator(&table);
     let m = generator.materials;
     let (mut yellow, mut green, mut red) = (0u32, 0u32, 0u32);
-    let (mut rock, mut green_ore, mut orange_ore) = (0u32, 0u32, 0u32);
+    let (mut green_ore, mut orange_ore) = (0u32, 0u32);
     let (mut open, mut total) = (0u32, 0u32);
-    let mut hues = BTreeSet::new();
     for seed in 1..=4 {
         for y in (0..WORLD_HEIGHT).step_by(3) {
             for x in (-2000..2000).step_by(3) {
@@ -166,11 +165,9 @@ fn demo_moss_and_blobs() {
                     id if id == m.moss_red => red += 1,
                     id if id == m.green_ore => green_ore += 1,
                     id if id == m.orange_ore => orange_ore += 1,
+                    // 虹色の岩は前景に置かない (動く虹色は背景のさらに奥の shader、仕様 09 §9)。
                     id if id.0 >= m.rainbow_rock.0 && id.0 < m.rainbow_rock.0 + 12 => {
-                        rock += 1;
-                        // 色は x だけで決まる。
-                        assert_eq!(id.0 - m.rainbow_rock.0, charon_world::demo::rainbow_index(x));
-                        hues.insert(id.0);
+                        panic!("前景に虹色の岩がある: seed {seed}, ({x}, {y})");
                     }
                     _ => {}
                 }
@@ -181,13 +178,11 @@ fn demo_moss_and_blobs() {
         ("yellow", yellow),
         ("green", green),
         ("red", red),
-        ("rainbow rock", rock),
         ("green ore", green_ore),
         ("orange ore", orange_ore),
     ] {
         assert!(count >= 50, "{name}: {count}");
     }
-    assert!(hues.len() >= 6, "虹色の塊は横方向に色が変わる: {hues:?}");
     let ratio = f64::from(open) / f64::from(total);
     assert!((0.15..0.6).contains(&ratio), "空洞の割合 {ratio}");
 }
