@@ -97,9 +97,61 @@ pub struct ProjectileWorld { /* BTreeMap<ProjectileId, Projectile>、next_id */ 
 | `projectile_expires_and_deposits` | `life` が尽きた弾は payload なしで消える。`Deposit` は空きセルにだけ 1 個置き、塞がっていれば何も置かない |
 | `projectile_validation_and_limit` | 不正な引数と 1025 個目をエラーにし、状態は変わらない |
 
-## 5. 後続 (T11.3〜T11.6) の方針
+## 5. T11.3: 杖と呪文 (`charon-game::wand`)
 
-- **T11.3 杖と呪文**: 呪文は `Payload` と弾の初速・消費マナ・詠唱間隔を持つデータ (`spells.ron`、MOD から追加)。杖は呪文の列、マナ、`cast_delay`、`recharge`、`mana_regen` を持ち、1 tick ごとに入力 (発射する・方向) から弾を `spawn` する。
+### 5.1 呪文の表 (`SpellTable`)
+
+`SpellTable::parse(text, materials, namespace) -> Result<SpellTable, SpellError>` は RON の配列を読む。`namespace` が `Some(id)` なら呪文名を `id:name` にする (MOD と同じ規則、仕様 07 §6)。
+
+```ron
+[
+    (name: "spark", mana_cost: 5, cast_delay: 6, speed: 128, gravity: 0, life: 60,
+     damage: 8, spread: 0, payload: None),
+    (name: "bomb", mana_cost: 30, cast_delay: 30, speed: 96, gravity: 2, life: 120,
+     damage: 20, spread: 8, payload: Explode(radius: 6)),
+    (name: "sand_shot", mana_cost: 10, cast_delay: 10, speed: 96, gravity: 2, life: 90,
+     damage: 0, spread: 16, payload: Deposit(material: "sand")),
+]
+```
+
+- 検査 (違反は `SpellError::Invalid { spell, reason }`、検査は名前の昇順ではなく記載順で最初の違反): `name` は ASCII 英数字・`_` の 1..=64 文字、`mana_cost` 0..=10000、`cast_delay` 0..=600、`speed` 1..=512、`gravity` -64..=64、`life` 1..=3600、`damage` 0..=10000、`spread` 0..=128、`Explode` の半径 1..=16。呪文は 1..=256 個、名前の重複は `SpellError::Duplicate(name)`、`Deposit` の材質名が表になければ `SpellError::UnknownMaterial { spell, material }`。構文エラーは `SpellError::Parse`。
+- 読み込んだ呪文は `SpellId(u16)` (記載順の添字) で参照する。`get(id)`、`id(name)`、`len()`、`iter()` を提供する。
+- MOD のディレクトリから `spells.ron` を自動で読む処理は、仕様 07 §6 の変更になるため T11.3 では行わない。呼び出し側が `parse` に渡す。
+
+### 5.2 杖 (`Wand`)
+
+```rust
+pub struct Wand {
+    pub spells: Vec<SpellId>, // 1..=16
+    pub mana: u32, pub mana_max: u32, // mana_max 1..=10000
+    pub mana_regen: u16,      // 毎 tick の回復量
+    pub recharge: u16,        // 最後の呪文のあと追加で待つ tick
+    cursor: usize, cooldown: u16,
+}
+```
+
+- `Wand::new(spells, mana_max, mana_regen, recharge, table) -> Result<Wand, WandError>`: 呪文が 1..=16 個、ID がすべて表にある、`mana_max` が 1..=10000、でなければエラー。`mana = mana_max`、`cursor = 0`、`cooldown = 0`。
+- `Wand::tick(&mut self)`: `mana = min(mana_max, mana + mana_regen)`、`cooldown` を 1 減らす (0 で止まる)。1 tick に 1 回、`cast` より前に呼ぶ。
+- `Wand::cast(&mut self, table, projectiles, world, muzzle: (i64, i64), aim: (i32, i32), tick, seed) -> Result<CastOutcome, CastError>`:
+  1. `cooldown > 0` なら `Ok(Cooling)`。`mana < mana_cost` なら `Ok(NoMana)`。どちらも杖と弾を変えない。
+  2. `aim` は 1/16 セル単位の向きのベクトル。`(0, 0)` や各成分の絶対値が 1,000,000 を超えるものは `CastError::InvalidAim`。`len = isqrt(ax² + ay²)` (`u64`、切り捨て、0 なら 1)。`dir_v = aim * speed / len` (各成分、0 方向へ丸める整数除算)。
+  3. 散らし: `spread > 0` なら `off = (rng::hash(seed, tick, muzzle_x_cell, muzzle_y_cell, SALT_SPREAD) % (2*spread + 1)) - spread`。`perp = (-aim_y, aim_x)`、`v = dir_v + perp * speed * off / (256 * len)` (各成分、`i64`、0 方向へ丸め)。結果は `i16` の ±512 に `clamp`。
+  4. `projectiles.spawn(world, muzzle.0, muzzle.1, vx, vy, gravity, life, damage, payload)` を呼ぶ。失敗したら `CastError::Projectile(e)` を返し、杖は何も変えない。
+  5. 成功したら `mana -= mana_cost`、`cursor = (cursor + 1) % len`、`cooldown = cast_delay`。`cursor` が 0 に戻ったときは `cooldown += recharge` (`u16` の上限で止める)。`Ok(Fired(id))`。
+- 乱数は `rng::hash` のみ (`SALT_SPREAD = 0x5350_5244`)。時刻・浮動小数点を使わない。`Wand::state_hash()` は全フィールドを FNV-1a 64-bit (リトルエンディアン) で流す。
+
+| テスト | 確認 |
+|---|---|
+| `spell_table_parses_and_resolves` | 材質名が ID になり、`namespace` が名前に付き、記載順の `SpellId` で引ける |
+| `spell_table_rejects_bad_data` | 重複・未定義の材質・範囲外の値・構文エラー・0 個と 257 個を拒否する |
+| `wand_casts_in_order_and_recharges` | 呪文が順に撃たれ、`cast_delay` の間は `Cooling`、最後の呪文のあとは `recharge` が足される |
+| `wand_mana_limits_casting` | マナ不足は `NoMana` で何も変わらず、回復すれば撃てる。`mana_max` を超えて回復しない |
+| `aim_sets_velocity` | `(3, 4)` で速度 100 なら `(60, 80)`、負の向きも同じ式。`(0, 0)` は `InvalidAim` |
+| `spread_is_deterministic` | 同じ入力で同じ速度。範囲内で、tick が違うと値が散る |
+| `failed_cast_changes_nothing` | 弾の上限などで `spawn` が失敗すると、杖のマナ・カーソル・待ち時間が変わらない |
+
+## 6. 後続 (T11.4〜T11.6) の方針
+
 - **T11.4 敵**: `Vitals` を持つエンティティに、整数だけの AI (向かう・跳ぶ・間合いで撃つ) を足す。乱数は `rng::hash`。
 - **T11.5 掘る道具・浮遊**: 掘るは `Payload` の一種 (半径内のセルをパーティクルへ移す)。浮遊は `PlayerInput` の拡張 (燃料を消費し、`vy` を上向きに足す)。
 - **T11.6 組み込み**: `Lockstep` の tick 順序に vitals・projectile を入れ、サンドボックス・デモで操作できるようにする。

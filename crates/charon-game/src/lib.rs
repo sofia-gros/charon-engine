@@ -4,6 +4,7 @@ pub mod lockstep;
 pub mod mods;
 pub mod projectile;
 pub mod vitals;
+pub mod wand;
 
 use std::collections::BTreeMap;
 
