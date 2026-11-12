@@ -24,6 +24,7 @@ egui-wgpu = "0.37.0"
 pollster = "1.0.1"
 ron = "0.12.3"
 serde = { version = "1.0.229", features = ["derive"] }
+web-time = "1.1.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
 
@@ -35,4 +36,4 @@ base64 = "0.23.1"
 egui-winit = { version = "0.37.0", default-features = false }
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
-web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlCanvasElement", "HtmlElement", "Node", "Storage", "Window"] }
+web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlCanvasElement", "HtmlElement", "Node", "Storage", "Window", "console"] }

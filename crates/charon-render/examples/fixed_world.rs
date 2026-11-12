@@ -138,7 +138,7 @@ impl ApplicationHandler for Demo {
                         return;
                     }
                 };
-                let view = frame.texture.create_view(&Default::default());
+                let view = gpu.frame_view(&frame.texture);
                 let positions = world.chunk_positions();
                 if let Err(err) = passes.render(gpu, world, &positions, &view, [0.0, 0.0]) {
                     eprintln!("描画に失敗: {err}");

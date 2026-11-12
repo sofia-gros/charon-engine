@@ -124,3 +124,96 @@ Windows 11 Pro 上で `CHARON_REQUIRED_GPU_ADAPTER=RTX 4060` を指定し、
 | 参照との差 | CPU・メモリのグラフなし、`Z` / `X` キー未対応、参照の絵素材と簡略化した地形の折れ線・構造物の外形線は再現していない (仕様 09 §1) |
 
 参照のフレームはこのリポジトリに入れていない。
+
+## M11 Web・Linux の実ブラウザー検証と不具合修正 (2026-11-12)
+
+環境: クラウドの Linux (x86_64、GPU・Vulkan ドライバー・ディスプレイなし)、Chromium 153 (ヘッドレス)、
+Xvfb、Chromium 同梱の SwiftShader (**CPU によるソフトウェア描画。物理 GPU ではない**)。
+Windows の RTX 4060 の結果とは別に記録し、一方から他方の成功を推定しない。
+
+### 見つかって直した不具合
+
+実ブラウザーで起動すると、修正前は 3 つの構成すべてで描画に至らなかった。
+
+| 症状 | 原因 | 修正 |
+|---|---|---|
+| 起動後 約 240 ms で `RuntimeError: unreachable`、描画されない | wasm では `std::time::Instant` が使えず panic (`charon-app` の `lib.rs`、`sim.rs`) | `web_time::Instant` に置換 |
+| WebGPU 構成で `sRGB のサーフェス形式がありません` | WebGPU のキャンバスは `bgra8unorm` / `rgba8unorm` / `rgba16float` だけを受け付け、sRGB 形式は仕様上拒否される (ブラウザーに直接問い合わせて確認)。サーフェスに sRGB を必須にしていた | 非 sRGB 形式で configure し、sRGB のビューを `view_formats` に足して、そのビューへ描く (`GpuContext::frame_view`) |
+| `navigator.gpu` があるのにアダプターが取れないブラウザーで `webgpu found no adapters` となり、WebGL2 に落ちない | `Instance::new` は `navigator.gpu` の有無だけで WebGPU 専用に確定する | wgpu 公式の `util::new_instance_with_webgpu_detection` を使い、アダプターを検出して WebGL2 へ落とす |
+| 上の修正後も、GPU の初期化が遅れる環境で最初の 1 フレームだけ描いてループが停止 (キャンバスは 300×150 のまま) | `GpuContext::new` に渡す大きさは `resumed` 時点の 0×0 で、初期化中に届いた `Resized` は `self.gpu` がなく捨てられる。準備完了後は誰もサーフェスを構成し直さず、`about_to_wait` が再描画を要求しなくなる | 準備完了時に現在の大きさで `resize` する |
+| panic が `unreachable` としか出ず、状態欄が「実行中」のまま残る | panic フックがない | コンソールと状態欄に panic の内容を出すフックを追加 |
+| Sandbox パネルの保存状態 (`未保存` など) が文字化け (□□□) | egui の標準フォントに日本語がない | パネルの状態表示を ASCII にし、テストで固定 (`panel_status_text_is_ascii`) |
+| `scripts/build-web.sh` が `Permission denied` | git のファイルモードが `100644` | `100755` にした |
+
+### 実ブラウザーで確認できたこと (WebGL2 経路)
+
+`tools/web-smoke/smoke.js` と手動の操作 (Playwright でマウスを操作) による。ブラウザーのコンソールとネットワークにエラーはなかった。
+
+| 項目 | 結果 |
+|---|---|
+| 起動・描画ループ | 「`navigator.gpu` あり・アダプターなし」「`navigator.gpu` なし」の 2 構成とも、3 秒で 130 フレーム前後、キャンバスはウィンドウに合わせて拡大。修正前は前者が 0 フレームで停止 (スモークテストは修正を外すと失敗することを確認) |
+| 水と砂のポインター配置 | 水が落ちてたまり、砂が木の剛体の容器に入って水を押し上げ、足場と水中に山を作った |
+| 停止・1 tick 送り・再開 | 停止中に空中へ置いた砂は 2.5 秒間まったく動かず (差分 0)、`Step` 6 回で少し、再開で大きく動いた。ボタンは `Pause` / `Play` に切り替わる |
+| 保存と再読込 | `localStorage` の `charon.world.v1` に約 1.27 MB を保存。再読込後に砂の山・水たまり・水中の山が同じ配置で復元され、パネルに保存時点の tick から再開と表示された |
+
+### 確認できなかったこと (成功とは扱わない)
+
+| 項目 | 状態 |
+|---|---|
+| **WebGPU のキャンバスへの描画** | **未検証。** このヘッドレス Chromium + SwiftShader では、アプリを使わない最小の WebGPU ページ (`rgba8unorm` のキャンバスを毎フレームクリア) でもキャンバスへ提示した時点でデバイスが破棄され、白くなる (`viewFormats` なしでも同じ)。環境の制約であり、アプリの修正が WebGPU で正しく描けることは、実 GPU のブラウザーで別に確認する。アダプターとデバイスの取得、sRGB ビューを使うサーフェスの構成までは通る |
+| 実際の WebGPU 非対応ブラウザー (Firefox など) | 未検証。`navigator.gpu` を隠した Chromium で模擬した |
+| `web_save_roundtrip` のブラウザー上での照合 | 保存・復元は上の手動操作で目視確認。材質名・前景・背景・剛体を機械的に照合する検証は未実施 |
+| タッチ操作 | 未検証 |
+| Linux のネイティブ GUI | `charon-demo` は下の「Linux ネイティブ GUI」のとおり確認済み (ソフトウェア描画)。`charon-sandbox` の通常サンドボックスは未検証 |
+| 物理 GPU (Linux) | なし。SwiftShader のみ |
+| Android | 依頼者の指示で対象外 (クロスコンパイルも実施していない) |
+
+### Linux ソフトウェア Vulkan での描画テスト
+
+`VK_ICD_FILENAMES` に SwiftShader の ICD を指して実行した。アダプターは `SwiftShader Device (Subzero)` / `Cpu` / Vulkan。
+
+- `light_pass_renders_offscreen`: 背景・セル・エンティティ・照明・合成・後処理を実行して通過。RTX 4060 の参照画像との差は最大 2/255 (8 を超えるピクセルなし)。
+- `demo_renders_on_gpu`: デモの 5 場面 (部屋、虹色の砂、黄・緑・赤のバイオーム) を 1600×900 で描画して通過。部屋の画像で、暗い洞窟、地形の輪郭線、`Tile Entity` の枠、プレイヤー、X 字・輪・Z 字の剛体、虹色の砂、橙に光る逆さの文字、Debug / Main Menu / Draw / Clipboard / Registries の UI を目視した。
+  これは描画テストの画像であり、`cargo run -p charon-sandbox --bin charon-demo` でウィンドウを操作した結果ではない。
+
+GPU のない環境では、これらのテストはアダプターが取れないと何もせず `ok` で戻る。`ok` は描画の成功を意味しないので、`--nocapture` で `GPU adapter:` の行が出ているかを見ること。
+
+### Linux ネイティブ GUI で `charon-demo` (ソフトウェア描画)
+
+`cargo run -p charon-sandbox --bin charon-demo` を、ウィンドウマネージャーのない Xvfb (1280×800) 上で実行した。
+**物理 GPU ではなく、Mesa の lavapipe (CPU) による描画。** 約 46〜55 fps (デバッグビルド)。
+
+環境の準備 (依頼者の許可を得て `apt` で追加):
+
+| 追加したもの | 理由 |
+|---|---|
+| `libxkbcommon-x11-0` | winit の X11 バックエンドが必要とする。ないと起動直後に `Library libxkbcommon-x11.so could not be loaded.` で panic |
+| `mesa-vulkan-drivers` (lavapipe) | ウィンドウのサーフェスに対応するソフトウェア Vulkan。`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` で指定 |
+
+Chromium 同梱の SwiftShader はオフスクリーン専用で、X11 のウィンドウには対応しない
+(`Vulkan driver does not support VK_KHR_xlib_surface` で GPU の初期化に失敗する)。
+オフスクリーンの描画テストには使えるが、ウィンドウを開くデモには使えない。
+
+画面と操作 (X11 の XTest で合成した入力。実際のキーボード・マウスではない):
+
+| 操作 | 結果 |
+|---|---|
+| 起動 | 洞窟、`Tile Entity` の枠、プレイヤー、X 字・輪・Z 字の剛体、虹色の砂、橙の逆さの文字、UI、計測グラフが表示された。ログにエラーなし。画面: [M11-linux-demo-start.png](screenshots/M11-linux-demo-start.png) |
+| 左ボタンで砂を置く | 虹色の砂が床に積もり、床の光が変わった |
+| 剛体のドラッグ | X 字の剛体をつかんで持ち上げると傾いて宙に浮き、隣の輪が押されて動いた。画面: [M11-linux-demo-grab.png](screenshots/M11-linux-demo-grab.png) |
+| `D` を 1.5 秒 | プレイヤーが右へ歩き、カメラが追従して世界が左へ流れ、X 字の剛体と輪を押した |
+| `Space` | ジャンプ中、プレイヤーの下端が床から約 55 px 浮き、着地後は元の高さに戻った |
+| `Main Menu` の `Random Seed` | 周囲の洞窟が作り直され (画面の約 19% が変化)、スタート部屋は同じ配置で再生成された |
+| `Main Menu` の `Quit` | プロセスが終了した |
+
+注意: ウィンドウマネージャーがない Xvfb ではキーボードフォーカスが設定されず、最初の `D` は届かなかった。
+`XSetInputFocus` でウィンドウにフォーカスを与えると届いた (アプリの不具合ではなく環境)。
+
+未確認: 物理 GPU、`F` の自由カメラ、`Ctrl` ドラッグでの `Clipboard` の `Copy` / `Paste`、最小化・復帰、
+実際のキーボード・マウス・タッチ入力。
+
+### Web サンドボックスの画面 (WebGL2 経路)
+
+水と砂を置いた後の実画面: [M11-web-sandbox-webgl2.png](screenshots/M11-web-sandbox-webgl2.png)
+(Chromium のソフトウェア WebGL2。パネル最下行の保存状態は、この画像の時点では修正前で文字化けしている)。
+

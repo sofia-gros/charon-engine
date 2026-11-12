@@ -56,7 +56,7 @@ impl Controls {
             #[cfg(target_arch = "wasm32")]
             web_save: false,
             #[cfg(target_arch = "wasm32")]
-            web_status: "未保存".to_owned(),
+            web_status: super::NOT_SAVED.to_owned(),
         }
     }
 }
