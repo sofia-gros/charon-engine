@@ -13,7 +13,9 @@ use charon_world::save::WorldMeta;
 use charon_world::streaming::Streamer;
 use winit::event_loop::EventLoop;
 
-use crate::{AppOptions, DemoSession, PlayerLoadout, RestartFn, run_with_streaming_options};
+use crate::{
+    AppOptions, DemoSession, EnemySpawn, PlayerLoadout, RestartFn, run_with_streaming_options,
+};
 
 /// デモの MOD と保存先の場所。
 #[derive(Clone, Debug)]
@@ -41,6 +43,14 @@ impl DemoConfig {
 /// デモ (ゲーム側) のプレイヤーの装備 (仕様 10 §7.4)。杖は `fse_demo` の `wands.ron` の定義。
 pub(crate) fn demo_loadout() -> PlayerLoadout {
     PlayerLoadout { max_hp: 100, wand: "fse_demo:starter".to_owned() }
+}
+
+/// デモ (ゲーム側) が部屋に置く敵 (仕様 10 §8.5)。種類はエンジンの既定の定義。
+pub(crate) fn demo_enemies() -> Vec<EnemySpawn> {
+    vec![
+        EnemySpawn { name: "walker".to_owned(), cell: [164, 248] },
+        EnemySpawn { name: "shooter".to_owned(), cell: [176, 248] },
+    ]
 }
 
 /// 組み立てたデモ。`session` を `run_with_streaming_options` に渡す。
@@ -126,6 +136,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             background: Some(DemoGenerator { materials: demo_materials }),
             definitions: Some(Arc::new(pack.definitions.clone())),
             player: Some(demo_loadout()),
+            enemies: demo_enemies(),
         },
         brush: demo_materials.rainbow_sand,
     })
@@ -215,6 +226,7 @@ mod tests {
         let mut entities = EntityWorld::new();
         let mut player = None;
         let mut spawn = options.player_spawn;
+        let mut enemy_spawns = options.enemies.clone();
         let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
         let mut physics_ms = 0.0;
         for _ in 0..ticks {
@@ -227,7 +239,9 @@ mod tests {
                 player: &mut player,
                 spawn: &mut spawn,
                 game: &mut game,
-                loadout: options.definitions.as_deref().zip(options.player.as_ref()),
+                definitions: options.definitions.as_deref(),
+                loadout: options.player.as_ref(),
+                enemy_spawns: &mut enemy_spawns,
             };
             sim.tick(
                 ChunkPos::new(0, 3),
@@ -255,13 +269,66 @@ mod tests {
             let first = run(seed, 150);
             let second = run(seed, 150);
             assert_eq!(first, second, "seed {seed}");
-            // プレイヤーが 1 人生成されて床に立ち、剛体 3 つが世界にスタンプされている。
-            assert_eq!(first.1, 1, "seed {seed}: プレイヤー");
+            // プレイヤー 1 人と、ゲーム側が指定した敵が生成されて床に立ち、剛体 3 つがスタンプされている。
+            assert_eq!(first.1, 1 + demo_enemies().len(), "seed {seed}: プレイヤーと敵");
             assert!(first.2, "seed {seed}: 接地");
             assert!(first.3 > 100, "seed {seed}: 剛体のスタンプ {} セル", first.3);
         }
         // seed が違えば洞窟が違うので、世界のハッシュも違う。
         assert_ne!(run(1, 150).0, run(2, 150).0);
+    }
+
+    /// 仕様 10 §8.5: ゲーム側が指定した敵が生まれ、プレイヤーを狙い、決定的に動く (画面なし)。
+    #[test]
+    fn demo_enemies_spawn_in_scene() {
+        let run = |seed: u64| {
+            let dir = TestDir::new();
+            let OpenDemo { session, options, .. } = open_demo(&config(&dir), seed).unwrap();
+            let DemoSession { mut world, streamer, save_root, metadata, mut physics } = session;
+            let mut streaming = Some(StreamingState { streamer, save_root, metadata });
+            let mut initialized = false;
+            let mut entities = EntityWorld::new();
+            let mut player = None;
+            let mut spawn = options.player_spawn;
+            let mut enemy_spawns = options.enemies.clone();
+            let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
+            let mut physics_ms = 0.0;
+            let mut trace = Vec::new();
+            for _ in 0..400 {
+                Sim {
+                    world: &mut world,
+                    streaming: &mut streaming,
+                    physics: &mut physics,
+                    initialized: &mut initialized,
+                    entities: &mut entities,
+                    player: &mut player,
+                    spawn: &mut spawn,
+                    game: &mut game,
+                    definitions: options.definitions.as_deref(),
+                    loadout: options.player.as_ref(),
+                    enemy_spawns: &mut enemy_spawns,
+                }
+                .tick(
+                    ChunkPos::new(0, 3),
+                    PlayerInput::default(),
+                    GameInput::default(),
+                    &mut physics_ms,
+                )
+                .unwrap();
+                trace.push(game.state_hash() ^ entities.state_hash().rotate_left(13));
+            }
+            let names: Vec<String> = game.enemies.values().map(|e| e.def.name.clone()).collect();
+            let hp = game.vitals.get(player.unwrap()).unwrap().hp;
+            streaming.take().unwrap().streamer.finish().unwrap();
+            (trace, names, hp, enemy_spawns.len())
+        };
+        for seed in 1..=3 {
+            let (trace, names, hp, pending) = run(seed);
+            assert_eq!(names, ["walker", "shooter"], "seed {seed}: ゲーム側の指定どおり");
+            assert_eq!(pending, 0, "seed {seed}: 全部生成された");
+            assert!(hp <= 100);
+            assert_eq!(trace, run(seed).0, "seed {seed}: 決定的");
+        }
     }
 
     /// 仕様 10 §7: デモ (ゲーム側) の杖と呪文は `fse_demo` の RON から来て、エンジン既定の `bomb` を上書きする。
@@ -308,6 +375,7 @@ mod tests {
             let mut entities = EntityWorld::new();
             let mut player = None;
             let mut spawn = options.player_spawn;
+            let mut enemy_spawns = options.enemies.clone();
             let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
             let mut physics_ms = 0.0;
             let (mut shots, mut max_particles) = (0, 0);
@@ -327,7 +395,9 @@ mod tests {
                     player: &mut player,
                     spawn: &mut spawn,
                     game: &mut game,
-                    loadout: options.definitions.as_deref().zip(options.player.as_ref()),
+                    definitions: options.definitions.as_deref(),
+                    loadout: options.player.as_ref(),
+                    enemy_spawns: &mut enemy_spawns,
                 }
                 .tick(ChunkPos::new(0, 3), PlayerInput::default(), action, &mut physics_ms)
                 .unwrap();

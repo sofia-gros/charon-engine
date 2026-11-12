@@ -159,6 +159,17 @@ pub struct AppOptions {
     pub definitions: Option<Arc<Definitions>>,
     /// プレイヤーの初期装備。`definitions` とともにあるとき、プレイヤーは体力と杖を持ち、右ボタンで撃つ。
     pub player: Option<PlayerLoadout>,
+    /// 世界に置く敵。周囲のチャンクが読み込まれたら `GameState::spawn_enemy` で生成する (仕様 10 §8.5)。
+    pub enemies: Vec<EnemySpawn>,
+}
+
+/// ゲームがエンジンに渡す敵の生成の指定 (仕様 10 §8.5)。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnemySpawn {
+    /// `Definitions::enemy` に渡す敵の種類の名前。
+    pub name: String,
+    /// 左上のセル。
+    pub cell: [i32; 2],
 }
 
 /// ゲームがエンジンに渡すプレイヤーの初期装備 (仕様 10 §7.4)。値も杖の名前もゲーム側が決める。
@@ -230,6 +241,7 @@ pub fn run_with_streaming_options(
     let background = BackgroundWorld::load(&save_root, world.materials(), &metadata.materials)?;
     let mut app = App::new(world, brush_material, make_world);
     app.spawn_pending = options.player_spawn;
+    app.enemies_pending = options.enemies.clone();
     app.options = options;
     app.reset_game();
     app.restart = restart;
@@ -298,6 +310,8 @@ struct App {
     cursor: [f32; 2],
     /// まだ生成していないプレイヤーの初期位置。生成に失敗したら `None` にする。
     spawn_pending: Option<[i32; 2]>,
+    /// まだ生成していない敵。
+    enemies_pending: Vec<EnemySpawn>,
     free_camera: bool,
     /// `Main Menu` で押された操作。描画の後に処理する。
     pending_action: Option<DemoAction>,
@@ -348,6 +362,7 @@ impl App {
             firing: false,
             cursor: [0.0, 0.0],
             spawn_pending: None,
+            enemies_pending: Vec::new(),
             free_camera: false,
             pending_action: None,
             restart_count: 0,
@@ -624,6 +639,7 @@ impl App {
         self.reset_game();
         self.player = None;
         self.spawn_pending = self.options.player_spawn;
+        self.enemies_pending = self.options.enemies.clone();
         self.free_camera = false;
         self.bg_populated.clear();
         self.grab = None;
@@ -716,7 +732,9 @@ impl App {
             player: &mut self.player,
             spawn: &mut self.spawn_pending,
             game: &mut self.game,
-            loadout: self.options.definitions.as_deref().zip(self.options.player.as_ref()),
+            definitions: self.options.definitions.as_deref(),
+            loadout: self.options.player.as_ref(),
+            enemy_spawns: &mut self.enemies_pending,
         };
         let step = || {
             if stream_error.is_none()

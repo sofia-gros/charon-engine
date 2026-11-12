@@ -99,6 +99,11 @@ impl EntityWorld {
         self.entities.get(&id)
     }
 
+    /// 位置と速度を更新するための可変参照。ID・寸法を変えてはならない。
+    pub fn get_mut(&mut self, id: EntityId) -> Option<&mut Entity> {
+        self.entities.get_mut(&id)
+    }
+
     pub fn remove(&mut self, id: EntityId) -> Option<Entity> {
         self.entities.remove(&id)
     }
@@ -132,6 +137,25 @@ impl EntityWorld {
         hash
     }
 
+    /// 固体のない位置にだけ作る (仕様 10 §8.2)。固体と重なるなら `Occupied` で、ID も消費しない。
+    pub fn spawn_checked(
+        &mut self,
+        x16: i64,
+        y16: i64,
+        width: u8,
+        height: u8,
+        world: &World,
+    ) -> Result<EntityId, EntityError> {
+        let id = self.spawn(x16, y16, width, height)?;
+        if collides(x16, y16, width, height, world) {
+            self.remove(id);
+            // 失敗した生成で ID を消費しない。前の状態へ戻す。
+            self.next_id -= 1;
+            return Err(EntityError::Occupied);
+        }
+        Ok(id)
+    }
+
     /// 8×16 セルのプレイヤーを、固体のない位置に作る。
     pub fn spawn_player(
         &mut self,
@@ -139,14 +163,7 @@ impl EntityWorld {
         y16: i64,
         world: &World,
     ) -> Result<EntityId, EntityError> {
-        let id = self.spawn(x16, y16, 8, 16)?;
-        if collides(x16, y16, 8, 16, world) {
-            self.remove(id);
-            // 失敗した生成で ID を消費しない。前の状態へ戻す。
-            self.next_id -= 1;
-            return Err(EntityError::Occupied);
-        }
-        Ok(id)
+        self.spawn_checked(x16, y16, 8, 16, world)
     }
 
     /// 全入力を検証してから ID 順に更新する。入力のない ID は中立入力。
@@ -178,12 +195,27 @@ pub struct PlayerInput {
     pub jump: bool,
 }
 
+/// プレイヤーの速さ: 歩く速さ (1/16 セル / tick) とジャンプの初速。
+pub const PLAYER_WALK_SPEED: i16 = 32;
+pub const PLAYER_JUMP_SPEED: i16 = 96;
+
 /// x → y の順に 1/16 セルずつ移動し、衝突する直前で止める。
 pub fn step_player(entity: &mut Entity, input: PlayerInput, world: &World) {
+    step_entity(entity, input, PLAYER_WALK_SPEED, PLAYER_JUMP_SPEED, world);
+}
+
+/// `step_player` の移動を、速さを引数にしたもの (仕様 10 §8.4)。`walk_speed`・`jump_speed` は 0..=96。
+pub fn step_entity(
+    entity: &mut Entity,
+    input: PlayerInput,
+    walk_speed: i16,
+    jump_speed: i16,
+    world: &World,
+) {
     debug_assert!((-1..=1).contains(&input.horizontal));
-    entity.vx = i16::from(input.horizontal.clamp(-1, 1)) * 32;
+    entity.vx = i16::from(input.horizontal.clamp(-1, 1)) * walk_speed.clamp(0, 96);
     if entity.grounded && input.jump {
-        entity.vy = -96;
+        entity.vy = -jump_speed.clamp(0, 96);
         entity.grounded = false;
     }
     entity.vy = (entity.vy + 4).min(96);
@@ -214,7 +246,7 @@ pub fn step_player(entity: &mut Entity, input: PlayerInput, world: &World) {
 }
 
 /// 半開区間の端を含むセルだけを検査し、未読み込み/範囲外も壁とする。
-fn collides(x16: i64, y16: i64, width: u8, height: u8, world: &World) -> bool {
+pub(crate) fn collides(x16: i64, y16: i64, width: u8, height: u8, world: &World) -> bool {
     let left = x16.div_euclid(16);
     let top = y16.div_euclid(16);
     let right = (x16 + i64::from(width) * 16 - 1).div_euclid(16);

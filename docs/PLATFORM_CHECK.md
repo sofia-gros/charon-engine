@@ -82,6 +82,8 @@ Windows 11 Pro 上で `CHARON_REQUIRED_GPU_ADAPTER=RTX 4060` を指定し、
 
 2026-11-12: `charon-demo` に体力・杖・弾を組み込み、右ボタン (押している間) でカーソルの方向へ撃つようにした。`CHARON_REQUIRED_GPU_ADAPTER=RTX 4060` で `cargo test -p charon-app --lib demo_renders_wand_panel` を実行し、選択されたアダプターが **NVIDIA GeForce RTX 4060 / DiscreteGpu / Vulkan** であることを確認した。部屋の場面に体力 65/100 のプレイヤーと飛んでいる弾 3 つを置いて 1600×900 でオフスクリーンに描き、画面上端の `Wand` パネル (赤い体力バー、青い息・マナのバー、`Next: spark · Shots: 3`) と弾の点が画素に現れることを検査して通過した。画像は [`screenshots/M11-wand-panel.png`](screenshots/M11-wand-panel.png) で、目視でも確認した。
 
+**敵 (T11.4):** 同じ RTX 4060 のオフスクリーン描画で、デモの部屋に敵 2 体 (`walker`・`shooter`) が生成され、`Wand` パネルに `Enemies: 2` と出ることを確認した ([`screenshots/M11-enemies.png`](screenshots/M11-enemies.png))。敵はプレイヤーと同じ色の箱で描かれ、区別できる色はまだない。画像の時点では、視線が剛体にさえぎられて目標がいないため、敵は徘徊で部屋の外 (扉の右) へ出ている。ウィンドウで敵と戦う操作は未検証。
+
 **自動テストで確認したこと:** 環境ダメージ・息、弾の飛行と着弾と爆発ダメージ、杖のマナ・詠唱間隔・再充填、`GameState` の tick の順序、`Lockstep` のパケット version 2 とゲーム状態を含む同期ハッシュ、デモの世界で右ボタン相当の入力が弾とパーティクルを生むこと、狙いの計算。
 
 **未検証 (成功とは扱わない):** ウィンドウでの実際の右ボタン操作と、UI が押下を使ったときに撃たないこと (画面操作の許可が得られなかった)。`Lockstep` は同一プロセス内のテストだけで、実際のネットワーク接続は持たない。Web・Android・Linux でのデモは未検証。

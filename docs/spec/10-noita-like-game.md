@@ -257,8 +257,60 @@ pub struct GameState {
 | `lockstep_rejects_different_definitions` | 定義の中身が違う接続を拒否する (`lockstep_game_hash_is_order_independent` を置き換える) |
 | `demo_definitions_come_from_the_game_files` | デモの杖は `fse_demo` の RON から作られ、エンジン既定の `bomb` を上書きした結果が反映される |
 
-## 8. 後続 (T11.4〜T11.5) の方針
+## 8. T11.4: 敵 (`charon-game::game`、`defs`)
 
-- **T11.4 敵**: `EnemyDef` (§7.1) から、`Vitals` を持つエンティティを `spawn_enemy(defs, name, position)` の API で作り、整数だけの AI (向かう・跳ぶ・間合いで撃つ) で動かす。乱数は `rng::hash`。T11.6 の画面で当たり判定を確認してから着手する。
+敵の**種類**は §7 の `EnemyDef` (エンジンの既定とゲームの追加)、**生成**はゲームが API (`spawn_enemy`) で呼ぶ。動き・攻撃・接触ダメージ・撤去はエンジンの AI が決める。整数だけで計算し、乱数は `rng::hash` だけ。
+
+### 8.1 `EnemyDef` の追加項目
+
+- `contact_damage`: 省略できる (既定 0)。0..=1000。目標に当たり判定が重なっているとき、`CONTACT_INTERVAL = 30` tick ごとに与えるダメージ。`enemies.ron` に `contact_damage: 5` と書く。エンジンの既定の `walker` は 5、`shooter` は 0。内容ハッシュ (§7.2) に含める。
+
+### 8.2 生成 API
+
+- `EntityWorld::spawn_checked(x16, y16, width, height, world) -> Result<EntityId, EntityError>`: `spawn` の検査に加え、固体 (`collides`) と重なるなら `Occupied` で、ID を消費せず何も変えない。`spawn_player` はこれの 8×16 版にする。
+- `GameState::spawn_enemy(&mut self, defs: &Definitions, entities: &mut EntityWorld, world: &World, name: &str, cell: (i32, i32)) -> Result<EntityId, GameError>`: `cell` は左上のセル。順に、(1) `defs.enemy(name)` がなければ `GameError::UnknownEnemy`、(2) `attack` の呪文が `self.spells` にあるか (なければ `GameError::UnknownSpell`)、(3) `spawn_checked` (失敗は `GameError::Entity`)、(4) `Vitals::new(max_hp)`、(5) 攻撃があれば、その呪文 1 つだけの杖 (`mana_max = 10000`、`mana_regen = 10000` で常に満タン) を作り、敵として登録する。**失敗したときは何も変えない**。敵は種類の定義の写しを持つ (あとで定義を上書きしても、動いている敵は変わらない)。
+
+### 8.3 1 tick の AI (`GameState::step` の (4))
+
+`GameState::step` は `entities: &mut EntityWorld` を受け取り、順序を **(1) 環境ダメージ → (2) 杖の回復 → (3) プレイヤーの発射 → (4) 敵 (ID 昇順) → (5) 弾の移動 → (6) 敵の撤去** にする。戻り値は `StepReport { hits: Vec<Hit>, defeated: Vec<EntityId> }`。
+
+敵 1 体の処理 (体力 0 なら何もしない):
+
+1. `attack_cooldown`、`contact_cooldown`、杖の待ち (`Wand::tick`) を 1 減らす (0 で止まる)。
+2. **目標**: 杖を持つ生存中のキャラクター (`self.wands` の ID) のうち、中心のセル距離 `dx² + dy² <= sight²` で、**視線が通る**もの。最も近いもの (同距離なら ID が小さいもの)。視線: 敵の中心セルから目標の中心セルまでの整数の線分 (Bresenham) の途中のセル (両端を除く) が、`BOUNDARY`・`FLAG_BODY`・固体・粉体のどれでもないこと (液体・気体・空は通る)。
+3. **移動の入力** (`dx` = 目標の中心 x − 自分の中心 x、セル):
+   - 目標なし: 45 tick ごとに、`horizontal = hash(seed, tick / 45, id as i32, 0, SALT_WANDER) % 3 - 1` (`SALT_WANDER = 0x574E_4452`)。ジャンプなし。
+   - 目標あり、攻撃なし (接近戦): 当たり判定が重なるまで近づく。`|dx| > max((自分の幅 + 目標の幅) / 2 - 2, 0)` のとき `sign(dx)`、そうでなければ 0 (中心の距離が幅の半分の和より 2 セル近いところで止まるので、箱が重なる)。
+   - 目標あり、攻撃あり: `stand_off = sight / 2`。`|dx| > stand_off` なら `sign(dx)`、`|dx| < stand_off / 2` なら `-sign(dx)` (後退)、それ以外は 0。
+   - ジャンプ: 接地していて、(a) `horizontal != 0` で、進む向きの 1 セル先で当たり判定が固体に重なる、または (b) 目標の上端が自分の上端より 4 セル以上上にあり `|dx| <= 4`。
+4. **移動**: `step_entity(entity, PlayerInput { horizontal, jump }, walk_speed, jump_speed, world)` (§8.4)。
+5. **攻撃** (`attack` があり、目標があり、`attack_cooldown == 0`): 狙いは**自分の中心から目標の中心への向き** (1/16 セル単位)。`Wand::cast` で撃ち、`Fired` なら弾の `grace` を自分にし、`attack_cooldown = attack_interval`。`Cooling` / `NoMana` / `InvalidAim` では何もしない (次の tick に再試行)。
+6. **接触** (`contact_damage > 0`、`contact_cooldown == 0`): 当たり判定が重なる生存中のキャラクターのうち ID が最小のもの 1 体に `contact_damage` を与え、`contact_cooldown = CONTACT_INTERVAL`。
+
+撤去: (5) のあと、体力 0 の敵を `entities`・`vitals`・敵の表から消し、`StepReport::defeated` に ID を昇順で入れる。ID は再利用しない。プレイヤーは撤去しない。敵の弾は敵にも当たる (チームなし)。
+
+### 8.4 移動
+
+`step_entity(entity, input, walk_speed, jump_speed, world)` は `step_player` の移動を、速さを引数にしたもの: `vx = horizontal * walk_speed`、接地中にジャンプなら `vy = -jump_speed`。`step_player` は `step_entity(.., 32, 96, ..)`。衝突の判定は仕様 07 §2.2 のまま。
+
+### 8.5 ゲーム側から使う
+
+`AppOptions::enemies: Vec<EnemySpawn>` (`EnemySpawn { name: String, cell: [i32; 2] }`) をゲームが渡す。エンジンの実行部分は、周囲のチャンクが読み込まれたら `spawn_enemy` を呼ぶ (プレイヤーの生成と同じ条件)。失敗は報告して、その敵だけ諦める。デモは `demo.rs` で部屋に `walker` と `shooter` を置く。`Wand` パネルに敵の数を出す。
+
+| テスト | 確認 |
+|---|---|
+| `enemy_spawns_from_definition` | 定義の大きさ・体力で生成され、未定義の敵・呪文・固体との重なりは何も変えずにエラー。ID は単調増加 |
+| `enemy_chases_target_in_sight` | 視界内の目標へ近づき、視界の外の敵は近づかない |
+| `enemy_needs_line_of_sight` | 壁の向こうの目標は追わず撃たず、壁を外すと撃つ |
+| `enemy_jumps_over_step` | 低い段差を跳び越えて目標に届く |
+| `shooter_fires_and_hits_target` | 攻撃のある敵が間隔どおりに撃ち、目標の体力が減る。撃った tick に自分には当たらない |
+| `enemy_contact_damage_repeats` | 接触ダメージが `CONTACT_INTERVAL` ごとに入る |
+| `defeated_enemies_are_removed` | 体力 0 の敵は撤去され、`defeated` に ID が入り、ID は再利用されない。プレイヤーは残る |
+| `enemy_ai_is_deterministic` | seed 1〜8 で、同じ入力から毎 tick の `state_hash` が一致する (徘徊を含む) |
+| `step_entity_uses_given_speeds` | `walk_speed`・`jump_speed` どおりに動き、`step_player` の結果は変わらない |
+| `demo_enemies_spawn_in_scene` | デモの世界にゲーム側の指定どおり敵が生まれ、決定的に動く (画面なし) |
+
+## 9. 後続 (T11.5) の方針
+
 - **T11.5 掘る道具・浮遊**: 掘るは `Payload` の一種 (半径内のセルをパーティクルへ移す)。浮遊は `PlayerInput` の拡張 (燃料を消費し、`vy` を上向きに足す)。
 - いずれも着手前に、この文書へ表のテスト名と式を書く。

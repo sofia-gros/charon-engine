@@ -11,8 +11,8 @@ use charon_game::{EntityId, EntityWorld, PlayerInput};
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::EntitySprite;
 
-use crate::player::try_spawn_player;
-use crate::{PlayerLoadout, StreamingState};
+use crate::player::{area_loaded, try_spawn_player};
+use crate::{EnemySpawn, PlayerLoadout, StreamingState};
 
 /// エンティティと飛んでいる弾の描画用の矩形。弾は 2×2 セルの点。
 pub(crate) fn sprites(entities: &EntityWorld, game: &GameState) -> Vec<EntitySprite> {
@@ -46,8 +46,12 @@ pub(crate) struct Sim<'a> {
     pub(crate) spawn: &'a mut Option<[i32; 2]>,
     /// 体力・杖・弾 (仕様 10 §6.1)。
     pub(crate) game: &'a mut GameState,
-    /// ゲームが渡した定義とプレイヤーの装備 (仕様 10 §7.4)。なければ体力も杖も持たない。
-    pub(crate) loadout: Option<(&'a Definitions, &'a PlayerLoadout)>,
+    /// ゲームが渡した定義 (仕様 10 §7)。
+    pub(crate) definitions: Option<&'a Definitions>,
+    /// プレイヤーの装備 (仕様 10 §7.4)。なければ体力も杖も持たない。
+    pub(crate) loadout: Option<&'a PlayerLoadout>,
+    /// まだ生成していない敵 (仕様 10 §8.5)。周囲のチャンクが届いたものから生成して取り除く。
+    pub(crate) enemy_spawns: &'a mut Vec<EnemySpawn>,
 }
 
 impl Sim<'_> {
@@ -98,6 +102,7 @@ impl Sim<'_> {
                 }
             }
         }
+        self.spawn_pending_enemies();
         // 体力 0 のプレイヤーは入力を受けない (仕様 10 §6.3)。
         let alive = self.player.and_then(|id| self.game.vitals.get(id)).is_none_or(Vitals::alive);
         let input = if alive { input } else { PlayerInput::default() };
@@ -120,10 +125,39 @@ impl Sim<'_> {
         result
     }
 
+    /// 周囲のチャンクが届いた敵を `spawn_enemy` で生成する (仕様 10 §8.5)。失敗した敵は報告して諦める。
+    fn spawn_pending_enemies(&mut self) {
+        if self.enemy_spawns.is_empty() {
+            return;
+        }
+        let Some(definitions) = self.definitions else {
+            eprintln!("敵の定義がないため、{} 体の敵を生成できません", self.enemy_spawns.len());
+            self.enemy_spawns.clear();
+            return;
+        };
+        let pending = std::mem::take(self.enemy_spawns);
+        for spawn in pending {
+            let Some(def) = definitions.enemy(&spawn.name) else {
+                eprintln!("敵 {} は定義されていません", spawn.name);
+                continue;
+            };
+            if !area_loaded(self.world, spawn.cell, def.width, def.height) {
+                self.enemy_spawns.push(spawn);
+                continue;
+            }
+            let cell = (spawn.cell[0], spawn.cell[1]);
+            if let Err(err) =
+                self.game.spawn_enemy(definitions, self.entities, self.world, &spawn.name, cell)
+            {
+                eprintln!("敵 {} を生成できません: {err}", spawn.name);
+            }
+        }
+    }
+
     /// ゲームが渡した装備 (仕様 10 §7.4) があれば、プレイヤーに体力と杖を持たせる。
     /// 定義が足りないときは報告して、体力と杖なしで続ける。
     fn register_character(&mut self, id: EntityId) {
-        let Some((definitions, loadout)) = self.loadout else { return };
+        let (Some(definitions), Some(loadout)) = (self.definitions, self.loadout) else { return };
         if self.game.wands.contains_key(&id) {
             return;
         }

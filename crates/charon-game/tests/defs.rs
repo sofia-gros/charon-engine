@@ -50,6 +50,8 @@ fn engine_defaults_load() {
     assert_eq!((shooter.width, shooter.height, shooter.max_hp), (8, 16, 30));
     assert_eq!(shooter.attack.as_deref(), Some("spark"));
     assert_eq!(defs.enemy("walker").unwrap().attack, None);
+    assert_eq!(defs.enemy("walker").unwrap().contact_damage, 5);
+    assert_eq!(shooter.contact_damage, 0, "省略したら 0");
     assert!(defs.enemy("nothing").is_none());
 }
 
@@ -195,11 +197,19 @@ fn layer_rejects_bad_data() {
         reject(DefinitionFiles { wands: Some(&too_many), ..Default::default() }, None),
         DefsError::Invalid { .. }
     ));
-    for field in
-        ["width: 0", "width: 33", "height: 0", "max_hp: 0", "walk_speed: 97", "sight: 1025"]
-    {
+    for field in [
+        "width: 0",
+        "width: 33",
+        "height: 0",
+        "max_hp: 0",
+        "walk_speed: 97",
+        "sight: 1025",
+        "contact_damage: 1001",
+        "contact_damage: -1",
+    ] {
         let (key, _) = field.split_once(':').unwrap();
-        let base = "width: 8, height: 16, max_hp: 10, walk_speed: 1, jump_speed: 1, sight: 1";
+        let base = "width: 8, height: 16, max_hp: 10, walk_speed: 1, jump_speed: 1, sight: 1, \
+                    contact_damage: 0";
         let from = base.find(&format!("{key}:")).unwrap();
         let end = base[from..].find(',').map_or(base.len(), |i| i + from);
         let mut fields = base.to_owned();

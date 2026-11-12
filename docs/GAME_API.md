@@ -66,6 +66,27 @@ defs.layer(
 エンジンの実行部分に呪文名や体力の値は書かれていません。デモ (`charon-demo`) も同じ手順で、
 `assets/mods/fse_demo/` の RON と `crates/charon-app/src/demo.rs` の `demo_loadout()` だけがゲーム側です。
 
+## 敵
+
+敵の**種類**は `enemies.ron` (エンジンの既定とゲームの追加・上書き) で決め、**生成**はゲームが API を呼びます。動き (視界と視線で目標を選び、追う・跳ぶ・撃つ・接触ダメージ) と、倒れた敵の撤去はエンジンが行います。
+
+```ron
+// 自分の MOD の enemies.ron
+[(name: "bat", width: 6, height: 6, max_hp: 12, walk_speed: 24, jump_speed: 60, sight: 100,
+  attack: None, contact_damage: 8)]
+```
+
+```rust
+// 直接呼ぶ (左上のセルを指定)。失敗したら何も変えない。
+let id = game.spawn_enemy(&defs, &mut entities, &world, "my_game:bat", (120, 40))?;
+
+// tick ごとに、プレイヤーの入力のあとで呼ぶ。
+let report = game.step(&mut world, &mut physics, &mut entities, &actions, tick, seed)?;
+for id in &report.defeated { /* 倒した敵の後始末 */ }
+```
+
+`charon-app` で動かすときは `AppOptions::enemies` に `EnemySpawn { name, cell }` を並べます。周囲のチャンクが読み込まれたものから生成されます。
+
 ## 同期
 
 `ConnectionInfo::with_definitions(&defs)` は、定義の中身のハッシュ (`Definitions::content_hash`) を接続情報に加えます。

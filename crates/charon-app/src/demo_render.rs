@@ -24,7 +24,7 @@ use charon_world::demo::{
 };
 use charon_world::generator::ChunkGenerator;
 
-use crate::demo::{demo_bodies, demo_loadout};
+use crate::demo::{demo_bodies, demo_enemies, demo_loadout};
 use crate::demo_ui::{DemoUi, FrameStats, Overlay};
 use crate::sim::Sim;
 use crate::ui::Controls;
@@ -99,6 +99,7 @@ fn room_scene(pack: &ModPack) -> (Scene, CellPos) {
         (false, None, Some(PLAYER_SPAWN), None);
     let mut physics_ms = 0.0;
     let loadout = demo_loadout();
+    let mut enemy_spawns = demo_enemies();
     for _ in 0..150 {
         Sim {
             world: &mut scene.world,
@@ -109,7 +110,9 @@ fn room_scene(pack: &ModPack) -> (Scene, CellPos) {
             player: &mut player,
             spawn: &mut spawn,
             game: &mut scene.game,
-            loadout: Some((&pack.definitions, &loadout)),
+            definitions: Some(&pack.definitions),
+            loadout: Some(&loadout),
+            enemy_spawns: &mut enemy_spawns,
         }
         .tick(center.chunk(), PlayerInput::default(), GameInput::default(), &mut physics_ms)
         .unwrap();

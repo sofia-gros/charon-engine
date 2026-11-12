@@ -750,8 +750,9 @@ fn draw_wand_panel(context: &egui::Context, overlay: &Overlay<'_>) {
                     format!("{}/{}", wand.mana, wand.mana_max),
                 );
                 ui.label(format!(
-                    "Next: {next} · Shots: {}{}",
+                    "Next: {next} · Shots: {} · Enemies: {}{}",
                     overlay.game.projectiles.len(),
+                    overlay.game.enemies.len(),
                     if vitals.alive() { "" } else { " · DEAD" }
                 ));
             });

@@ -52,7 +52,9 @@ impl Stage {
         actions: &[(EntityId, GameInput)],
     ) -> Result<Vec<charon_game::projectile::Hit>, GameError> {
         let (tick, seed) = (self.world.tick(), self.world.seed());
-        self.game.step(&mut self.world, &mut self.physics, &self.entities, actions, tick, seed)
+        self.game
+            .step(&mut self.world, &mut self.physics, &mut self.entities, actions, tick, seed)
+            .map(|report| report.hits)
     }
 }
 

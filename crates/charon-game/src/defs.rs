@@ -77,6 +77,8 @@ pub struct EnemyDef {
     pub sight: u16,
     pub attack: Option<String>,
     pub attack_interval: u16,
+    /// 当たり判定が重なる目標に、`CONTACT_INTERVAL` ごとに与えるダメージ (仕様 10 §8.1)。
+    pub contact_damage: i32,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +107,8 @@ struct RawEnemy {
     attack: Option<String>,
     #[serde(default)]
     attack_interval: i64,
+    #[serde(default)]
+    contact_damage: i64,
 }
 
 /// 1 つの層のファイル。`None` はその種類の層が空。
@@ -282,6 +286,8 @@ impl Definitions {
             let sight = range(&name, raw.sight, 0, 1024, "sight は 0..=1024 です")?;
             let interval =
                 range(&name, raw.attack_interval, 0, 3600, "attack_interval は 0..=3600 です")?;
+            let contact =
+                range(&name, raw.contact_damage, 0, 1000, "contact_damage は 0..=1000 です")?;
             let attack = match &raw.attack {
                 Some(spell) => {
                     if interval == 0 {
@@ -306,6 +312,7 @@ impl Definitions {
                 sight: sight as u16,
                 attack,
                 attack_interval: interval as u16,
+                contact_damage: contact as i32,
             };
             place("敵", &mut self.enemies, |e| &e.name, &mut seen, raw.replace, def)?;
         }
@@ -371,6 +378,7 @@ impl Definitions {
             hash.bytes(e.attack.as_deref().unwrap_or("").as_bytes());
             hash.bytes(&[0]);
             hash.bytes(&e.attack_interval.to_le_bytes());
+            hash.bytes(&e.contact_damage.to_le_bytes());
         }
         hash.finish()
     }

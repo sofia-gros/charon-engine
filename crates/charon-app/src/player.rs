@@ -92,6 +92,14 @@ pub(crate) fn aim_at(entity: &Entity, target: CellPos) -> (i32, i32) {
     (delta(target.x, center.0), delta(target.y, center.1))
 }
 
+/// 幅 `width`・高さ `height` の箱とその足元 1 行を含む 4 隅のチャンクが、全部読み込まれているか。
+pub(crate) fn area_loaded(world: &World, spawn: [i32; 2], width: u8, height: u8) -> bool {
+    let (w, h) = (i32::from(width), i32::from(height));
+    [(0, 0), (w - 1, 0), (0, h), (w - 1, h)]
+        .iter()
+        .all(|&(dx, dy)| world.chunk(CellPos::new(spawn[0] + dx, spawn[1] + dy).chunk()).is_some())
+}
+
 /// 8×16 のプレイヤーとその足元 1 行を含む 4 隅のチャンクが全部読み込まれていれば生成する。
 /// 読み込み前なら `Ok(None)`。固体と重なるなら `Err` (地形は消さない)。
 pub fn try_spawn_player(
@@ -99,11 +107,7 @@ pub fn try_spawn_player(
     world: &World,
     spawn: [i32; 2],
 ) -> Result<Option<EntityId>, EntityError> {
-    let corners = [(0, 0), (7, 0), (0, 16), (7, 16)];
-    let loaded = corners
-        .iter()
-        .all(|&(dx, dy)| world.chunk(CellPos::new(spawn[0] + dx, spawn[1] + dy).chunk()).is_some());
-    if !loaded {
+    if !area_loaded(world, spawn, 8, 16) {
         return Ok(None);
     }
     entities.spawn_player(i64::from(spawn[0]) * 16, i64::from(spawn[1]) * 16, world).map(Some)
