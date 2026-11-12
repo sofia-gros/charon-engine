@@ -11,7 +11,7 @@
 ![Rust](https://img.shields.io/badge/rust-1.99%2B%20(stable)-orange?logo=rust)
 ![Edition](https://img.shields.io/badge/edition-2024-orange)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-success)
-![Status](https://img.shields.io/badge/status-M8%20%E5%AE%9F%E8%A3%85%E6%B8%88%E3%81%BF%20%2F%20Web%E5%AE%9F%E6%A9%9F%E6%9C%AA%E6%A4%9C%E8%A8%BC-blue)
+![Status](https://img.shields.io/badge/status-M9%20%E8%A8%88%E6%B8%AC%E6%B8%88%E3%81%BF%20%2F%20%E6%80%A7%E8%83%BD%E7%9B%AE%E6%A8%99%E6%9C%AA%E9%81%94-blue)
 
 ![Windows](https://img.shields.io/badge/Windows-%E8%B5%B7%E5%8B%95%E7%A2%BA%E8%AA%8D-blue?logo=windows)
 ![Linux](https://img.shields.io/badge/Linux-%E6%9C%AA%E6%A4%9C%E8%A8%BC-lightgrey?logo=linux&logoColor=white)
@@ -27,8 +27,8 @@
 ---
 
 > [!NOTE]
-> **M8 まで実装・自動テスト済み、M9 は性能を計測中です。** Windows サンドボックスは起動を確認し、画面不要の入力・停止/再開・保存/再読込テストを追加しました。最新の GUI 操作・撮影は未検証です。Web は wasm ビルドまで確認し、ブラウザー上の保存・操作は後日検証します。Android 実機も未検証です。詳しくは[現在の状態](#現在の状態)と[プラットフォーム確認](docs/PLATFORM_CHECK.md)をご覧ください。
-> 100 万セルの性能目標は未達です。実測と見直し案は[ベンチマーク記録](docs/BENCHMARKS.md)にあります。
+> **M8 まで実装・自動テスト済み、M9 の計測と自動検証は完了しました。** Windows サンドボックスは起動を確認し、画面不要の入力・停止/再開・保存/再読込テストを追加しました。最新の GUI 操作・撮影は未検証です。Web は wasm ビルドまで確認し、ブラウザー上の保存・操作は後日検証します。Android 実機も未検証です。詳しくは[現在の状態](#現在の状態)と[プラットフォーム確認](docs/PLATFORM_CHECK.md)をご覧ください。
+> 100 万セル / 8 ms の性能目標は未達 (84.509 ms) です。試した最適化案は改善が確認できず不採用。実測値は[ベンチマーク記録](docs/BENCHMARKS.md)にあります。
 
 ## 目次
 
@@ -162,13 +162,13 @@ flowchart TD
 | M6 | 剛体とパーティクル | ✅ 実装済み。Windows の剛体 GUI 操作は未検証 |
 | M7 | ライティングと後処理 | ✅ 実装・自動テスト済み。Android 60 fps は未計測 |
 | M8 | ゲーム層 (エンティティ、ワールド生成、MOD、入力同期、Web) | ✅ 実装・自動テスト済み。Web の保存・ポインター操作は実ブラウザーで未検証 |
-| M9 | Windows のシミュレーション性能の再計測と改善 | 🚧 T9.3 の初回判定省略案は改善を確認できず不採用。次は全場面を再計測。100 万セル / 8 ms は未達 |
+| M9 | Windows のシミュレーション性能の再計測と改善 | ✅ 計測・自動検証完了。最適化案は不採用。100 万セルは 84.509 ms/tick で 8 ms 目標未達。休眠 10,000 チャンクは 43.415 µs/tick で達成 |
 
 各マイルストーンのタスクと完了条件は [docs/ROADMAP.md](docs/ROADMAP.md) に、実機確認の結果と未実施項目は [docs/PLATFORM_CHECK.md](docs/PLATFORM_CHECK.md) にあります。T8.8 は Windows 実行ファイルの起動に加えて画面不要の入力・保存・再開テストを確認済みで、GUI 操作・撮影と Web 実機確認は後日実施します。
 
 ### 性能の目標
 
-M3 時点の実測は [docs/BENCHMARKS.md](docs/BENCHMARKS.md) にあります (この環境では並列で 100 万セルを約 85 ms、休眠 10,000 チャンクを約 43 µs)。M9 で同じ場面の再計測と原因の特定を進めます。8 ms の目標は未達です。
+M9 の最終再計測 (Ryzen 7 2700 / Windows 11) は、並列で動く砂 1,048,576 個を **84.509 ms/tick**、休眠 10,000 チャンクを **43.415 µs/tick** でした。更新フェーズ内の粉体移動を調べましたが、試した変更に有意な改善はなく不採用です。デスクトップ 8 ms 目標は未達です。条件と全場面の履歴は [docs/BENCHMARKS.md](docs/BENCHMARKS.md) を参照してください。
 
 | 環境 | 目標 |
 |---|---|
