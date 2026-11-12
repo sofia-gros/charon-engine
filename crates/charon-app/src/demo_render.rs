@@ -11,18 +11,20 @@ use std::path::PathBuf;
 use charon_core::cell::{Cell, MaterialId};
 use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::world::World;
-use charon_game::EntityWorld;
 use charon_game::PlayerInput;
+use charon_game::game::{GameInput, GameState};
 use charon_game::mods::{ModDirectory, ModPack};
+use charon_game::projectile::Payload;
+use charon_game::{EntityId, EntityWorld};
 use charon_physics::PhysicsEngine;
-use charon_render::{EntitySprite, GpuContext, LightQuality, PassList};
+use charon_render::{GpuContext, LightQuality, PassList};
 use charon_world::background::BackgroundWorld;
 use charon_world::demo::{
     Biome, DemoGenerator, DemoMaterials, PLAYER_SPAWN, biome, tunnel_center, yellow_text_placement,
 };
 use charon_world::generator::ChunkGenerator;
 
-use crate::demo::demo_bodies;
+use crate::demo::{DEMO_SPELLS, demo_bodies};
 use crate::demo_ui::{DemoUi, FrameStats, Overlay};
 use crate::sim::Sim;
 use crate::ui::Controls;
@@ -41,6 +43,8 @@ struct Scene {
     physics: PhysicsEngine,
     generator: DemoGenerator,
     populated: BTreeSet<ChunkPos>,
+    game: GameState,
+    player: Option<EntityId>,
 }
 
 impl Scene {
@@ -54,6 +58,8 @@ impl Scene {
             physics: PhysicsEngine::new(),
             generator,
             populated: BTreeSet::new(),
+            game: crate::sim::game_for(Some(DEMO_SPELLS), &pack.materials),
+            player: None,
         }
     }
 
@@ -101,11 +107,13 @@ fn room_scene(pack: &ModPack) -> (Scene, CellPos) {
             entities: &mut scene.entities,
             player: &mut player,
             spawn: &mut spawn,
+            game: &mut scene.game,
         }
-        .tick(center.chunk(), PlayerInput::default(), &mut physics_ms)
+        .tick(center.chunk(), PlayerInput::default(), GameInput::default(), &mut physics_ms)
         .unwrap();
     }
     assert!(player.is_some(), "プレイヤーが部屋に生成される");
+    scene.player = player;
     (scene, center)
 }
 
@@ -236,16 +244,7 @@ fn render_world(gpu: &GpuContext, scene: &mut Scene, center: CellPos) -> (wgpu::
     let origin = Scene::origin(center);
     let visible =
         visible_chunks(&scene.world, &scene.background, origin, [WIDTH / ZOOM, HEIGHT / ZOOM]);
-    let sprites: Vec<_> = scene
-        .entities
-        .iter()
-        .map(|entity| EntitySprite {
-            x16: entity.x16,
-            y16: entity.y16,
-            width: entity.width,
-            height: entity.height,
-        })
-        .collect();
+    let sprites = crate::sim::sprites(&scene.entities, &scene.game);
     let output = target(gpu);
     let view = output.create_view(&Default::default());
     let mut background = BackgroundAdapter(&mut scene.background);
@@ -286,8 +285,13 @@ fn render_ui(
         wgpu::TextureFormat::Rgba8UnormSrgb,
         Default::default(),
     );
-    let overlay =
-        Overlay { world: &scene.world, physics: &scene.physics, entities: &scene.entities };
+    let overlay = Overlay {
+        world: &scene.world,
+        physics: &scene.physics,
+        entities: &scene.entities,
+        game: &scene.game,
+        player: scene.player,
+    };
     let view = texture.create_view(&Default::default());
     for frame in 0..130u32 {
         let input = egui::RawInput {
@@ -406,14 +410,15 @@ fn capture(name: &str, kind: &str, pixels: &[u8]) {
     }
 }
 
-#[test]
-fn demo_renders_on_gpu() {
+/// ヘッドレスの GPU を得る。GPU のない CI では `None` (他のテストが生成と UI を確かめる)。
+/// `CHARON_REQUIRED_GPU_ADAPTER` があるときは、その離散 GPU でなければ失敗する。
+fn test_gpu() -> Option<GpuContext> {
     let required = std::env::var("CHARON_REQUIRED_GPU_ADAPTER").ok();
     let gpu = match pollster::block_on(GpuContext::headless()) {
         Ok(gpu) => gpu,
         Err(err) => {
             assert!(required.is_none(), "指定した GPU を使えません: {err}");
-            return; // GPU のない CI では、他のテストが生成と UI を確かめる。
+            return None;
         }
     };
     let info = gpu.adapter.get_info();
@@ -424,6 +429,67 @@ fn demo_renders_on_gpu() {
         );
     }
     println!("GPU adapter: {info:?}");
+    Some(gpu)
+}
+
+/// 矩形 (画素、終端は含まない) の中で `matches` が真になる画素の数。
+fn count_in(
+    pixels: &[u8],
+    (x0, y0, x1, y1): (usize, usize, usize, usize),
+    matches: impl Fn(i32, i32, i32) -> bool,
+) -> usize {
+    let mut n = 0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (y * WIDTH as usize + x) * 4;
+            if matches(i32::from(pixels[i]), i32::from(pixels[i + 1]), i32::from(pixels[i + 2])) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// 仕様 10 §6.3: `Wand` パネル (体力・マナのバー) と、飛んでいる弾が描かれる。
+#[test]
+fn demo_renders_wand_panel() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = room_scene(&pack);
+    let id = scene.player.unwrap();
+    // 体力を減らして、バーが途中までになるようにする。
+    scene.game.vitals.get_mut(id).unwrap().damage(35);
+    let (_, without_shots) = render_world(&gpu, &mut scene, center);
+
+    let player = scene.entities.get(id).unwrap().clone();
+    for dx in [12, 16, 20] {
+        let x16 = player.x16 + i64::from(dx) * 16;
+        scene
+            .game
+            .projectiles
+            .spawn(&scene.world, x16, player.y16 + 48, 0, 0, 0, 100, 0, Payload::None)
+            .unwrap();
+    }
+    let (texture, world_pixels) = render_world(&gpu, &mut scene, center);
+    assert_ne!(world_pixels, without_shots, "飛んでいる弾が描かれる");
+
+    let ui_pixels = render_ui(&gpu, &scene, center, &texture, true);
+    capture("wand", "world", &world_pixels);
+    capture("wand", "ui", &ui_pixels);
+    let top = (600, 0, 1000, 130);
+    let red = |r: i32, g: i32, b: i32| r > 170 && g < 90 && b < 90;
+    let blue = |r: i32, g: i32, b: i32| b > 190 && r < 140 && g < 140;
+    let (hp_ui, hp_world) = (count_in(&ui_pixels, top, red), count_in(&world_pixels, top, red));
+    let (mana_ui, mana_world) =
+        (count_in(&ui_pixels, top, blue), count_in(&world_pixels, top, blue));
+    println!("wand panel: 赤 {hp_ui} (世界 {hp_world})、青 {mana_ui} (世界 {mana_world})");
+    assert!(hp_ui > hp_world + 100, "体力のバーが描かれる ({hp_ui} / {hp_world})");
+    assert!(mana_ui > mana_world + 100, "マナのバーが描かれる ({mana_ui} / {mana_world})");
+}
+
+#[test]
+fn demo_renders_on_gpu() {
+    let Some(gpu) = test_gpu() else { return };
     let pack = pack();
     let scenes: Vec<(&str, (Scene, CellPos))> = vec![
         ("room", room_scene(&pack)),

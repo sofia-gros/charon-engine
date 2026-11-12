@@ -228,6 +228,9 @@ pub(super) struct Overlay<'a> {
     pub(super) world: &'a World,
     pub(super) physics: &'a PhysicsEngine,
     pub(super) entities: &'a EntityWorld,
+    /// 体力・杖・弾 (仕様 10 §6)。`Wand` パネルに使う。
+    pub(super) game: &'a charon_game::game::GameState,
+    pub(super) player: Option<charon_game::EntityId>,
 }
 
 /// 参照画面の UI の状態。
@@ -273,6 +276,7 @@ impl DemoUi {
     ) -> Option<DemoAction> {
         self.history.push(stats);
         let mut action = None;
+        draw_wand_panel(context, overlay);
 
         egui::Area::new(egui::Id::unique("charon fps")).fixed_pos(egui::pos2(2.0, 1.0)).show(
             context,
@@ -693,6 +697,67 @@ pub(super) fn pointer_cell(pos: [f32; 2], zoom: u32, origin: [f32; 2]) -> Option
     ))
 }
 
+/// 仕様 10 §6.3: 体力・息・マナのバー、次の呪文の名前、飛んでいる弾の数。杖を持つプレイヤーがいるときだけ。
+fn draw_wand_panel(context: &egui::Context, overlay: &Overlay<'_>) {
+    let Some(id) = overlay.player else { return };
+    let (Some(vitals), Some(wand)) = (overlay.game.vitals.get(id), overlay.game.wands.get(&id))
+    else {
+        return;
+    };
+    let next = wand
+        .spells
+        .get(wand.cursor())
+        .and_then(|&spell| overlay.game.spells.get(spell))
+        .map_or("-", |spell| spell.name.as_str());
+    let fraction =
+        |value: f32, max: f32| if max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
+    egui::Area::new(egui::Id::unique("charon wand"))
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 6.0))
+        .order(egui::Order::Foreground)
+        .show(context, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                let bar = |ui: &mut egui::Ui,
+                           label: &str,
+                           f: f32,
+                           color: egui::Color32,
+                           text: String| {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        ui.add(
+                            egui::ProgressBar::new(f).fill(color).desired_width(140.0).text(text),
+                        );
+                    });
+                };
+                bar(
+                    ui,
+                    "HP",
+                    fraction(vitals.hp as f32, vitals.max_hp as f32),
+                    egui::Color32::from_rgb(200, 60, 60),
+                    format!("{}/{}", vitals.hp, vitals.max_hp),
+                );
+                bar(
+                    ui,
+                    "Breath",
+                    fraction(f32::from(vitals.breath), f32::from(charon_game::vitals::BREATH_MAX)),
+                    egui::Color32::from_rgb(70, 140, 220),
+                    format!("{}", vitals.breath / 60),
+                );
+                bar(
+                    ui,
+                    "Mana",
+                    fraction(wand.mana as f32, wand.mana_max as f32),
+                    egui::Color32::from_rgb(90, 90, 230),
+                    format!("{}/{}", wand.mana, wand.mana_max),
+                );
+                ui.label(format!(
+                    "Next: {next} · Shots: {}{}",
+                    overlay.game.projectiles.len(),
+                    if vitals.alive() { "" } else { " · DEAD" }
+                ));
+            });
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -818,7 +883,14 @@ mod tests {
         let world = world_from_ascii(&box_art(40, 20), 1);
         let physics = PhysicsEngine::new();
         let entities = EntityWorld::new();
-        let overlay = Overlay { world: &world, physics: &physics, entities: &entities };
+        let game = charon_game::game::GameState::new(Default::default());
+        let overlay = Overlay {
+            world: &world,
+            physics: &physics,
+            entities: &entities,
+            game: &game,
+            player: None,
+        };
         let mut demo = DemoUi::new(world.materials());
         demo.show_collision = true;
         demo.show_chunks = true;

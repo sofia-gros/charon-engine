@@ -150,9 +150,56 @@ pub struct Wand {
 | `spread_is_deterministic` | 同じ入力で同じ速度。範囲内で、tick が違うと値が散る |
 | `failed_cast_changes_nothing` | 弾の上限などで `spawn` が失敗すると、杖のマナ・カーソル・待ち時間が変わらない |
 
-## 6. 後続 (T11.4〜T11.6) の方針
+## 6. T11.6: ゲーム状態の組み込み (`charon-game::game`、`Lockstep`、デモ)
 
-- **T11.4 敵**: `Vitals` を持つエンティティに、整数だけの AI (向かう・跳ぶ・間合いで撃つ) を足す。乱数は `rng::hash`。
+敵 (T11.4) より先に、体力・弾・杖を 1 つの tick の流れに入れ、画面で撃てるようにする。当たり判定の確認 (エンティティの当たり判定、弾の貫通、爆風) を、実際の描画と操作で行うため。
+
+### 6.1 `GameState`
+
+```rust
+pub struct GameInput { pub fire: bool, pub aim: (i32, i32) } // aim は向きのベクトル (1/16 セル単位でも整数ならよい)
+pub struct GameState {
+    pub vitals: VitalsTable,
+    pub projectiles: ProjectileWorld,
+    pub wands: BTreeMap<EntityId, Wand>,
+    pub spells: SpellTable,
+}
+```
+
+- `GameState::new(spells)`、`add_character(id, vitals, wand)`。`wands` は `EntityId` の昇順。
+- `GameState::step(&mut self, world, physics, entities, actions: &[(EntityId, GameInput)], tick, seed) -> Result<Vec<Hit>, GameError>` を 1 tick に 1 回呼ぶ。順序は固定で、(1) ID 昇順に `step_environment` (生存中のキャラクターだけ)、(2) ID 昇順に杖の `tick`、(3) `fire` が真で生存中なら ID 昇順に `Wand::cast` (発射位置 = エンティティの当たり判定の中心、`x16 + width*8`、`y16 + height*8`)、(4) `ProjectileWorld::step`。`actions` に存在しない ID、同じ ID の重複はエラー (`GameError::InvalidAction`)で、何も更新しない。杖が `Err(CastError::InvalidAim)` を返す (狙いが `(0, 0)`) ときは何も撃たずに続ける。他の `CastError` は `GameError::Cast` にして返す。
+- 発射した弾の始点が自分の当たり判定の内側にあっても、自分の体力は減らさない: 弾は発射した ID を持たない代わりに、始点のエンティティは `ProjectileWorld::step` の「エンティティに当たる」判定から、発射した tick に限って除く。(`Projectile::grace: Option<EntityId>` を 1 tick 分だけ持つ。)
+- `state_hash()`: `vitals.state_hash()`、`projectiles.state_hash()`、各杖の `state_hash()` (ID 昇順) を FNV-1a 64-bit で連結する。
+
+### 6.2 `Lockstep`
+
+- パケットを version 2 にする。`TickInput` に `action: GameInput` を足し、長さは 29 バイト (従来の 20 バイトの後ろに `fire: u8` (0 か 1)、`aim_x: i32` (LE)、`aim_y: i32` (LE))。`fire` が 0・1 以外、または `|aim|` が 1,000,000 を超えたら `InvalidPacket`。version 1 のパケットは `Mismatch`。
+- `ConnectionInfo` に `spells: Vec<String>` (呪文名を記載順に) を足し、`with_spells(&SpellTable)` で設定する。`ConnectionInfo::new` は空で作る。呪文表が違う接続は `connect` で `Mismatch` になる。
+- `advance(world, entities, physics, background, game)`。順序は **規則 → プレイヤー → `game.step` → 物理/セル**。同期ハッシュ (`synchronization_hash`) の末尾に `game.state_hash()` を足す。`game.wands` に登録されていない参加者には、中立の入力だけを許す。その参加者が `fire` や狙いを送ってきたら、何も更新せずに `LockstepError::Game(InvalidAction)` で拒否する。
+
+### 6.3 デモ・サンドボックス
+
+- デモでは、プレイヤーに体力 100・杖 (呪文 3 種、`assets/spells/demo.ron`)・マナ 100 を持たせる。**右ボタンを押している間、カーソルの方向へ撃つ** (狙いはプレイヤーの中心からカーソルのセルの中心への向き)。杖は呪文の並びを順に撃つ。UI が右ボタンの押下を使ったときは撃たない。自由カメラ (`F`) の間は撃たない。
+- 画面の上端の中央に **体力・息・マナのバー、次の呪文の名前、飛んでいる弾の数** を出す (`Wand` パネル。体力 0 のときは `DEAD`)。体力 0 のプレイヤーは入力を受けない (歩けず、撃てない)。
+- 弾はエンティティの描画パスの 2×2 セルの点として描く (色は呪文ごとではなく固定)。爆発はパーティクルが散る。
+- 世界を作り直す (`Main Menu`) と、体力・杖・弾は初期状態に戻る。
+- `Sim::tick` が `GameState` を借りて `step` を呼ぶ。画面なしのテストと描画ループは同じ手順を使う。
+
+| テスト | 確認 |
+|---|---|
+| `game_step_order_is_fixed` | 環境ダメージ → 杖の tick → 発射 → 弾の移動の順で、同じ入力から毎 tick のハッシュが一致する (seed 1〜8) |
+| `game_rejects_bad_actions_atomically` | 存在しない ID・同じ ID の重複はエラーで、何も変わらない。`aim = (0, 0)` は撃たずに続ける |
+| `shooter_is_not_hit_by_own_shot` | 発射した tick に始点のエンティティへ当たらない。次の tick 以降は当たる |
+| `dead_characters_do_not_fire` | 体力 0 のキャラクターは発射しない・環境ダメージを受けない |
+| `lockstep_packet_v2_roundtrip` | 29 バイトの符号化・復号が一致し、不正な `fire`・大きすぎる `aim`・version 1 を拒否する |
+| `lockstep_game_hash_is_order_independent` | 到着順が違っても `game` を含む毎 tick のハッシュが一致し、呪文表が違う接続は拒否される |
+| `demo_wand_fires_in_scene` | デモの世界で右ボタン相当の入力が弾を生み、爆発でセルがパーティクルになる (画面なし) |
+| `demo_renders_wand_panel` | RTX 4060 のオフスクリーン描画で `Wand` パネルと弾を含む画面を描ける |
+
+ウィンドウでの右ボタン操作は、画面操作の許可がなければ未検証として記録する。
+
+## 7. 後続 (T11.4〜T11.5) の方針
+
+- **T11.4 敵**: `Vitals` を持つエンティティに、整数だけの AI (向かう・跳ぶ・間合いで撃つ) を足す。乱数は `rng::hash`。T11.6 の画面で当たり判定を確認してから着手する。
 - **T11.5 掘る道具・浮遊**: 掘るは `Payload` の一種 (半径内のセルをパーティクルへ移す)。浮遊は `PlayerInput` の拡張 (燃料を消費し、`vy` を上向きに足す)。
-- **T11.6 組み込み**: `Lockstep` の tick 順序に vitals・projectile を入れ、サンドボックス・デモで操作できるようにする。
 - いずれも着手前に、この文書へ表のテスト名と式を書く。

@@ -38,6 +38,9 @@ impl DemoConfig {
     }
 }
 
+/// デモの杖の呪文の表 (仕様 10 §6.3)。
+pub(crate) const DEMO_SPELLS: &str = include_str!("../../../assets/spells/demo.ron");
+
 /// 組み立てたデモ。`session` を `run_with_streaming_options` に渡す。
 #[derive(Debug)]
 pub struct OpenDemo {
@@ -119,6 +122,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             rainbow_sand: Some(demo_materials.rainbow_sand),
             demo: true,
             background: Some(DemoGenerator { materials: demo_materials }),
+            spells: Some(DEMO_SPELLS),
         },
         brush: demo_materials.rainbow_sand,
     })
@@ -157,6 +161,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use charon_core::coords::ChunkPos;
+    use charon_game::game::GameInput;
     use charon_game::{EntityWorld, PlayerInput};
 
     use super::*;
@@ -207,6 +212,7 @@ mod tests {
         let mut entities = EntityWorld::new();
         let mut player = None;
         let mut spawn = options.player_spawn;
+        let mut game = crate::sim::game_for(options.spells, world.materials());
         let mut physics_ms = 0.0;
         for _ in 0..ticks {
             let mut sim = Sim {
@@ -217,8 +223,15 @@ mod tests {
                 entities: &mut entities,
                 player: &mut player,
                 spawn: &mut spawn,
+                game: &mut game,
             };
-            sim.tick(ChunkPos::new(0, 3), PlayerInput::default(), &mut physics_ms).unwrap();
+            sim.tick(
+                ChunkPos::new(0, 3),
+                PlayerInput::default(),
+                GameInput::default(),
+                &mut physics_ms,
+            )
+            .unwrap();
         }
         let mut hash = world.state_hash().rotate_left(7) ^ entities.state_hash();
         for body in &physics.bodies {
@@ -245,6 +258,52 @@ mod tests {
         }
         // seed が違えば洞窟が違うので、世界のハッシュも違う。
         assert_ne!(run(1, 150).0, run(2, 150).0);
+    }
+
+    /// 仕様 10 §6.3: 右ボタン相当の入力で弾が出て、爆発のセルがパーティクルになる (画面なし)。
+    #[test]
+    fn demo_wand_fires_in_scene() {
+        for seed in 1..=3 {
+            let dir = TestDir::new();
+            let OpenDemo { session, options, .. } = open_demo(&config(&dir), seed).unwrap();
+            let DemoSession { mut world, streamer, save_root, metadata, mut physics } = session;
+            let mut streaming = Some(StreamingState { streamer, save_root, metadata });
+            let mut initialized = false;
+            let mut entities = EntityWorld::new();
+            let mut player = None;
+            let mut spawn = options.player_spawn;
+            let mut game = crate::sim::game_for(options.spells, world.materials());
+            let mut physics_ms = 0.0;
+            let (mut shots, mut max_particles) = (0, 0);
+            for tick in 0..260 {
+                // プレイヤーが床に立ってから、右へ撃ち続ける。
+                let action = if tick >= 150 {
+                    GameInput { fire: true, aim: (16, 0) }
+                } else {
+                    GameInput::default()
+                };
+                Sim {
+                    world: &mut world,
+                    streaming: &mut streaming,
+                    physics: &mut physics,
+                    initialized: &mut initialized,
+                    entities: &mut entities,
+                    player: &mut player,
+                    spawn: &mut spawn,
+                    game: &mut game,
+                }
+                .tick(ChunkPos::new(0, 3), PlayerInput::default(), action, &mut physics_ms)
+                .unwrap();
+                shots = shots.max(game.projectiles.len());
+                max_particles = max_particles.max(physics.particles().len());
+            }
+            let id = player.unwrap();
+            assert!(game.wands.contains_key(&id), "seed {seed}: プレイヤーが杖を持つ");
+            assert!(game.vitals.get(id).is_some(), "seed {seed}: プレイヤーが体力を持つ");
+            assert!(shots > 0, "seed {seed}: 弾が飛ぶ");
+            assert!(max_particles > 0, "seed {seed}: 爆発でセルがパーティクルになる");
+            streaming.take().unwrap().streamer.finish().unwrap();
+        }
     }
 
     #[test]

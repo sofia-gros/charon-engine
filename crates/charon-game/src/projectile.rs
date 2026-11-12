@@ -43,6 +43,8 @@ pub struct Projectile {
     pub life: u16,
     pub damage: i32,
     pub payload: Payload,
+    /// 発射した tick に限り、このエンティティには当たらない (仕様 10 §6.1)。
+    pub grace: Option<EntityId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,10 +159,19 @@ impl ProjectileWorld {
         }
         let next_id = self.next_id.checked_add(1).ok_or(ProjectileError::ExhaustedIds)?;
         let id = ProjectileId(self.next_id);
-        self.projectiles
-            .insert(id, Projectile { id, x16, y16, vx, vy, gravity, life, damage, payload });
+        self.projectiles.insert(
+            id,
+            Projectile { id, x16, y16, vx, vy, gravity, life, damage, payload, grace: None },
+        );
         self.next_id = next_id;
         Ok(id)
+    }
+
+    /// 弾 `id` が次の 1 tick だけ `entity` に当たらないようにする。弾がなければ何もしない。
+    pub fn set_grace(&mut self, id: ProjectileId, entity: EntityId) {
+        if let Some(p) = self.projectiles.get_mut(&id) {
+            p.grace = Some(entity);
+        }
     }
 
     /// 仕様 10 §4: 弾を ID 昇順に 1 tick 進める。
@@ -186,7 +197,7 @@ impl ProjectileWorld {
                 let x = start_x + i64::from(p.vx) * k / steps;
                 let y = start_y + i64::from(p.vy) * k / steps;
                 let cell_pos = cell_at(x, y);
-                if let Some(entity) = entity_at(entities, vitals, x, y) {
+                if let Some(entity) = entity_at(entities, vitals, x, y, p.grace) {
                     collision = Some((cell_pos.unwrap_or(CellPos::new(0, 0)), Some(entity)));
                     break;
                 }
@@ -208,6 +219,7 @@ impl ProjectileWorld {
                 p.x16 = start_x + i64::from(p.vx);
                 p.y16 = start_y + i64::from(p.vy);
                 p.life -= 1;
+                p.grace = None;
                 if p.life == 0 {
                     self.projectiles.remove(&id);
                 } else {
@@ -274,6 +286,7 @@ impl ProjectileWorld {
             feed(&p.gravity.to_le_bytes());
             feed(&p.life.to_le_bytes());
             feed(&p.damage.to_le_bytes());
+            feed(&p.grace.map_or(0, |id| id.0).to_le_bytes());
             match p.payload {
                 Payload::None => feed(&[0]),
                 Payload::Explode { radius } => feed(&[1, radius]),
@@ -307,8 +320,17 @@ fn blocks(world: &World, pos: CellPos) -> bool {
 }
 
 /// 点 `(x16, y16)` を当たり判定に含む、体力を持つエンティティのうち ID が最小のもの。
-fn entity_at(entities: &EntityWorld, vitals: &VitalsTable, x16: i64, y16: i64) -> Option<EntityId> {
+fn entity_at(
+    entities: &EntityWorld,
+    vitals: &VitalsTable,
+    x16: i64,
+    y16: i64,
+    grace: Option<EntityId>,
+) -> Option<EntityId> {
     entities.iter().find_map(|e: &Entity| {
+        if grace == Some(e.id) {
+            return None;
+        }
         let inside = x16 >= e.x16
             && x16 < e.x16 + i64::from(e.width) * 16
             && y16 >= e.y16

@@ -20,7 +20,7 @@ mod ui;
 pub use player::{KeyState, follow_origin, try_spawn_player};
 pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
-use sim::Sim;
+use sim::{Sim, game_for, sprites};
 pub use timestep::FixedTimestep;
 use timestep::advance_frame;
 
@@ -37,11 +37,12 @@ use std::time::Instant;
 use charon_core::cell::MaterialId;
 use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::world::World;
+use charon_game::game::{GameInput, GameState};
 use charon_game::{EntityId, EntityWorld};
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::{
     BackgroundLayerPass, BackgroundPass, BackgroundSource, CellPass, CompositePass, EntityPass,
-    EntitySprite, FullscreenPass, GpuContext, LightPass, PassList,
+    FullscreenPass, GpuContext, LightPass, PassList,
 };
 use charon_world::background::BackgroundWorld;
 use charon_world::building::{BuildOp, Layer, apply_build};
@@ -59,7 +60,7 @@ use gesture::TouchGestures;
 use ui::Gui;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 #[cfg(target_arch = "wasm32")]
 use winit::platform::web::{EventLoopExtWebSys, WindowExtWebSys};
@@ -152,6 +153,8 @@ pub struct AppOptions {
     pub demo: bool,
     /// 読み込んだチャンクの背景 (`green biome` の文字) を作る生成器。
     pub background: Option<charon_world::demo::DemoGenerator>,
+    /// 杖の呪文の表 (RON、仕様 10 §5)。あるとき、プレイヤーは体力と杖を持ち、右ボタンで撃つ。
+    pub spells: Option<&'static str>,
 }
 
 /// `Main Menu` の `Singleplayer` / `Random Seed` で作り直した、新しい世界の一式。
@@ -274,6 +277,12 @@ struct App {
     options: AppOptions,
     keys: KeyState,
     player: Option<EntityId>,
+    /// 体力・杖・弾 (仕様 10 §6)。
+    game: GameState,
+    /// 右ボタンを押している間 true。
+    firing: bool,
+    /// 最後に見たカーソルの位置 (ウィンドウのピクセル)。
+    cursor: [f32; 2],
     /// まだ生成していないプレイヤーの初期位置。生成に失敗したら `None` にする。
     spawn_pending: Option<[i32; 2]>,
     free_camera: bool,
@@ -305,6 +314,7 @@ impl App {
     fn new(world: World, brush_material: MaterialId, make_world: fn(u64) -> World) -> Self {
         #[cfg(target_arch = "wasm32")]
         let _ = make_world;
+        let game = game_for(None, world.materials());
         Self {
             window: None,
             gpu: None,
@@ -322,6 +332,9 @@ impl App {
             options: AppOptions::default(),
             keys: KeyState::default(),
             player: None,
+            game,
+            firing: false,
+            cursor: [0.0, 0.0],
             spawn_pending: None,
             free_camera: false,
             pending_action: None,
@@ -345,6 +358,14 @@ impl App {
             previous: None,
             occluded: false,
         }
+    }
+
+    /// 世界を作り直したときに、体力・杖・弾を初期状態へ戻す。
+    // 呼び出し元 (リプレイ・世界の作り直し) は native 専用。Web では使わない。
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn reset_game(&mut self) {
+        self.game = game_for(self.options.spells, self.world.materials());
+        self.firing = false;
     }
 
     fn release_grab(&mut self) {
@@ -522,6 +543,7 @@ impl App {
                     self.world = world;
                     self.background = BackgroundWorld::new();
                     self.entities = EntityWorld::new();
+                    self.reset_game();
                     self.physics = PhysicsEngine::new();
                     self.physics_initialized = true;
                     self.grab = None;
@@ -583,6 +605,7 @@ impl App {
         self.physics = physics;
         self.physics_initialized = false;
         self.entities = EntityWorld::new();
+        self.reset_game();
         self.player = None;
         self.spawn_pending = self.options.player_spawn;
         self.free_camera = false;
@@ -650,6 +673,18 @@ impl App {
         } else {
             self.keys.player_input()
         };
+        // 仕様 10 §6.3: 右ボタンを押している間、カーソルの方向へ撃つ。
+        let action = if self.options.follow_player && !self.free_camera && self.firing {
+            self.player
+                .and_then(|id| self.entities.get(id))
+                .zip(pointer_cell(self.cursor, zoom, origin))
+                .map_or_else(GameInput::default, |(player, target)| GameInput {
+                    fire: true,
+                    aim: player::aim_at(player, target),
+                })
+        } else {
+            GameInput::default()
+        };
         let (camera, radius) = camera_range(size, zoom, origin);
         if let Some(state) = self.streaming.as_mut() {
             state.streamer.set_load_radius(radius);
@@ -664,10 +699,11 @@ impl App {
             entities: &mut self.entities,
             player: &mut self.player,
             spawn: &mut self.spawn_pending,
+            game: &mut self.game,
         };
         let step = || {
             if stream_error.is_none()
-                && let Err(err) = sim.tick(camera, player_input, &mut physics_ms)
+                && let Err(err) = sim.tick(camera, player_input, action, &mut physics_ms)
             {
                 stream_error = Some(err);
             }
@@ -727,16 +763,7 @@ impl App {
         let visible =
             visible_chunks(&self.world, &self.background, origin, [scene_width, scene_height]);
         let mut background = BackgroundAdapter(&mut self.background);
-        let sprites: Vec<_> = self
-            .entities
-            .iter()
-            .map(|entity| EntitySprite {
-                x16: entity.x16,
-                y16: entity.y16,
-                width: entity.width,
-                height: entity.height,
-            })
-            .collect();
+        let sprites = sprites(&self.entities, &self.game);
         if let Err(err) = passes.render_with_game(
             gpu,
             &mut self.world,
@@ -751,8 +778,13 @@ impl App {
             return;
         }
         if let Some(gui) = &mut self.gui {
-            let scene =
-                Overlay { world: &self.world, physics: &self.physics, entities: &self.entities };
+            let scene = Overlay {
+                world: &self.world,
+                physics: &self.physics,
+                entities: &self.entities,
+                game: &self.game,
+                player: self.player,
+            };
             let action = gui.render(gpu, window, &scene, &view, stats);
             if action.is_some() {
                 self.pending_action = action;
@@ -1109,6 +1141,7 @@ impl ApplicationHandler for App {
             }
             if matches!(event, WindowEvent::Focused(false)) {
                 self.keys.release_all();
+                self.firing = false;
             }
         }
         let gesture = if let (WindowEvent::Touch(touch), Some(gui)) = (&event, self.gui.as_mut()) {
@@ -1221,6 +1254,13 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.ctrl = modifiers.state().control_key(),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = [position.x as f32, position.y as f32];
+            }
+            // 押下は UI が使っていなければ撃つ。離したときは常に止める。
+            WindowEvent::MouseInput { button: MouseButton::Right, state, .. } => {
+                self.firing = state == ElementState::Pressed && !consumed;
+            }
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = self.gpu.as_mut()

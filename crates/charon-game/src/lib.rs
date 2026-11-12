@@ -1,5 +1,6 @@
 //! 仕様 07 §2.1: セルと独立した、決定的なエンティティの格納。
 
+pub mod game;
 pub mod lockstep;
 pub mod mods;
 pub mod projectile;

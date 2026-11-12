@@ -4,10 +4,13 @@ use charon_core::cell::Cell;
 use charon_core::coords::CellPos;
 use charon_core::testkit::{box_art, material_of, world_from_ascii};
 use charon_core::world::World;
+use charon_game::game::{GameInput, GameState};
 use charon_game::lockstep::{
     ConnectionInfo, Lockstep, LockstepError, TickInput, synchronization_hash,
 };
 use charon_game::mods::{ModManifest, ModPack};
+use charon_game::vitals::Vitals;
+use charon_game::wand::{SpellId, SpellTable, Wand};
 use charon_game::{EntityId, EntityWorld, PlayerInput};
 use charon_physics::PhysicsEngine;
 use charon_world::background::BackgroundWorld;
@@ -46,10 +49,12 @@ fn connected(world: &World, entities: &EntityWorld, players: [EntityId; 2]) -> L
 fn lockstep_waits_for_all_inputs() {
     for seed in 1..=8 {
         let (mut world, mut entities, mut physics, background, players) = scene(seed);
+        let mut game = GameState::new(SpellTable::default());
         let mut lockstep = connected(&world, &entities, players);
         let before = (world.state_hash(), entities.state_hash(), world.tick());
         lockstep
             .submit(TickInput {
+                action: GameInput::default(),
                 tick: 0,
                 player: players[0],
                 input: PlayerInput { horizontal: 1, jump: false },
@@ -57,7 +62,7 @@ fn lockstep_waits_for_all_inputs() {
             .unwrap();
         assert!(
             lockstep
-                .advance(&mut world, &mut entities, &mut physics, &background)
+                .advance(&mut world, &mut entities, &mut physics, &background, &mut game)
                 .unwrap()
                 .is_none()
         );
@@ -67,13 +72,19 @@ fn lockstep_waits_for_all_inputs() {
             "seed={seed}"
         );
         lockstep
-            .submit(TickInput { tick: 0, player: players[1], input: PlayerInput::default() })
+            .submit(TickInput {
+                action: GameInput::default(),
+                tick: 0,
+                player: players[1],
+                input: PlayerInput::default(),
+            })
             .unwrap();
-        let result =
-            lockstep.advance(&mut world, &mut entities, &mut physics, &background).unwrap();
+        let result = lockstep
+            .advance(&mut world, &mut entities, &mut physics, &background, &mut game)
+            .unwrap();
         assert_eq!(
             result,
-            Some(synchronization_hash(&world, &entities, &physics, &background).unwrap())
+            Some(synchronization_hash(&world, &entities, &physics, &background, &game).unwrap())
         );
         assert_eq!(world.tick(), 1, "seed={seed}");
     }
@@ -81,12 +92,14 @@ fn lockstep_waits_for_all_inputs() {
 
 fn trace(seed: u64, reversed: bool) -> Vec<u64> {
     let (mut world, mut entities, mut physics, mut background, players) = scene(seed);
+    let mut game = GameState::new(SpellTable::default());
     let mut lockstep = connected(&world, &entities, players);
     background.set(CellPos::new(-1, 0), material_of(&world, '#'));
     let mut hashes = Vec::new();
     for tick in 0..20 {
         for index in if reversed { [1, 0] } else { [0, 1] } {
             let packet = TickInput {
+                action: GameInput::default(),
                 tick,
                 player: players[index],
                 input: PlayerInput { horizontal: if index == 0 { 1 } else { -1 }, jump: false },
@@ -96,7 +109,7 @@ fn trace(seed: u64, reversed: bool) -> Vec<u64> {
         }
         hashes.push(
             lockstep
-                .advance(&mut world, &mut entities, &mut physics, &background)
+                .advance(&mut world, &mut entities, &mut physics, &background, &mut game)
                 .unwrap()
                 .unwrap(),
         );
@@ -115,11 +128,12 @@ fn lockstep_order_is_stable() {
 fn lockstep_rejects_mismatch() {
     for seed in 1..=8 {
         let (mut world, mut entities, mut physics, background, players) = scene(seed);
+        let mut game = GameState::new(SpellTable::default());
         let info =
             ConnectionInfo::new(&world, &[], "build-one".to_string(), "parallel".to_string());
         let mut lockstep = Lockstep::new(&players, &world, &entities, None, info.clone()).unwrap();
         let mut changed = info.clone();
-        changed.version = 2;
+        changed.version = 3;
         assert!(matches!(lockstep.connect(players[0], &changed), Err(LockstepError::Mismatch)));
         changed = info.clone();
         changed.materials.swap(2, 3);
@@ -142,13 +156,14 @@ fn lockstep_rejects_mismatch() {
         lockstep.connect(players[0], &info).unwrap();
         lockstep.connect(players[1], &info).unwrap();
         let input = TickInput {
+            action: GameInput::default(),
             tick: 0,
             player: players[0],
             input: PlayerInput { horizontal: 1, jump: false },
         };
         let before = (world.tick(), world.state_hash(), entities.state_hash());
         let packet = input.encode();
-        assert_eq!(&packet[..2], &[1, 0]);
+        assert_eq!(&packet[..2], &[2, 0]);
         assert_eq!(&packet[2..10], &0u64.to_le_bytes());
         assert_eq!(&packet[10..18], &players[0].0.to_le_bytes());
         assert_eq!(TickInput::decode(&packet).unwrap(), input);
@@ -158,10 +173,10 @@ fn lockstep_rejects_mismatch() {
         for invalid in [&packet[..19], &[0, 0, 0][..]] {
             assert!(matches!(lockstep.submit_bytes(invalid), Err(LockstepError::InvalidPacket)));
         }
-        for index in [0, 10, 18, 19] {
+        for index in [0, 10, 18, 19, 20] {
             let mut invalid = packet;
             invalid[index] = if index == 0 {
-                2
+                1
             } else if index == 10 {
                 0
             } else {
@@ -181,15 +196,23 @@ fn lockstep_rejects_mismatch() {
         ));
         assert!(
             lockstep
-                .advance(&mut world, &mut entities, &mut physics, &background)
+                .advance(&mut world, &mut entities, &mut physics, &background, &mut game)
                 .unwrap()
                 .is_none()
         );
         assert_eq!((world.tick(), world.state_hash(), entities.state_hash()), before);
         lockstep
-            .submit(TickInput { tick: 0, player: players[1], input: PlayerInput::default() })
+            .submit(TickInput {
+                action: GameInput::default(),
+                tick: 0,
+                player: players[1],
+                input: PlayerInput::default(),
+            })
             .unwrap();
-        lockstep.advance(&mut world, &mut entities, &mut physics, &background).unwrap().unwrap();
+        lockstep
+            .advance(&mut world, &mut entities, &mut physics, &background, &mut game)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             entities.get(players[0]).unwrap().x16,
             12 * 16,
@@ -202,13 +225,20 @@ fn lockstep_rejects_mismatch() {
 #[test]
 fn synchronization_hash_includes_body_and_background() {
     let (world, entities, mut physics, mut background, _) = scene(1);
-    let initial = synchronization_hash(&world, &entities, &physics, &background).unwrap();
+    let game = GameState::new(SpellTable::default());
+    let initial = synchronization_hash(&world, &entities, &physics, &background, &game).unwrap();
     background.set(CellPos::new(2, 2), material_of(&world, '#'));
-    assert_ne!(initial, synchronization_hash(&world, &entities, &physics, &background).unwrap());
+    assert_ne!(
+        initial,
+        synchronization_hash(&world, &entities, &physics, &background, &game).unwrap()
+    );
     background.set(CellPos::new(2, 2), charon_core::cell::MaterialId::EMPTY);
-    let original = synchronization_hash(&world, &entities, &physics, &background).unwrap();
+    let original = synchronization_hash(&world, &entities, &physics, &background, &game).unwrap();
     physics.drag_body(0, [48.0, 28.0]);
-    assert_ne!(original, synchronization_hash(&world, &entities, &physics, &background).unwrap());
+    assert_ne!(
+        original,
+        synchronization_hash(&world, &entities, &physics, &background, &game).unwrap()
+    );
 }
 
 #[test]
@@ -241,6 +271,7 @@ fn script_precedes_player_collision() {
         fill(&mut world, 18, 8, 18, 8, '#');
         let mut entities = EntityWorld::new();
         let player = entities.spawn_player(10 * 16, 8 * 16, &world).unwrap();
+        let mut game = GameState::new(SpellTable::default());
         let before = world.get(CellPos::new(18, 8)).material;
         let info = ConnectionInfo::new(
             &world,
@@ -253,17 +284,154 @@ fn script_precedes_player_collision() {
         lockstep.connect(player, &info).unwrap();
         lockstep
             .submit(TickInput {
+                action: GameInput::default(),
                 tick: 0,
                 player,
                 input: PlayerInput { horizontal: 1, jump: false },
             })
             .unwrap();
         lockstep
-            .advance(&mut world, &mut entities, &mut PhysicsEngine::new(), &BackgroundWorld::new())
+            .advance(
+                &mut world,
+                &mut entities,
+                &mut PhysicsEngine::new(),
+                &BackgroundWorld::new(),
+                &mut game,
+            )
             .unwrap()
             .unwrap();
         assert_ne!(world.get(CellPos::new(18, 8)).material, before, "seed={seed}");
         assert_eq!(entities.get(player).unwrap().x16, 12 * 16, "seed={seed}");
         fs::remove_dir_all(path).unwrap();
     }
+}
+
+const SPELLS: &str = r#"[
+    (name: "spark", mana_cost: 5, cast_delay: 6, speed: 128, gravity: 0, life: 60,
+     damage: 10, spread: 0, payload: None),
+]"#;
+
+fn spell_table(world: &World) -> SpellTable {
+    SpellTable::parse(SPELLS, world.materials(), None).unwrap()
+}
+
+#[test]
+fn lockstep_packet_v2_roundtrip() {
+    let input = TickInput {
+        tick: 7,
+        player: EntityId(3),
+        input: PlayerInput { horizontal: -1, jump: true },
+        action: GameInput { fire: true, aim: (-5, 70_000) },
+    };
+    let packet = input.encode();
+    assert_eq!(packet.len(), 29);
+    assert_eq!(&packet[..2], &[2, 0]);
+    assert_eq!(packet[20], 1);
+    assert_eq!(&packet[21..25], &(-5i32).to_le_bytes());
+    assert_eq!(&packet[25..29], &70_000i32.to_le_bytes());
+    assert_eq!(TickInput::decode(&packet).unwrap(), input);
+    assert_eq!(
+        TickInput::decode(&TickInput { action: GameInput::default(), ..input }.encode())
+            .unwrap()
+            .action,
+        GameInput::default()
+    );
+
+    let mut bad_fire = packet;
+    bad_fire[20] = 2;
+    assert!(matches!(TickInput::decode(&bad_fire), Err(LockstepError::InvalidPacket)));
+    for offset in [21, 25] {
+        let mut huge = packet;
+        huge[offset..offset + 4].copy_from_slice(&1_000_001i32.to_le_bytes());
+        assert!(matches!(TickInput::decode(&huge), Err(LockstepError::InvalidPacket)));
+        let mut min = packet;
+        min[offset..offset + 4].copy_from_slice(&i32::MIN.to_le_bytes());
+        assert!(matches!(TickInput::decode(&min), Err(LockstepError::InvalidPacket)));
+        let mut edge = packet;
+        edge[offset..offset + 4].copy_from_slice(&(-1_000_000i32).to_le_bytes());
+        assert!(TickInput::decode(&edge).is_ok(), "上限ちょうどは通る");
+    }
+    let mut version1 = packet;
+    version1[..2].copy_from_slice(&1u16.to_le_bytes());
+    assert!(matches!(TickInput::decode(&version1), Err(LockstepError::Mismatch)));
+    assert!(matches!(TickInput::decode(&packet[..20]), Err(LockstepError::InvalidPacket)));
+}
+
+fn game_trace(seed: u64, reversed: bool) -> Vec<u64> {
+    let (mut world, mut entities, mut physics, background, players) = scene(seed);
+    let table = spell_table(&world);
+    let mut game = GameState::new(table.clone());
+    for id in players {
+        let wand = Wand::new(vec![SpellId(0)], 100, 1, 0, &table).unwrap();
+        game.add_character(id, Vitals::new(100).unwrap(), wand);
+    }
+    let info = ConnectionInfo::new(&world, &[], "same-binary".to_string(), "parallel".to_string())
+        .with_spells(&table);
+    let mut lockstep = Lockstep::new(&players, &world, &entities, None, info.clone()).unwrap();
+    for player in players {
+        lockstep.connect(player, &info).unwrap();
+    }
+    let mut hashes = Vec::new();
+    for tick in 0..30 {
+        for index in if reversed { [1, 0] } else { [0, 1] } {
+            let fire = tick % 2 == 0 || index == 1;
+            let aim = if index == 0 { (1, 0) } else { (-1, 0) };
+            let packet = TickInput {
+                tick,
+                player: players[index],
+                input: PlayerInput::default(),
+                action: GameInput { fire, aim },
+            }
+            .encode();
+            lockstep.submit_bytes(&packet).unwrap();
+        }
+        hashes.push(
+            lockstep
+                .advance(&mut world, &mut entities, &mut physics, &background, &mut game)
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    assert!(game.vitals.iter().any(|(_, v)| v.hp < 100), "弾が当たって体力が減る seed={seed}");
+    hashes
+}
+
+#[test]
+fn lockstep_game_hash_is_order_independent() {
+    for seed in 1..=8 {
+        assert_eq!(game_trace(seed, false), game_trace(seed, true), "seed={seed}");
+    }
+
+    // 呪文表が違う接続は拒否される。
+    let (world, entities, _, _, players) = scene(1);
+    let table = spell_table(&world);
+    let with =
+        ConnectionInfo::new(&world, &[], "b".to_string(), "p".to_string()).with_spells(&table);
+    let without = ConnectionInfo::new(&world, &[], "b".to_string(), "p".to_string());
+    let mut lockstep = Lockstep::new(&players, &world, &entities, None, with.clone()).unwrap();
+    assert!(matches!(lockstep.connect(players[0], &without), Err(LockstepError::Mismatch)));
+    lockstep.connect(players[0], &with).unwrap();
+
+    // 杖を持たない参加者が撃とうとすると、何も更新せずに拒否される。
+    let (mut world, mut entities, mut physics, background, players) = scene(1);
+    let mut game = GameState::new(SpellTable::default());
+    let info = ConnectionInfo::new(&world, &[], "b".to_string(), "p".to_string());
+    let mut lockstep = Lockstep::new(&players, &world, &entities, None, info.clone()).unwrap();
+    for player in players {
+        lockstep.connect(player, &info).unwrap();
+        lockstep
+            .submit(TickInput {
+                tick: 0,
+                player,
+                input: PlayerInput::default(),
+                action: GameInput { fire: player == players[0], aim: (1, 0) },
+            })
+            .unwrap();
+    }
+    let before = (world.tick(), world.state_hash(), entities.state_hash());
+    let err = lockstep
+        .advance(&mut world, &mut entities, &mut physics, &background, &mut game)
+        .unwrap_err();
+    assert!(matches!(err, LockstepError::Game(charon_game::game::GameError::InvalidAction)));
+    assert_eq!((world.tick(), world.state_hash(), entities.state_hash()), before);
 }

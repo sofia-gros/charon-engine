@@ -7,18 +7,23 @@ use charon_core::world::World;
 use charon_physics::{BodyError, CELLS_PER_METER, PhysicsEngine};
 use charon_world::background::BackgroundWorld;
 
+use crate::game::{GameError, GameInput, GameState};
 use crate::mods::{ModError, ModManifest, ModPack};
+use crate::wand::SpellTable;
 use crate::{EntityError, EntityId, EntityWorld, PlayerInput};
 
-pub const PROTOCOL_VERSION: u16 = 1;
-pub const TICK_INPUT_BYTES: usize = 20;
+pub const PROTOCOL_VERSION: u16 = 2;
+pub const TICK_INPUT_BYTES: usize = 29;
+/// 狙いのベクトルの各成分の上限 (仕様 10 §6.2)。
+const MAX_AIM: i32 = 1_000_000;
 
-/// version(2) + tick(8) + player(8) + horizontal(1) + jump(1)。すべて LE。
+/// version(2) + tick(8) + player(8) + horizontal(1) + jump(1) + fire(1) + aim_x(4) + aim_y(4)。すべて LE。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TickInput {
     pub tick: u64,
     pub player: EntityId,
     pub input: PlayerInput,
+    pub action: GameInput,
 }
 
 impl TickInput {
@@ -29,6 +34,9 @@ impl TickInput {
         bytes[10..18].copy_from_slice(&self.player.0.to_le_bytes());
         bytes[18] = self.input.horizontal as u8;
         bytes[19] = u8::from(self.input.jump);
+        bytes[20] = u8::from(self.action.fire);
+        bytes[21..25].copy_from_slice(&self.action.aim.0.to_le_bytes());
+        bytes[25..29].copy_from_slice(&self.action.aim.1.to_le_bytes());
         bytes
     }
 
@@ -46,10 +54,26 @@ impl TickInput {
             bytes[10..18].try_into().map_err(|_| LockstepError::InvalidPacket)?,
         ));
         let horizontal = bytes[18] as i8;
-        if tick == u64::MAX || player.0 == 0 || !(-1..=1).contains(&horizontal) || bytes[19] > 1 {
+        let aim = (
+            i32::from_le_bytes(bytes[21..25].try_into().map_err(|_| LockstepError::InvalidPacket)?),
+            i32::from_le_bytes(bytes[25..29].try_into().map_err(|_| LockstepError::InvalidPacket)?),
+        );
+        if tick == u64::MAX
+            || player.0 == 0
+            || !(-1..=1).contains(&horizontal)
+            || bytes[19] > 1
+            || bytes[20] > 1
+            || aim.0.unsigned_abs() > MAX_AIM as u32
+            || aim.1.unsigned_abs() > MAX_AIM as u32
+        {
             return Err(LockstepError::InvalidPacket);
         }
-        Ok(Self { tick, player, input: PlayerInput { horizontal, jump: bytes[19] == 1 } })
+        Ok(Self {
+            tick,
+            player,
+            input: PlayerInput { horizontal, jump: bytes[19] == 1 },
+            action: GameInput { fire: bytes[20] == 1, aim },
+        })
     }
 }
 
@@ -59,6 +83,8 @@ pub struct ConnectionInfo {
     pub version: u16,
     pub materials: Vec<String>,
     pub mods: Vec<ModManifest>,
+    /// 呪文名を記載順に。呪文表が違う接続を拒否するため (仕様 10 §6.2)。
+    pub spells: Vec<String>,
     pub seed: u64,
     pub binary: String,
     pub features: String,
@@ -72,11 +98,19 @@ fn sorted_mods(mods: &[ModManifest]) -> Vec<ModManifest> {
 }
 
 impl ConnectionInfo {
+    /// 呪文表の名前を接続情報に加える。
+    #[must_use]
+    pub fn with_spells(mut self, table: &SpellTable) -> Self {
+        self.spells = table.iter().map(|spell| spell.name.clone()).collect();
+        self
+    }
+
     pub fn new(world: &World, mods: &[ModManifest], binary: String, features: String) -> Self {
         Self {
             version: PROTOCOL_VERSION,
             materials: charon_world::material_names(world.materials()),
             mods: sorted_mods(mods),
+            spells: Vec::new(),
             seed: world.seed(),
             binary,
             features: format!("core.parallel={};{features}", charon_core::PARALLEL_ENABLED),
@@ -95,6 +129,7 @@ pub enum LockstepError {
     Mismatch,
     Script(ModError),
     Entity(EntityError),
+    Game(GameError),
     Body(BodyError),
     MissingBody,
 }
@@ -110,6 +145,7 @@ impl std::fmt::Display for LockstepError {
             Self::Mismatch => write!(f, "プロトコル・材質・MOD・seed・ビルド構成が一致しません"),
             Self::Script(err) => write!(f, "規則の適用に失敗: {err}"),
             Self::Entity(err) => write!(f, "プレイヤーの更新に失敗: {err}"),
+            Self::Game(err) => write!(f, "ゲーム状態の更新に失敗: {err}"),
             Self::Body(err) => write!(f, "剛体の更新に失敗: {err}"),
             Self::MissingBody => write!(f, "剛体の保存可能な状態を読めません"),
         }
@@ -123,7 +159,7 @@ impl std::error::Error for LockstepError {}
 pub struct Lockstep<'a> {
     participants: Vec<EntityId>,
     connected: BTreeSet<EntityId>,
-    pending: BTreeMap<EntityId, PlayerInput>,
+    pending: BTreeMap<EntityId, (PlayerInput, GameInput)>,
     identity: ConnectionInfo,
     mods: Option<&'a ModPack>,
     tick: u64,
@@ -191,12 +227,15 @@ impl<'a> Lockstep<'a> {
         if !self.connected.contains(&input.player) {
             return Err(LockstepError::NotConnected);
         }
-        if !(-1..=1).contains(&input.input.horizontal) {
+        if !(-1..=1).contains(&input.input.horizontal)
+            || input.action.aim.0.unsigned_abs() > MAX_AIM as u32
+            || input.action.aim.1.unsigned_abs() > MAX_AIM as u32
+        {
             return Err(LockstepError::InvalidPacket);
         }
         match self.pending.entry(input.player) {
             std::collections::btree_map::Entry::Vacant(slot) => {
-                slot.insert(input.input);
+                slot.insert((input.input, input.action));
                 Ok(())
             }
             std::collections::btree_map::Entry::Occupied(_) => Err(LockstepError::DuplicateInput),
@@ -207,13 +246,14 @@ impl<'a> Lockstep<'a> {
         self.submit(TickInput::decode(packet)?)
     }
 
-    /// 欠損入力なら何も更新せず None。規則 → エンティティ → 物理/セルの順に 1 回進める。
+    /// 欠損入力なら何も更新せず None。規則 → エンティティ → ゲーム状態 → 物理/セルの順に 1 回進める。
     pub fn advance(
         &mut self,
         world: &mut World,
         entities: &mut EntityWorld,
         physics: &mut PhysicsEngine,
         background: &BackgroundWorld,
+        game: &mut GameState,
     ) -> Result<Option<u64>, LockstepError> {
         if self.tick != world.tick() {
             return Err(LockstepError::WrongTick);
@@ -223,13 +263,28 @@ impl<'a> Lockstep<'a> {
         {
             return Ok(None);
         }
+        // 体力と杖を持たない参加者が撃とうとしたら、何も更新せずに拒否する。
+        if self.pending.iter().any(|(id, (_, action))| {
+            !game.wands.contains_key(id) && *action != GameInput::default()
+        }) {
+            return Err(LockstepError::Game(GameError::InvalidAction));
+        }
         if let Some(mods) = self.mods {
             mods.apply_rules(world).map_err(LockstepError::Script)?;
         }
-        let inputs: Vec<_> = self.pending.iter().map(|(&id, &input)| (id, input)).collect();
+        let inputs: Vec<_> = self.pending.iter().map(|(&id, &(input, _))| (id, input)).collect();
+        // 杖を持つキャラクターの入力だけをゲーム状態へ渡す。
+        let actions: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|(id, _)| game.wands.contains_key(id))
+            .map(|(&id, &(_, action))| (id, action))
+            .collect();
         entities.step_players(&inputs, world).map_err(LockstepError::Entity)?;
+        game.step(world, physics, entities, &actions, world.tick(), world.seed())
+            .map_err(LockstepError::Game)?;
         physics.step(world).map_err(LockstepError::Body)?;
-        let hash = synchronization_hash(world, entities, physics, background)?;
+        let hash = synchronization_hash(world, entities, physics, background, game)?;
         self.pending.clear();
         self.tick = world.tick();
         Ok(Some(hash))
@@ -248,12 +303,13 @@ impl Fnv64 {
     }
 }
 
-/// 前景・エンティティ・剛体の保存可能な状態・背景を順に FNV-1a に流す。
+/// 前景・エンティティ・剛体の保存可能な状態・背景・ゲーム状態を順に FNV-1a に流す。
 pub fn synchronization_hash(
     world: &World,
     entities: &EntityWorld,
     physics: &PhysicsEngine,
     background: &BackgroundWorld,
+    game: &GameState,
 ) -> Result<u64, LockstepError> {
     let mut hash = Fnv64::new();
     hash.bytes(&world.state_hash().to_le_bytes());
@@ -287,5 +343,6 @@ pub fn synchronization_hash(
             hash.bytes(&id.to_le_bytes());
         }
     }
+    hash.bytes(&game.state_hash().to_le_bytes());
     Ok(hash.0)
 }

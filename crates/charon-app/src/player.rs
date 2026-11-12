@@ -80,6 +80,18 @@ pub fn follow_origin(entity: &Entity, viewport: [u32; 2], zoom: u32) -> [f32; 2]
     [(center_x - scene[0] / 2) as f32, (center_y - scene[1] / 2) as f32]
 }
 
+/// プレイヤーの中心からカーソルのセルの中心への向き (1/16 セル単位)。仕様 10 §6.3。
+pub(crate) fn aim_at(entity: &Entity, target: CellPos) -> (i32, i32) {
+    let center =
+        (entity.x16 + i64::from(entity.width) * 8, entity.y16 + i64::from(entity.height) * 8);
+    let delta = |t: i32, c: i64| {
+        let v = i64::from(t) * 16 + 8 - c;
+        // 狙いの上限 (仕様 10 §5.2) に収める。
+        v.clamp(-1_000_000, 1_000_000) as i32
+    };
+    (delta(target.x, center.0), delta(target.y, center.1))
+}
+
 /// 8×16 のプレイヤーとその足元 1 行を含む 4 隅のチャンクが全部読み込まれていれば生成する。
 /// 読み込み前なら `Ok(None)`。固体と重なるなら `Err` (地形は消さない)。
 pub fn try_spawn_player(
@@ -173,6 +185,19 @@ mod tests {
         let id = entities.spawn(-24, -40, 8, 16).unwrap();
         let negative = entities.get(id).unwrap().clone();
         assert_eq!(follow_origin(&negative, [64, 64], 1), [2.0 - 32.0, 5.0 - 32.0]);
+    }
+
+    #[test]
+    fn aim_points_from_player_to_cursor() {
+        let mut entities = EntityWorld::new();
+        let id = entities.spawn(0, 0, 8, 16).unwrap();
+        let player = entities.get(id).unwrap().clone();
+        // 中心は (64, 128)。セル (10, 2) の中心は (168, 40)。
+        assert_eq!(aim_at(&player, CellPos::new(10, 2)), (104, -88));
+        // 自分のいるセルの中心との差は 0 にならない (向きがある)。
+        assert_ne!(aim_at(&player, CellPos::new(4, 8)), (0, 0));
+        // 遠すぎる点は上限に収める。
+        assert_eq!(aim_at(&player, CellPos::new(i32::MAX, i32::MIN)), (1_000_000, -1_000_000));
     }
 
     #[test]
