@@ -56,6 +56,7 @@ FallingSandEngine の調査で見つかった問題に、それぞれ対応さ�
 | M8 | ゲーム層 | T8.1〜T8.8 の実装と自動テストを完了。T8.8 の実ブラウザー動作・保存は依頼者の指示で後日検証（未検証）。Windows GUI の操作・撮影も未検証 |
 | M9 | デスクトップ性能の計測と改善 | T9.1〜T9.4 の計測と T9.5 の RTX 4060 オフスクリーン描画検証を完了。最適化案は不採用。100 万セル / 8 ms は未達 (T9.6 で約 35〜41 ms まで短縮)、休眠 10,000 チャンク / 0.2 ms は達成。Windows GUI 操作は未検証 |
 | M10 | 参照デモ場面 (`charon-demo`) | T10.1〜T10.6 の実装と自動テストを完了。RTX 4060 (Vulkan) のオフスクリーン描画で 5 場面を確認。ウィンドウでのマウス・キー操作の目視は未検証 (操作許可が得られなかった)。Web・Android・Linux は未検証 |
+| M11 | Noita 型ゲームの中核 (体力・飛び道具・杖・敵・掘る) | T11.1 から順に実装中。完了したタスクは下の M11 の節を参照 |
 
 ---
 
@@ -235,6 +236,21 @@ Android・Web・Windows GUI の延期中の実機項目は M9 の完了条件に
 | T10.6 | 実 GPU のオフスクリーン描画、背景の文字、環境光の設定、参照フレームとの比較、記録 | `demo_renders_on_gpu`、`demo_background_is_populated_once`、`PLATFORM_CHECK.md` に結果と未検証項目 |
 
 T10.6 では RTX 4060 (Vulkan) で 5 場面をオフスクリーンに描き、参照動画のフレームと見比べた。見え方は [`docs/screenshots/M10-*.png`](screenshots/) にある。参照のフレームはこのリポジトリに入れない。ウィンドウでの操作の目視、Web・Android・Linux の確認は未検証で、成功とは扱わない。
+
+## M11 Noita 型ゲームの中核
+
+読む仕様: [10 の全部](spec/10-noita-like-game.md)、07 §2・§5、02 §1〜§4。2026-11-12 の依頼「noita のようなゲームを作るための機能をそろえる」への対応。既にある世界・材質・熱・燃焼・剛体・爆発・プレイヤー移動の上に、遊びとして必要な層を `charon-game` に足す。実装済みと未実装の一覧は仕様 10 §1。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T11.1 | 体力・息と、熱・溺れによる環境ダメージ (10 §3) | `hot_cells_damage_entity`、`drowning_needs_submerged_head`、`breath_recovers_in_air`、`damage_and_heal_saturate`、`vitals_hash_is_stable` |
+| T11.2 | 飛び道具 (爆発・材質を置く)、爆発のダメージ (10 §4) | `projectile_flies_and_falls`、`projectile_explodes_on_solid`、`projectile_hits_entity`、`explosion_damage_falls_off`、`projectile_expires_and_deposits`、`projectile_validation_and_limit` |
+| T11.3 | 杖 (マナ・詠唱間隔・再充填) と呪文 (RON、MOD から追加) | 着手前に仕様 10 に式とテスト名を書く |
+| T11.4 | 敵 (歩く・追う・撃つ) | 同上 |
+| T11.5 | 掘る道具と浮遊 | 同上 |
+| T11.6 | `Lockstep` の tick 順序への組み込み、サンドボックス・デモの操作と UI | 同上 |
+
+T11.3 以降は未着手で、まだ遊べる状態ではない。完了したタスクだけを完了として扱う。
 
 ---
 

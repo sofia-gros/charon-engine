@@ -1,0 +1,106 @@
+# 仕様 10: Noita 型ゲームの中核 (M11)
+
+対象: M11。目標は、落下砂の世界の中で「歩く・掘る・撃つ・燃える・溺れる・爆発で地形が崩れる」遊びを成立させること。セル・材質・座標・決定性は仕様 01〜03、剛体と爆発は仕様 05・07 §5、エンティティは仕様 07 §2 に従う。ここで足すものはすべて `charon-game` に置き、`charon-core` のシミュレーションは変えない。
+
+## 1. 既にあるもの・足すもの
+
+| Noita の要素 | 状態 | タスク |
+|---|---|---|
+| 無限の洞窟・バイオーム、背景、保存、光 | 実装済み (M5・M7・M8・M10) | — |
+| 液体・粉体・気体、熱、燃焼、反応、相変化 | 実装済み (M1〜M2) | — |
+| 剛体、パーティクル、爆発 | 実装済み (M6、07 §5) | — |
+| プレイヤーの移動・ジャンプ | 実装済み (07 §2) | — |
+| 体力、熱・溺れによるダメージ | **未実装** | T11.1 |
+| 飛び道具 (爆発弾・材質を撒く弾)、爆発のダメージ | **未実装** | T11.2 |
+| 杖 (マナ・詠唱間隔・再充填) と呪文 (RON、MOD から追加) | 未実装 | T11.3 |
+| 敵 (歩く・追う・撃つ) | 未実装 | T11.4 |
+| 掘る道具、浮遊 (飛行) | 未実装 | T11.5 |
+| サンドボックス・デモへの組み込み、ゲーム UI | 未実装 | T11.6 |
+
+T11.1 と T11.2 を先に作り、T11.3 以降は T11.2 の `ProjectileWorld` を土台にする。仕様の追加は、そのタスクに着手する前にこの文書へ書く。
+
+## 2. 共通の約束
+
+- 整数だけで計算する。時計・`HashMap` の反復順・`rand` を使わない。乱数が必要なら `rng::hash`。
+- 格納は `BTreeMap`、ID は 1 から単調増加で再利用しない (07 §2.1 と同じ)。
+- セルは `World::set` / `make_cell` を通してだけ書き換え、材質名をコードに書かない。性質は `Material` のフィールドで判断する。
+- 1 tick の順序は 07 §7 の `Lockstep` に今後組み込む。T11.1〜T11.2 の関数は、呼び出し側が ID 昇順で 1 回ずつ呼ぶ。
+
+## 3. T11.1: 体力と環境ダメージ (`charon-game::vitals`)
+
+```rust
+pub const MAX_HP: i32 = 100;
+pub const BREATH_MAX: u16 = 600;      // 10 秒
+pub const HEAT_THRESHOLD: i16 = 150;  // この温度以上の接触でダメージ
+pub const DROWN_INTERVAL: u8 = 8;     // 息が尽きたあと、この tick ごとに 1 ダメージ
+
+pub struct Vitals { pub hp: i32, pub max_hp: i32, pub breath: u16, drown_clock: u8 }
+pub struct VitalsTable { /* BTreeMap<EntityId, Vitals> */ }
+```
+
+- `Vitals::new(max_hp)`: `hp = max_hp`、`breath = BREATH_MAX`。`max_hp` は 1..=10000 でなければ `VitalsError::InvalidMaxHp`。
+- `damage(amount)`: `amount <= 0` は何もしない。`hp` は 0 で止まる (負にならない)。`heal(amount)` は `max_hp` で止まる。`alive()` は `hp > 0`。
+- `VitalsTable`: `insert(id, vitals)`、`get`、`get_mut`、`remove`、`iter` (ID 昇順)、`state_hash()` (FNV-1a 64-bit、07 §2.1 と同じ定数、各整数はリトルエンディアン、`drown_clock` を含む)。
+- `step_environment(entity: &Entity, vitals: &mut Vitals, world: &World)` を 1 tick に 1 回呼ぶ。`hp == 0` なら何もしない。
+  1. **熱**: エンティティの当たり判定が覆う全セル (07 §2.2 の範囲) のうち `FLAG_BODY` でなく `BOUNDARY` でもないものについて、`FLAG_BURNING` が立つか `temp >= HEAT_THRESHOLD` なら `hot = max(hot, heat_damage)`。`heat_damage = clamp((temp - 100) / 50, 1, 20)`、`FLAG_BURNING` のセルは 2 以上 (`max(2, …)`)。全セルの最大値を、その tick のダメージにする。
+  2. **溺れ**: 当たり判定の最上段の行のセルのうち、材質の `phase == Liquid` のものが半数以上 (`2 * liquid >= width`) なら「頭が水没」。水没中は `breath` を 1 減らし (0 で止まる)、`breath == 0` の間は `drown_clock` を 1 進め、`DROWN_INTERVAL` に達したら 0 に戻して 1 ダメージ。水没していなければ `breath` を 4 回復 (`BREATH_MAX` で止まる) し、`drown_clock = 0`。
+  3. 1 と 2 のダメージを合計して `damage` に渡す。
+- この関数はセルも `Entity` も書き換えない。
+
+| テスト | 確認 |
+|---|---|
+| `hot_cells_damage_entity` | 溶岩・燃えるセルに触れると毎 tick ダメージが入り、離れれば止まる |
+| `drowning_needs_submerged_head` | 足だけ水に浸かっても息は減らず、頭が水没すると 600 tick で息が尽き、その後 `DROWN_INTERVAL` ごとに 1 ずつ減る |
+| `breath_recovers_in_air` | 水から出ると息が回復し、`drown_clock` が 0 に戻る |
+| `damage_and_heal_saturate` | `hp` は 0 と `max_hp` の外に出ない。0 以下のダメージは無視 |
+| `vitals_hash_is_stable` | 同じ操作列で `state_hash` が等しく、`hp` か `breath` が違うと異なる |
+
+## 4. T11.2: 飛び道具と爆発ダメージ (`charon-game::projectile`)
+
+```rust
+pub enum Payload {
+    None,
+    Explode { radius: u8 },        // 1..=16 (07 §5)
+    Deposit { material: MaterialId }, // 着弾の直前の空きセルに 1 セル置く
+}
+pub struct Projectile {
+    pub id: ProjectileId,
+    pub x16: i64, pub y16: i64,    // 1/16 セル
+    pub vx: i16, pub vy: i16,      // 1 tick あたり 1/16 セル
+    pub gravity: i16,              // 毎 tick vy に足す。0 なら直進
+    pub life: u16,                 // 残り tick。0 になったら payload なしで消える
+    pub damage: i32,               // 直接当たったエンティティへのダメージ
+    pub payload: Payload,
+}
+pub struct ProjectileWorld { /* BTreeMap<ProjectileId, Projectile>、next_id */ }
+```
+
+- `ProjectileWorld::spawn(..) -> Result<ProjectileId, ProjectileError>`: `life` は 1..=3600、`|vx|`・`|vy|` は 512 以下、`Explode` の半径は 1..=16、`Deposit` の材質は `world` の材質表にあること。違反は `ProjectileError::{InvalidLife, InvalidSpeed, InvalidRadius, UnknownMaterial}`。ID は `checked_add` で払い出す。同時に存在できるのは 1024 個まで (`TooMany`)。
+- `step(&mut self, world, physics, entities, vitals) -> Vec<Hit>` を 1 tick に 1 回呼ぶ。弾を ID 昇順に処理する。
+  1. `vy = clamp(vy + gravity, -512, 512)`。
+  2. `n = max(|vx|, |vy|)` を 1/16 セルの歩数とし、`k = 1..=n` 歩目で位置を `start + round_toward_zero(v * k / n)` (整数除算) に置く。各歩で、弾の点が入るセルを調べる。
+  3. **セルに当たる**: `BOUNDARY`、`FLAG_BODY`、または `phase` が `Solid`・`Powder`・`Liquid` のセル。気体・空は通る。
+  4. **エンティティに当たる**: 弾の点が、`vitals` に登録されたエンティティの半開区間の当たり判定 (07 §2.2) に入る。複数ならエンティティ ID が最小のもの。`damage` を `Vitals::damage` に渡す。
+  5. 当たったら、その 1 歩前の位置 (一度も進めていなければ出発点) を `last_free` とし、`payload` を実行して弾を消す。`life` は毎 tick 末尾に 1 減らし、0 になったら消える。
+- `Payload::Explode`: `charon_physics::explosion::explode(world, physics, center = 当たったセル (エンティティに当たった場合は弾のセル), radius)` を呼ぶ。続けて `explosion_damage` を、当たり判定が爆風の円と交わる全エンティティ (ID 昇順) に適用する。
+- `explosion_damage(radius, dist2, max_damage) = max_damage * (r*r - dist2) / (r*r)` (整数除算、`dist2 >= r*r` なら 0)。`dist2` は爆発の中心セルから当たり判定の矩形 (セル単位の閉区間) への最短距離の 2 乗。`max_damage` は `Explode` の弾では `damage * 2` とする。
+- `Payload::Deposit`: `last_free` のセルが `EMPTY` で `FLAG_BODY` がないときだけ `world.make_cell(material, pos)` を `World::set` で置く。置けなければ何もしない (セルを増やさない・消さない)。
+- `Hit { projectile, entity: Option<EntityId>, cell: CellPos }` を発生順に返す。
+- `state_hash()`: ID 昇順に全フィールドを FNV-1a 64-bit (リトルエンディアン) で流し、`next_id` も含める。
+
+| テスト | 確認 |
+|---|---|
+| `projectile_flies_and_falls` | `gravity > 0` の弾が放物線を描いて床に当たり、`gravity = 0` は直進する。結果は seed に依らない |
+| `projectile_explodes_on_solid` | 壁に当たると半径内のセルが消えてパーティクルになり、前景のセル数とパーティクル数の合計が爆発の前後で等しい |
+| `projectile_hits_entity` | エンティティに当たると `damage` だけ `hp` が減り、`Hit.entity` が入る。ID が小さい方が優先される |
+| `explosion_damage_falls_off` | 中心に近いほどダメージが大きく、半径の外は 0。壁に隠れても爆風の距離だけで決まる (遮蔽はしない) |
+| `projectile_expires_and_deposits` | `life` が尽きた弾は payload なしで消える。`Deposit` は空きセルにだけ 1 個置き、塞がっていれば何も置かない |
+| `projectile_validation_and_limit` | 不正な引数と 1025 個目をエラーにし、状態は変わらない |
+
+## 5. 後続 (T11.3〜T11.6) の方針
+
+- **T11.3 杖と呪文**: 呪文は `Payload` と弾の初速・消費マナ・詠唱間隔を持つデータ (`spells.ron`、MOD から追加)。杖は呪文の列、マナ、`cast_delay`、`recharge`、`mana_regen` を持ち、1 tick ごとに入力 (発射する・方向) から弾を `spawn` する。
+- **T11.4 敵**: `Vitals` を持つエンティティに、整数だけの AI (向かう・跳ぶ・間合いで撃つ) を足す。乱数は `rng::hash`。
+- **T11.5 掘る道具・浮遊**: 掘るは `Payload` の一種 (半径内のセルをパーティクルへ移す)。浮遊は `PlayerInput` の拡張 (燃料を消費し、`vy` を上向きに足す)。
+- **T11.6 組み込み**: `Lockstep` の tick 順序に vitals・projectile を入れ、サンドボックス・デモで操作できるようにする。
+- いずれも着手前に、この文書へ表のテスト名と式を書く。
