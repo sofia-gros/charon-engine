@@ -58,6 +58,14 @@ const S_TEXT_Y: u32 = 0x4445_4d3a;
 const S_BG: u32 = 0x4445_4d3b;
 const S_BG_Y: u32 = 0x4445_4d3c;
 const S_TUNNEL: u32 = 0x4445_4d3d;
+const S_WARP_X: u32 = 0x4445_4d3e;
+const S_WARP_Y: u32 = 0x4445_4d3f;
+const S_WORM_A: u32 = 0x4445_4d40;
+const S_WORM_B: u32 = 0x4445_4d41;
+const S_ROUGH: u32 = 0x4445_4d42;
+const S_POOL: u32 = 0x4445_4d43;
+const S_POOL_Y: u32 = 0x4445_4d44;
+const S_POOL_KIND: u32 = 0x4445_4d45;
 
 pub const YELLOW_TEXT: &str = "yellow thing";
 pub const GREEN_LABEL: &str = "green biome";
@@ -79,6 +87,9 @@ pub struct DemoMaterials {
     pub green_ore: MaterialId,
     pub orange_ore: MaterialId,
     pub bg_text_green: MaterialId,
+    /// 洞窟の窪みに溜まる水と溶岩 (組み込みの材質)。
+    pub water: MaterialId,
+    pub lava: MaterialId,
 }
 
 impl DemoMaterials {
@@ -97,6 +108,8 @@ impl DemoMaterials {
             green_ore: demo("green_ore")?,
             orange_ore: demo("orange_ore")?,
             bg_text_green: demo("bg_text_green")?,
+            water: materials.id("water")?,
+            lava: materials.id("lava")?,
         })
     }
 }
@@ -195,8 +208,18 @@ fn octave(seed: u64, x: i32, y: i32, spacing: i32, salt: u32) -> i32 {
     (top * (spacing - fy) + bottom * fy) / (spacing * spacing)
 }
 
-fn cave_value(seed: u64, x: i32, y: i32) -> i32 {
-    (2 * octave(seed, x, y, 48, S_CAVE_A) + octave(seed, x, y, 24, S_CAVE_B)) / 3
+/// Noita のような洞窟 (仕様 09 §3): 座標を大きく歪めたノイズで、(1) ゆるい塊の大広間、(2) 曲がりくねって枝分かれする坑道
+/// (ノイズが 128 に近い帯)、(3) 壁のこまかなでこぼこ、を重ねる。整数だけで決まる。
+fn cave_open(seed: u64, x: i32, y: i32) -> bool {
+    // 歪み: 最大で約 ±42 セル。直線的な格子の癖が消え、うねった形になる。
+    let wx = x + (octave(seed, x, y, 72, S_WARP_X) - 128) / 3;
+    let wy = y + (octave(seed, x, y, 72, S_WARP_Y) - 128) / 3;
+    let hall =
+        (3 * octave(seed, wx, wy, 64, S_CAVE_A) + 2 * octave(seed, wx, wy, 32, S_CAVE_B)) / 5;
+    let worm_a = (octave(seed, wx, wy, 90, S_WORM_A) - 128).abs();
+    let worm_b = (octave(seed, wx, wy, 56, S_WORM_B) - 128).abs();
+    let rough = octave(seed, x, y, 7, S_ROUGH) - 128;
+    hall < 96 + rough / 12 || worm_a < 11 + rough / 24 || worm_b < 8 + rough / 24
 }
 
 /// 横に長く続く通路の中心の y。出入口の付近では部屋の床の高さに揃い、離れるほど自由に曲がる。
@@ -221,8 +244,7 @@ pub fn open_at(seed: u64, x: i32, y: i32) -> bool {
         return in_rect(ROOM_INTERIOR, x, y) || in_rect(DOOR, x, y);
     }
     (0..WORLD_HEIGHT).contains(&y)
-        && (cave_value(seed, x, y) < 112
-            || (y - tunnel_center(seed, x)).abs() <= TUNNEL_HALF_HEIGHT)
+        && (cave_open(seed, x, y) || (y - tunnel_center(seed, x)).abs() <= TUNNEL_HALF_HEIGHT)
 }
 
 /// `Tile Entity` の枠か文字のセルか。
@@ -364,7 +386,17 @@ impl DemoGenerator {
         if x.div_euclid(BIOME_WIDTH) == 0 {
             return None; // 出発点の帯は鉱床を置かず、通路を空けておく。
         }
+        // 窪みの水と溶岩: 48×48 の区画の一部に、区画ごとの水面の高さより下の空洞が溜まる (深いほど溶岩が多い)。
         let (bx, by) = (x.div_euclid(48), y.div_euclid(48));
+        if hash(seed, 0, bx, by, S_POOL).is_multiple_of(5) {
+            let level = by * 48 + 14 + (hash(seed, 0, bx, by, S_POOL_Y) % 24) as i32;
+            debug_assert!(level >= by * 48);
+            if y >= level {
+                let lava_chance = (y * 100 / WORLD_HEIGHT) as u32; // 0..=99 (%)
+                let lava = hash(seed, 0, bx, by, S_POOL_KIND) % 100 < lava_chance;
+                return Some(if lava { m.lava } else { m.water });
+            }
+        }
         if hash(seed, 0, bx, by, S_GREEN) & 7 == 0 && octave(seed, x, y, 10, S_GREEN2) < 44 {
             return Some(m.green_ore);
         }

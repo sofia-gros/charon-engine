@@ -50,7 +50,8 @@
 
 - **縦方向:** `y < 0` と `y >= 640` はすべて `stone`。
 - **バイオーム:** `band = x.div_euclid(384)`。`band == 0` は平坦 (苔なし)。それ以外は `hash(seed, 0, band, 0, SALT_DEMO_BIOME) % 4` が 0 = 黄、1 = 緑、2 = 赤、3 = 平坦。
-- **洞窟:** `cave(x, y) = (2 * octave(x, y, 48, S_A) + octave(x, y, 24, S_B)) / 3` (各 `octave` は仕様 04 §4 の値ノイズで 0..=255)。`cave < 112` を空洞とする。
+- **洞窟 (Noita のような大きな洞窟、M12 で作り直した):** まず座標を歪める。`wx = x + (octave(x, y, 72, S_WARP_X) - 128) / 3`、`wy = y + (octave(x, y, 72, S_WARP_Y) - 128) / 3` (最大で約 ±42 セル)。`hall = (3 * octave(wx, wy, 64, S_A) + 2 * octave(wx, wy, 32, S_B)) / 5`、`worm_a = |octave(wx, wy, 90, S_WORM_A) - 128|`、`worm_b = |octave(wx, wy, 56, S_WORM_B) - 128|`、`rough = octave(x, y, 7, S_ROUGH) - 128`。次のどれかが成り立つセルを空洞とする: `hall < 96 + rough / 12` (ゆるい塊の大広間)、`worm_a < 11 + rough / 24`、`worm_b < 8 + rough / 24` (曲がりくねって枝分かれする坑道。値が 128 に近い帯)。各 `octave` は仕様 04 §4 の値ノイズで 0..=255、整数だけで決まる。
+- **窪みの水と溶岩:** 空洞のセルで、`x.div_euclid(384) != 0` のとき、48×48 の区画 `(bx, by)` が `hash(seed, 0, bx, by, S_POOL) % 5 == 0` なら、水面 `by * 48 + 14 + hash(seed, 0, bx, by, S_POOL_Y) % 24` 以下 (y が大きい側) の空洞を満たす。材質は、`hash(seed, 0, bx, by, S_POOL_KIND) % 100 < y * 100 / 640` なら `lava`、そうでなければ `water` (深いほど溶岩が多い)。区画の端から先は、シミュレーションで流れ出る。
 - **通路:** 横に長く続く通路。中心線 `tunnel_center(x) = 254 + (octave(x, 0, 240, S_TUNNEL) - 128) * free / 240`、`free = clamp(|x - 188| - 20, 0, 240)`。`|y - tunnel_center(x)| <= 9` を空洞にする。出入口 (`x = 188`) の付近は部屋の床の高さに揃う。
 - **壁の苔:** 空洞でないセルの上下左右 2 セル以内に空洞があり、バイオームが黄・緑・赤なら対応する `glow_moss_*`。それ以外は `stone`。
 - **塊:** 空洞のセルで、`x.div_euclid(384) != 0` (出発点の帯には置かない) のとき、`hash(seed, 0, x.div_euclid(48), y.div_euclid(48), S_BLOB) & 3 == 0` の領域かつ `octave(x, y, 12, S_BLOB2) < 64` なら `rainbow_rock_{rainbow_index(x)}`。同様に `S_GREEN` で `green_ore`、`S_ORANGE` で `orange_ore` (領域の条件は `& 7 == 0`、値の閾値は 44、`octave` の間隔は 10)。
@@ -112,6 +113,7 @@
 | `demo_ui_draws_a_frame` | 画面なしで egui の 3 フレームを出し、全パネルと重ね描きが図形を出す |
 | `rainbow_brush_colors_by_x` | 虹色ブラシが各セルの x 座標で色を選ぶ (直径 25 セルで 6 色以上) |
 | `demo_background_is_populated_once` | 背景の文字が 1 度だけ作られ、処理済み・既存の背景を上書きしない |
+| `demo_caves_are_connected_and_roomy` | seed 1〜4 の x = 384..1280 で、空洞の割合が 0.3〜0.6、通路 (x = 384) から 4 近傍でたどれる空洞が半分以上、幅 24・高さ 12 の広間があり、水 100 個以上・溶岩 50 個以上が窪みにある |
 | `demo_renders_on_gpu` | GPU があるとき、5 つの場面 (部屋・虹色の山・黄・緑・赤のバイオーム) をオフスクリーンに描いて画素を検査する。どの場面も暗い洞窟 (平均の明るさが小さい) で発光する材質が見え、部屋は看板の青、虹色の山は 11 色以上の縞、黄・緑・赤はそれぞれの色の壁が現れる。GPU なしではスキップする。`CHARON_REQUIRED_GPU_ADAPTER` を指定すると、その名前を含む離散 GPU でなければ失敗する。`CHARON_DEMO_CAPTURE_DIR` を指定すると各場面を `<場面>_world.rgba` (UI なし) と `<場面>_ui.rgba` (UI あり) で書き出す |
 
 ## 8. 暗さの設定

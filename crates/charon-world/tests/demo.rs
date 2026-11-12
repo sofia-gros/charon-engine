@@ -133,6 +133,80 @@ fn demo_room_is_open() {
     }
 }
 
+/// Noita のような洞窟 (仕様 09 §3): 空洞が広く、出入口の通路から大部分がつながり、広間があり、窪みに水と溶岩がある。
+#[test]
+fn demo_caves_are_connected_and_roomy() {
+    use charon_world::demo::open_at;
+    let table = table();
+    let generator = generator(&table);
+    let m = generator.materials;
+    let (x0, x1, h) = (384_i32, 1280_i32, WORLD_HEIGHT);
+    let width = (x1 - x0) as usize;
+    let index = |x: i32, y: i32| (y as usize) * width + (x - x0) as usize;
+    for seed in 1..=4 {
+        let mut open = vec![false; width * h as usize];
+        let mut open_count = 0usize;
+        for y in 0..h {
+            for x in x0..x1 {
+                if open_at(seed, x, y) {
+                    open[index(x, y)] = true;
+                    open_count += 1;
+                }
+            }
+        }
+        let ratio = open_count as f64 / open.len() as f64;
+        assert!((0.3..0.6).contains(&ratio), "seed {seed}: 空洞の割合 {ratio}");
+
+        // 出入口の通路の続き (x = 384) から、4 近傍でたどれる空洞。
+        let start = (x0, tunnel_center(seed, x0));
+        assert!(open[index(start.0, start.1)], "seed {seed}: 通路が空いている");
+        let mut seen = vec![false; open.len()];
+        let mut stack = vec![start];
+        seen[index(start.0, start.1)] = true;
+        let mut reached = 0usize;
+        while let Some((x, y)) = stack.pop() {
+            reached += 1;
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if (x0..x1).contains(&nx) && (0..h).contains(&ny) && open[index(nx, ny)] {
+                    let i = index(nx, ny);
+                    if !seen[i] {
+                        seen[i] = true;
+                        stack.push((nx, ny));
+                    }
+                }
+            }
+        }
+        let connected = reached as f64 / open_count as f64;
+        assert!(connected >= 0.5, "seed {seed}: 通路からたどれる空洞の割合 {connected}");
+
+        // 広間: 幅 24・高さ 12 の矩形が丸ごと空いている場所がある。
+        let mut hall = false;
+        'search: for y in (0..h - 12).step_by(3) {
+            for x in (x0..x1 - 24).step_by(3) {
+                if (0..12).all(|dy| (0..24).all(|dx| open[index(x + dx, y + dy)])) {
+                    hall = true;
+                    break 'search;
+                }
+            }
+        }
+        assert!(hall, "seed {seed}: 広間がある");
+
+        // 窪みの水と溶岩。
+        let (mut water, mut lava) = (0u32, 0u32);
+        for y in (0..h).step_by(2) {
+            for x in (x0..x1).step_by(2) {
+                match generator.material_at(seed, x, y) {
+                    Some(id) if id == m.water => water += 1,
+                    Some(id) if id == m.lava => lava += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert!(water >= 100 && lava >= 50, "seed {seed}: 水 {water}、溶岩 {lava}");
+    }
+}
+
 #[test]
 fn demo_moss_and_ores() {
     let table = table();
