@@ -28,6 +28,25 @@ fn fs_off(input: VertexOut) -> @location(0) vec4<f32> {
     return textureSample(scene, nearest, input.uv);
 }
 
+// xHigh: 光を滑らかに補間し (双一次補間の菱形の筋を消す)、光の近くを濃く発色させ、彩度を上げ、白飛びを丸める。
+@fragment
+fn fs_lit_rich(input: VertexOut) -> @location(0) vec4<f32> {
+    let color = textureSample(scene, nearest, input.uv);
+    let dims = vec2<f32>(textureDimensions(light));
+    let p = input.uv * dims - vec2<f32>(0.5);
+    let base = floor(p);
+    let f = p - base;
+    let smooth_f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let illumination = textureSample(light, linear, (base + vec2<f32>(0.5) + smooth_f) / dims).rgb;
+    var c = color.rgb * (vec3<f32>(ambient.x) + illumination);
+    c = c + color.rgb * illumination * illumination * 0.5;
+    let luma = dot(c, vec3<f32>(0.299, 0.587, 0.114));
+    c = mix(vec3<f32>(luma), c, 1.35);
+    let over = max(c - vec3<f32>(0.8), vec3<f32>(0.0));
+    c = min(c, vec3<f32>(0.8)) + over * 0.2 / (over + vec3<f32>(0.2));
+    return vec4<f32>(max(c, vec3<f32>(0.0)), color.a);
+}
+
 @fragment
 fn fs_lit(input: VertexOut) -> @location(0) vec4<f32> {
     let color = textureSample(scene, nearest, input.uv);

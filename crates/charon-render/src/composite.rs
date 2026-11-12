@@ -6,6 +6,8 @@ use crate::{FrameContext, GpuContext, LightQuality, RenderPass};
 pub struct CompositePass {
     off: wgpu::RenderPipeline,
     lit: wgpu::RenderPipeline,
+    /// xHigh 用の、補間・発色を強めた合成。
+    rich: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     nearest: wgpu::Sampler,
     linear: wgpu::Sampler,
@@ -120,6 +122,7 @@ impl CompositePass {
             ambient: ambient_buffer,
             off: pipeline("fs_off"),
             lit: pipeline("fs_lit"),
+            rich: pipeline("fs_lit_rich"),
             layout,
             nearest: ctx.device.create_sampler(&wgpu::SamplerDescriptor {
                 mag_filter: wgpu::FilterMode::Nearest,
@@ -177,10 +180,10 @@ impl RenderPass for CompositePass {
             })],
             ..Default::default()
         });
-        pass.set_pipeline(if frame.light_quality == LightQuality::Off {
-            &self.off
-        } else {
-            &self.lit
+        pass.set_pipeline(match frame.light_quality {
+            LightQuality::Off => &self.off,
+            LightQuality::XHigh => &self.rich,
+            LightQuality::Low | LightQuality::High => &self.lit,
         });
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..3, 0..1);

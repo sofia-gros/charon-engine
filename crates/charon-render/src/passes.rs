@@ -13,6 +13,15 @@ pub enum LightQuality {
     Low,
     #[default]
     High,
+    /// High より綺麗: 光を 2 倍の解像度で伝播し、なめらかな補間と色の強調 (彩度・発光の強調) をかける。
+    XHigh,
+}
+
+impl LightQuality {
+    /// 光のテクスチャの解像度は、シーン (セル) の 1 / `divisor`。
+    pub fn divisor(self) -> u32 {
+        if self == Self::XHigh { 2 } else { 4 }
+    }
 }
 
 /// 1 フレームを構成するパスが共有する入力とコマンド記録先。
@@ -54,6 +63,8 @@ pub struct PassList {
     light_views: [wgpu::TextureView; 2],
     light_format: wgpu::TextureFormat,
     quality: LightQuality,
+    /// いまの光のテクスチャの解像度の割り算 (`LightQuality::divisor`)。
+    light_divisor: u32,
     viewport: [u32; 2],
     scene_size: [u32; 2],
     zoom: u32,
@@ -77,7 +88,7 @@ impl PassList {
         let (scene, scene_view) = make_scene(ctx, scene_size);
         let (post_scene, post_view) = make_post_scene(ctx, [width.max(1), height.max(1)]);
         let light_format = light_format(ctx);
-        let (light, light_views) = make_light(ctx, scene_size, light_format);
+        let (light, light_views) = make_light(ctx, scene_size, light_format, 4);
         Self {
             passes: Vec::new(),
             scene,
@@ -88,6 +99,7 @@ impl PassList {
             light_views,
             light_format,
             quality: LightQuality::High,
+            light_divisor: 4,
             viewport: [width, height],
             scene_size,
             zoom,
@@ -120,7 +132,8 @@ impl PassList {
         let size = scene_dimensions(width, height, self.zoom);
         if size != self.scene_size {
             (self.scene, self.scene_view) = make_scene(ctx, size);
-            (self.light, self.light_views) = make_light(ctx, size, self.light_format);
+            (self.light, self.light_views) =
+                make_light(ctx, size, self.light_format, self.light_divisor);
             self.scene_size = size;
         }
         for pass in &mut self.passes {
@@ -180,6 +193,12 @@ impl PassList {
         output: &wgpu::TextureView,
         origin: [f32; 2],
     ) -> Result<(), CellPassError> {
+        // 品質が変わって光の解像度が変わるときは、光のテクスチャを作り直す。
+        if self.light_divisor != self.quality.divisor() {
+            self.light_divisor = self.quality.divisor();
+            (self.light, self.light_views) =
+                make_light(ctx, self.scene_size, self.light_format, self.light_divisor);
+        }
         let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("charon frame"),
         });
@@ -242,10 +261,11 @@ fn make_light(
     ctx: &GpuContext,
     scene_size: [u32; 2],
     format: wgpu::TextureFormat,
+    divisor: u32,
 ) -> ([wgpu::Texture; 2], [wgpu::TextureView; 2]) {
     let size = wgpu::Extent3d {
-        width: scene_size[0].div_ceil(4),
-        height: scene_size[1].div_ceil(4),
+        width: scene_size[0].div_ceil(divisor),
+        height: scene_size[1].div_ceil(divisor),
         depth_or_array_layers: 1,
     };
     let textures = std::array::from_fn(|_| {

@@ -63,9 +63,10 @@ impl<'a> CellReader<'a> {
     }
 }
 
-fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
-    let width = scene[0].div_ceil(4);
-    let height = scene[1].div_ceil(4);
+fn sources(world: &World, origin: [f32; 2], scene: [u32; 2], divisor: u32) -> Vec<u8> {
+    let d = divisor;
+    let width = scene[0].div_ceil(d);
+    let height = scene[1].div_ceil(d);
     let top = world
         .chunk_positions()
         .iter()
@@ -77,9 +78,9 @@ fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
     let mut sky_open = vec![true; width as usize];
     let mut scanned_until = top;
     for y in 0..height {
-        let wy = (origin[1].floor() as i32).saturating_add((y * 4 + 2) as i32);
+        let wy = (origin[1].floor() as i32).saturating_add((y * d + d / 2) as i32);
         for x in 0..width {
-            let wx = (origin[0].floor() as i32).saturating_add((x * 4 + 2) as i32);
+            let wx = (origin[0].floor() as i32).saturating_add((x * d + d / 2) as i32);
             for above in scanned_until..wy {
                 let cell = reader.get(CellPos::new(wx, above));
                 if cell.has(FLAG_BODY)
@@ -95,14 +96,14 @@ fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
             let center = reader.get(CellPos::new(wx, wy));
             let mut source = source_cell(center, world.materials(), sky_open[x as usize]);
             // 1 セル幅の火も四分の一解像度で失わない。
-            for dy in 0..4 {
-                for dx in 0..4 {
-                    if y * 4 + dy >= scene[1] || x * 4 + dx >= scene[0] {
+            for dy in 0..d {
+                for dx in 0..d {
+                    if y * d + dy >= scene[1] || x * d + dx >= scene[0] {
                         continue;
                     }
                     let pos = CellPos::new(
-                        (origin[0].floor() as i32).saturating_add((x * 4 + dx) as i32),
-                        (origin[1].floor() as i32).saturating_add((y * 4 + dy) as i32),
+                        (origin[0].floor() as i32).saturating_add((x * d + dx) as i32),
+                        (origin[1].floor() as i32).saturating_add((y * d + dy) as i32),
                     );
                     let emitted = source_cell(reader.get(pos), world.materials(), false);
                     for channel in 0..3 {
@@ -117,12 +118,12 @@ fn sources(world: &World, origin: [f32; 2], scene: [u32; 2]) -> Vec<u8> {
     bytes
 }
 
-fn texture(ctx: &GpuContext, scene: [u32; 2]) -> wgpu::Texture {
+fn texture(ctx: &GpuContext, scene: [u32; 2], divisor: u32) -> wgpu::Texture {
     ctx.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("charon light sources"),
         size: wgpu::Extent3d {
-            width: scene[0].div_ceil(4),
-            height: scene[1].div_ceil(4),
+            width: scene[0].div_ceil(divisor),
+            height: scene[1].div_ceil(divisor),
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -138,9 +139,13 @@ fn texture(ctx: &GpuContext, scene: [u32; 2]) -> wgpu::Texture {
 pub struct LightPass {
     source: wgpu::Texture,
     size: [u32; 2],
+    /// `source` の解像度の割り算。
+    divisor: u32,
     layout: wgpu::BindGroupLayout,
     prepare: wgpu::RenderPipeline,
     propagate: wgpu::RenderPipeline,
+    /// xHigh (2 倍の解像度) 用。減衰を 1 セルあたりそろえる。
+    propagate_fine: wgpu::RenderPipeline,
 }
 
 impl LightPass {
@@ -196,14 +201,17 @@ impl LightPass {
             })
         };
         Self {
-            source: texture(ctx, scene_size),
+            source: texture(ctx, scene_size, 4),
             size: scene_size,
+            divisor: 4,
             layout,
             prepare: pipeline("fs_prepare"),
             propagate: pipeline("fs_propagate"),
+            propagate_fine: pipeline("fs_propagate_fine"),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw(
         &self,
         ctx: &GpuContext,
@@ -211,7 +219,8 @@ impl LightPass {
         source: &wgpu::TextureView,
         previous: &wgpu::TextureView,
         target: &wgpu::TextureView,
-        prepare: bool,
+        pipeline: &wgpu::RenderPipeline,
+        _prepare: bool,
     ) {
         let bind = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("charon light bind"),
@@ -240,7 +249,7 @@ impl LightPass {
             })],
             ..Default::default()
         });
-        pass.set_pipeline(if prepare { &self.prepare } else { &self.propagate });
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind, &[]);
         pass.draw(0..3, 0..1);
     }
@@ -270,18 +279,28 @@ impl RenderPass for LightPass {
                     16
                 }
             }
+            // 解像度が 2 倍なので、同じ距離まで届くには 2 倍の歩数が要る。
+            LightQuality::XHigh => {
+                if cfg!(target_os = "android") {
+                    16
+                } else {
+                    32
+                }
+            }
         };
+        let divisor = frame.light_quality.divisor();
         let scene = frame.camera.viewport;
-        if self.size != scene {
-            self.source = texture(ctx, scene);
+        if self.size != scene || self.divisor != divisor {
+            self.source = texture(ctx, scene, divisor);
             self.size = scene;
+            self.divisor = divisor;
         }
         let size = wgpu::Extent3d {
-            width: scene[0].div_ceil(4),
-            height: scene[1].div_ceil(4),
+            width: scene[0].div_ceil(divisor),
+            height: scene[1].div_ceil(divisor),
             depth_or_array_layers: 1,
         };
-        let bytes = sources(frame.world, frame.camera.origin, scene);
+        let bytes = sources(frame.world, frame.camera.origin, scene, divisor);
         ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.source,
@@ -298,11 +317,12 @@ impl RenderPass for LightPass {
             size,
         );
         let source = self.source.create_view(&Default::default());
-        self.draw(ctx, frame, &source, &source, frame.light[0], true);
+        self.draw(ctx, frame, &source, &source, frame.light[0], &self.prepare, true);
         for iteration in 0..iterations {
             let from = (iteration % 2) as usize;
             let to = 1 - from;
-            self.draw(ctx, frame, &source, frame.light[from], frame.light[to], false);
+            let pipeline = if divisor == 2 { &self.propagate_fine } else { &self.propagate };
+            self.draw(ctx, frame, &source, frame.light[from], frame.light[to], pipeline, false);
         }
     }
 }
@@ -322,12 +342,12 @@ mod tests {
         assert_eq!(source_cell(Cell::default(), world.materials(), true)[..3], SKY);
         assert_eq!(source_cell(Cell::default(), world.materials(), false)[..3], [0, 0, 0]);
         fill(&mut world, 0, 8, 63, 8, '#');
-        let pixels = sources(&world, [0.0, 0.0], [64, 64]);
+        let pixels = sources(&world, [0.0, 0.0], [64, 64], 4);
         let at = |x: usize, y: usize| &pixels[(y * 16 + x) * 4..(y * 16 + x) * 4 + 3];
         assert_eq!(at(8, 4), [0, 0, 0]);
         assert_eq!(at(8, 0), SKY);
         place(&mut world, 32, 16, 'l'); // 中央サンプル (34,18) から外れた 1 セルの光源。
-        let pixels = sources(&world, [0.0, 0.0], [64, 64]);
+        let pixels = sources(&world, [0.0, 0.0], [64, 64], 4);
         assert!(pixels[(4 * 16 + 8) * 4] > 0);
     }
 }

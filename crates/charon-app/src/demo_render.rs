@@ -51,6 +51,8 @@ struct Scene {
     tick: u64,
     /// 滑らかな剛体のスプライトを渡さない (スタンプしたセルが描かれないことを確かめる)。
     skip_smooth: bool,
+    /// 光の品質。
+    light: LightQuality,
 }
 
 impl Scene {
@@ -69,6 +71,7 @@ impl Scene {
             deep: Some(crate::demo::demo_deep_background(SEED)),
             tick: 0,
             skip_smooth: false,
+            light: LightQuality::High,
         }
     }
 
@@ -262,7 +265,7 @@ fn render_world(gpu: &GpuContext, scene: &mut Scene, center: CellPos) -> (wgpu::
         clock.set_tick(scene.tick);
     }
     passes.set_zoom(gpu, ZOOM);
-    passes.set_light_quality(LightQuality::High);
+    passes.set_light_quality(scene.light);
     let chunks = scene.world.chunk_positions();
     scene.generator.populate_background(SEED, &chunks, &mut scene.background, &mut scene.populated);
     let origin = Scene::origin(center);
@@ -560,6 +563,35 @@ fn demo_renders_hook() {
 }
 
 /// 空の世界 (チャンクなし) の場面。画面の全体が「空」なので、奥の背景だけが見える。
+/// xHigh: High と違う絵になり、光のあたる部分の色が濃く (彩度が高く) なる。画像は `CHARON_DEMO_CAPTURE_DIR` に出す。
+#[test]
+fn demo_renders_xhigh_light() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = rainbow_scene(&pack);
+    scene.light = LightQuality::High;
+    let (_, high) = render_world(&gpu, &mut scene, center);
+    scene.light = LightQuality::XHigh;
+    let (_, xhigh) = render_world(&gpu, &mut scene, center);
+    assert_ne!(high, xhigh, "xHigh は High と違う絵になる");
+    let saturation = |pixels: &[u8]| -> f64 {
+        let (mut sum, mut count) = (0.0, 0u32);
+        for px in pixels.as_chunks::<4>().0 {
+            let (max, min) = (px[..3].iter().max().unwrap(), px[..3].iter().min().unwrap());
+            if *max > 60 {
+                sum += f64::from(max - min) / f64::from(*max);
+                count += 1;
+            }
+        }
+        sum / f64::from(count.max(1))
+    };
+    let (sh, sx) = (saturation(&high), saturation(&xhigh));
+    println!("light saturation: High {sh:.3}, xHigh {sx:.3}");
+    assert!(sx > sh, "xHigh のほうが発色が濃い ({sh:.3} → {sx:.3})");
+    capture("light_high", "world", &high);
+    capture("light_xhigh", "world", &xhigh);
+}
+
 fn empty_scene(pack: &ModPack) -> (Scene, CellPos) {
     (Scene::new(pack), CellPos::new(500, 300))
 }

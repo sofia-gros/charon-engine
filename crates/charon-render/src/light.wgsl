@@ -15,6 +15,20 @@ fn fs_prepare(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> 
     return textureLoad(sources, vec2<i32>(position.xy), 0);
 }
 
+// xHigh: 解像度が 2 倍なので、1 歩が進む距離は半分。1 セルあたりの減衰を合わせるため、減衰は 0.92 の平方根 (約 0.959)。
+@fragment
+fn fs_propagate_fine(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = vec2<i32>(position.xy);
+    let maximum = vec2<i32>(textureDimensions(previous)) - vec2<i32>(1);
+    let source = textureLoad(sources, p, 0);
+    let up = textureLoad(previous, clamp(p + vec2<i32>(0, -1), vec2<i32>(0), maximum), 0).rgb;
+    let right = textureLoad(previous, clamp(p + vec2<i32>(1, 0), vec2<i32>(0), maximum), 0).rgb;
+    let down = textureLoad(previous, clamp(p + vec2<i32>(0, 1), vec2<i32>(0), maximum), 0).rgb;
+    let left = textureLoad(previous, clamp(p + vec2<i32>(-1, 0), vec2<i32>(0), maximum), 0).rgb;
+    let nearby = max(max(up, right), max(down, left));
+    return vec4<f32>(max(source.rgb, nearby * source.a * 0.959), source.a);
+}
+
 @fragment
 fn fs_propagate(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<i32>(position.xy);

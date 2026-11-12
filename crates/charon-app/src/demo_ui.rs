@@ -310,6 +310,7 @@ impl DemoUi {
                         (LightQuality::Off, "Off"),
                         (LightQuality::Low, "Low"),
                         (LightQuality::High, "High"),
+                        (LightQuality::XHigh, "xHigh"),
                     ] {
                         ui.selectable_value(&mut controls.light_quality, quality, name);
                     }

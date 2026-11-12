@@ -293,7 +293,10 @@ mod tests {
         background.cells[10 * 64 + 10] = world.materials().id("wood").unwrap();
         background.dirty = Some(Rect::point(10, 10));
         let view = output.create_view(&Default::default());
-        for quality in [LightQuality::Off, LightQuality::Low, LightQuality::High] {
+        // 最後の品質 (High) の画素を検査する。XHigh は先に通して、品質の切り替えで落ちないことも確かめる。
+        for quality in
+            [LightQuality::Off, LightQuality::Low, LightQuality::XHigh, LightQuality::High]
+        {
             passes.set_light_quality(quality);
             passes
                 .render_with_game(
