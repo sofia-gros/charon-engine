@@ -30,6 +30,23 @@ use rapier2d::prelude::{
 pub const CELLS_PER_METER: f32 = 16.0;
 pub const CELL_MASS_SCALE: f32 = 1.0 / (1000.0 * CELLS_PER_METER * CELLS_PER_METER);
 
+/// 剛体の描き方 (仕様 05 §11)。物理・衝突・押しのけ・光は、どちらでも同じ。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BodyRender {
+    /// スタンプしたセルを、セルの格子の上にそのまま描く。
+    #[default]
+    Dots,
+    /// 画面の解像度で、正確な位置と角度で、縁を滑らかに描く。スタンプするセルに `FLAG_SMOOTH` を付ける。
+    Smooth,
+}
+
+/// 剛体の重心の位置 (セル座標) と角度 (ラジアン)。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyPose {
+    pub center: [f32; 2],
+    pub angle: f32,
+}
+
 /// セル配列と物理エンジンの剛体を結び付ける。origin はセル単位の重心。
 #[derive(Debug)]
 pub struct PixelBody {
@@ -41,6 +58,8 @@ pub struct PixelBody {
     pub origin: [f32; 2],
     /// その場で回し続ける角速度 (ラジアン / 秒)。`Some` の間、剛体は運動学的で、位置は動かない。
     pub spin: Option<f32>,
+    /// ドットか滑らかか。保存しないので、読み込んだあとゲームが指定し直す。
+    pub render: BodyRender,
     damaged: bool,
 }
 
@@ -166,6 +185,7 @@ impl PhysicsEngine {
             stamped: Vec::new(),
             origin,
             spin: None,
+            render: BodyRender::Dots,
             damaged: false,
         });
         Ok(index)
@@ -197,6 +217,24 @@ impl PhysicsEngine {
             }
         }
         true
+    }
+
+    /// 剛体 `index` の描き方を変える (仕様 05 §11)。次のスタンプから反映する。`index` がなければ `false`。
+    pub fn set_render(&mut self, index: usize, render: BodyRender) -> bool {
+        let Some(body) = self.bodies.get_mut(index) else { return false };
+        body.render = render;
+        true
+    }
+
+    /// 剛体 `index` の重心の位置 (セル座標) と角度。
+    pub fn body_pose(&self, index: usize) -> Option<BodyPose> {
+        let body = self.bodies.get(index)?;
+        let rigid = self.world.bodies.get(body.handle)?;
+        let t = rigid.translation();
+        Some(BodyPose {
+            center: [t.x * CELLS_PER_METER, t.y * CELLS_PER_METER],
+            angle: rigid.rotation().angle(),
+        })
     }
 
     /// 手でつかんだ剛体を固定し、重力と慣性を一時的に止める。

@@ -239,6 +239,8 @@ T10.7 (2026-11-12 の依頼): 部屋の十字 (X 字) の剛体を、その場�
 
 T10.8 (2026-11-12 の依頼): 参照の「動く虹色」は、前景のセルではなく**背景のさらに奥で動き回るアニメーションの shader** だった。前景の虹色の岩 (T10.2) を取り除き、エンジンに `DeepBackgroundPass` (視差で動き、自ら動き回り、光の影響を受けず、前景・背景のセルの後ろに隠れる) を足し、デモ (ゲーム側) が `AppOptions::deep_background` で渡す。砂の虹色 (ブラシ) は変えない。確認は `demo_moss_and_ores`、`demo_renders_deep_background`、`deep_background_is_behind_cells` ほか ([`M10-deep-rainbow.png`](screenshots/M10-deep-rainbow.png))。
 
+T10.9 (2026-11-12 の依頼): 剛体の描画を、剛体ごとに**ドット**か**滑らか**から選べるようにする (世界の全体はドットのまま、家具などだけを滑らかに見せる、といった使い方のためのエンジンの機能)。`charon-physics` に `BodyRender`・`set_render`・`body_pose`、滑らかな剛体のスタンプに付く `FLAG_SMOOTH` (`charon-core`、セルの描画では描かない)、`charon-render` に `SmoothBodyPass` (画面の解像度・正確な角度・アンチエイリアスした縁・光を掛ける、`PassList::render_with_bodies`)。デモ (ゲーム側) は、ドットの十字と並べて滑らかな十字を足す。確認は `smooth_body_stamps_flagged_cells`、`demo_has_a_smooth_cross`、`demo_renders_smooth_body` ほか ([`M10-smooth-cross.png`](screenshots/M10-smooth-cross.png))。
+
 T10.6 では RTX 4060 (Vulkan) で 5 場面をオフスクリーンに描き、参照動画のフレームと見比べた。見え方は [`docs/screenshots/M10-*.png`](screenshots/) にある。参照のフレームはこのリポジトリに入れない。ウィンドウでの操作の目視、Web・Android・Linux の確認は未検証で、成功とは扱わない。
 
 ## M11 Noita 型ゲームの中核

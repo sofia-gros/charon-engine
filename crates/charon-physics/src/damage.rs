@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use charon_core::cell::{Cell, FLAG_BODY, MaterialId};
+use charon_core::cell::{Cell, FLAG_BODY, FLAG_SMOOTH, MaterialId};
 use charon_core::world::World;
 use rapier2d::prelude::{Rotation, Vector};
 
@@ -83,6 +83,8 @@ impl PhysicsEngine {
                 continue;
             };
             let (width, height, origin) = (body.width, body.height, body.origin);
+            // 壊れた破片は、元の剛体と同じ描き方を引き継ぐ (仕様 05 §11)。
+            let render = body.render;
             let cells = body.cells.clone();
             let translation = rigid.translation();
             let angle = rigid.rotation().angle();
@@ -107,7 +109,7 @@ impl PhysicsEngine {
                                 (linear.x * CELLS_PER_METER - angular * ry) / 60.0,
                                 (linear.y * CELLS_PER_METER + angular * rx) / 60.0,
                             ],
-                            cell: cells[offset].with(FLAG_BODY, false),
+                            cell: cells[offset].with(FLAG_BODY, false).with(FLAG_SMOOTH, false),
                         });
                     }
                     continue;
@@ -133,6 +135,7 @@ impl PhysicsEngine {
                         return Err(error);
                     }
                 };
+                self.bodies[new_index].render = render;
                 let new_origin = self.bodies[new_index].origin;
                 let dx = new_origin[0] - origin[0];
                 let dy = new_origin[1] - origin[1];

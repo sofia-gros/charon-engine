@@ -7,7 +7,7 @@ use std::sync::Arc;
 use charon_core::cell::{Cell, MaterialId};
 use charon_core::world::World;
 use charon_game::mods::{ModDirectory, ModPack};
-use charon_physics::PhysicsEngine;
+use charon_physics::{BodyRender, PhysicsEngine};
 use charon_render::DeepBackgroundParams;
 use charon_world::demo::{DemoGenerator, DemoMaterials, PLAYER_SPAWN};
 use charon_world::save::WorldMeta;
@@ -106,24 +106,37 @@ fn shape(
 /// 十字 (`X`) の回る速さ (ラジアン / 秒)。約 2 秒で 1 周する。
 pub(crate) const CROSS_SPIN: f32 = 3.0;
 
-/// 十字の剛体 (16×16、`ice` だけ) を、その場でくるくる回す (ゲーム側の指定、仕様 09 §6)。
-/// 保存・読み込みは回転の指定を持たないので、新しい世界でも読み込んだ世界でも呼ぶ。
-pub(crate) fn spin_cross(physics: &mut PhysicsEngine, ice: MaterialId) {
-    let cross = physics.bodies.iter().position(|body| {
-        body.width == 16
-            && body.height == 16
-            && body
-                .cells
-                .iter()
-                .all(|cell| cell.material == MaterialId::EMPTY || cell.material == ice)
-            && body.cells.iter().any(|cell| cell.material == ice)
-    });
-    if let Some(index) = cross {
-        physics.set_spin(index, Some(CROSS_SPIN));
+/// 十字の剛体 (16×16、`ice` だけ) を、その場でくるくる回す (ゲーム側の指定、仕様 09 §6・仕様 05 §11)。
+/// 1 つ目の十字は**ドット**で `+CROSS_SPIN`、2 つ目の十字は**滑らか**で逆向き (`-CROSS_SPIN`)。
+/// 保存・読み込みは回転と描き方の指定を持たないので、新しい世界でも読み込んだ世界でも呼ぶ。
+pub(crate) fn spin_crosses(physics: &mut PhysicsEngine, ice: MaterialId) {
+    let crosses: Vec<usize> = physics
+        .bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, body)| {
+            body.width == 16
+                && body.height == 16
+                && body
+                    .cells
+                    .iter()
+                    .all(|cell| cell.material == MaterialId::EMPTY || cell.material == ice)
+                && body.cells.iter().any(|cell| cell.material == ice)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if let Some(&dots) = crosses.first() {
+        physics.set_render(dots, BodyRender::Dots);
+        physics.set_spin(dots, Some(CROSS_SPIN));
+    }
+    if let Some(&smooth) = crosses.get(1) {
+        physics.set_render(smooth, BodyRender::Smooth);
+        physics.set_spin(smooth, Some(-CROSS_SPIN));
     }
 }
 
-/// 部屋に置く X 字 (`ice`、空中でくるくる回る)、床に置く輪 (`wood`)、Z 字 (`stone`) の剛体 3 つ (仕様 09 §6)。
+/// 部屋に置く剛体 4 つ (仕様 09 §6、仕様 05 §11): ドットの X 字 (`ice`、空中でくるくる回る)、床に置く輪 (`wood`)・Z 字
+/// (`stone`)、そして**滑らか**な X 字 (`ice`、上の方で逆向きに回る)。
 pub fn demo_bodies(world: &World) -> Result<PhysicsEngine, Box<dyn Error>> {
     let materials = world.materials();
     let id = |name: &str| materials.id(name).ok_or_else(|| format!("材質 {name} がありません"));
@@ -139,7 +152,10 @@ pub fn demo_bodies(world: &World) -> Result<PhysicsEngine, Box<dyn Error>> {
     physics.create_body(19, 19, ring, materials, [112.0, 244.0])?;
     let z_cells = shape(16, 16, stone, |x, y| y <= 2 || y >= 13 || (x + y - 15).abs() <= 1);
     physics.create_body(16, 16, z_cells, materials, [144.0, 246.0])?;
-    spin_cross(&mut physics, ice);
+    // 滑らかな十字: ドットの十字と同じ形。輪とドットの十字に触れない、上の方に浮かせる。
+    let smooth_cells = shape(16, 16, ice, |x, y| (x - y).abs() <= 2 || (x + y - 15).abs() <= 2);
+    physics.create_body(16, 16, smooth_cells, materials, [60.0, 226.0])?;
+    spin_crosses(&mut physics, ice);
     Ok(physics)
 }
 
@@ -163,7 +179,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
         Some(mut physics) => {
             // 保存した十字は、読み込んだあとも回し続ける。
             if let Some(ice) = materials.id("ice") {
-                spin_cross(&mut physics, ice);
+                spin_crosses(&mut physics, ice);
             }
             physics
         }
@@ -332,6 +348,75 @@ mod tests {
         assert_ne!(run(1, 150).0, run(2, 150).0);
     }
 
+    /// 仕様 05 §11: 2 つ目の十字は**滑らか**で、逆向きに回り、スタンプしたセルに `FLAG_SMOOTH` が付く。
+    /// 1 つ目の十字・輪・Z 字は従来どおりドットで、`FLAG_SMOOTH` は付かない (画面なし)。
+    #[test]
+    fn demo_has_a_smooth_cross() {
+        use charon_core::cell::{FLAG_BODY, FLAG_SMOOTH};
+        for seed in 1..=3 {
+            let dir = TestDir::new();
+            let OpenDemo { session, options, .. } = open_demo(&config(&dir), seed).unwrap();
+            let DemoSession { mut world, streamer, save_root, metadata, mut physics } = session;
+            let mut streaming = Some(StreamingState { streamer, save_root, metadata });
+            let mut initialized = false;
+            let mut entities = EntityWorld::new();
+            let mut player = None;
+            let mut spawn = options.player_spawn;
+            let mut enemy_spawns = Vec::new();
+            let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
+            let mut physics_ms = 0.0;
+            for _ in 0..200 {
+                Sim {
+                    world: &mut world,
+                    streaming: &mut streaming,
+                    physics: &mut physics,
+                    initialized: &mut initialized,
+                    entities: &mut entities,
+                    player: &mut player,
+                    spawn: &mut spawn,
+                    game: &mut game,
+                    definitions: options.definitions.as_deref(),
+                    loadout: options.player.as_ref(),
+                    enemy_spawns: &mut enemy_spawns,
+                }
+                .tick(
+                    ChunkPos::new(0, 3),
+                    PlayerInput::default(),
+                    GameInput::default(),
+                    &mut physics_ms,
+                )
+                .unwrap();
+            }
+            let renders: Vec<BodyRender> = physics.bodies.iter().map(|b| b.render).collect();
+            assert_eq!(
+                renders,
+                [BodyRender::Dots, BodyRender::Dots, BodyRender::Dots, BodyRender::Smooth],
+                "seed {seed}"
+            );
+            assert_eq!(physics.bodies[0].spin, Some(CROSS_SPIN));
+            assert_eq!(physics.bodies[3].spin, Some(-CROSS_SPIN), "逆向きに回る");
+            let flags = |index: usize| -> (usize, usize, usize) {
+                let stamped = &physics.bodies[index].stamped;
+                let body = stamped.iter().filter(|&&p| world.get(p).has(FLAG_BODY)).count();
+                let smooth = stamped.iter().filter(|&&p| world.get(p).has(FLAG_SMOOTH)).count();
+                (stamped.len(), body, smooth)
+            };
+            let (len, body, smooth) = flags(3);
+            assert!(
+                len > 80 && body == len && smooth == len,
+                "seed {seed}: 滑らかな十字 {len}/{body}/{smooth}"
+            );
+            for index in 0..3 {
+                let (len, body, smooth) = flags(index);
+                assert!(
+                    len > 20 && body == len && smooth == 0,
+                    "seed {seed}: 物体 {index} はドット"
+                );
+            }
+            streaming.take().unwrap().streamer.finish().unwrap();
+        }
+    }
+
     /// 部屋の十字 (`X`) は、その場でくるくる回り続ける。輪と Z 字は回らない (動的な剛体のまま)。
     #[test]
     fn demo_cross_spins() {
@@ -346,7 +431,7 @@ mod tests {
             let DemoSession { mut world, streamer, save_root, metadata, mut physics } = session;
             // 十字だけが回る指定になっている。
             let spinning: Vec<bool> = physics.bodies.iter().map(|b| b.spin.is_some()).collect();
-            assert_eq!(spinning, [true, false, false], "seed {seed}");
+            assert_eq!(spinning, [true, false, false, true], "seed {seed}");
             let mut streaming = Some(StreamingState { streamer, save_root, metadata });
             let mut initialized = false;
             let mut entities = EntityWorld::new();
@@ -620,7 +705,7 @@ mod tests {
         .unwrap();
         let world = pack.new_world(1);
         let physics = demo_bodies(&world).unwrap();
-        assert_eq!(physics.bodies.len(), 3);
+        assert_eq!(physics.bodies.len(), 4);
         let [x0, y0, x1, y1] = charon_world::demo::ROOM_INTERIOR;
         for body in &physics.bodies {
             let center =

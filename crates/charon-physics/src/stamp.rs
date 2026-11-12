@@ -1,13 +1,13 @@
 //! 仕様 05 §3: 剛体の逆写像スタンプとアンスタンプ。
 
-use charon_core::cell::{Cell, FLAG_BODY, MaterialId};
+use charon_core::cell::{Cell, FLAG_BODY, FLAG_SMOOTH, MaterialId};
 use charon_core::coords::CellPos;
 use charon_core::world::World;
 use rapier2d::prelude::PhysicsWorld;
 
 use crate::displace;
 use crate::particle::Particle;
-use crate::{CELLS_PER_METER, PixelBody};
+use crate::{BodyRender, CELLS_PER_METER, PixelBody};
 
 #[derive(Clone, Copy)]
 pub(crate) struct StampTransform {
@@ -106,7 +106,9 @@ pub(crate) fn stamp(
             {
                 continue;
             }
-            world.set(pos, cell.with(FLAG_BODY, true));
+            // 滑らかな剛体のセルは、セルの描画では描かず、滑らかな描画のパスが描く (仕様 05 §11)。
+            let smooth = body.render == BodyRender::Smooth;
+            world.set(pos, cell.with(FLAG_BODY, true).with(FLAG_SMOOTH, smooth));
             body.stamped.push(pos);
         }
     }

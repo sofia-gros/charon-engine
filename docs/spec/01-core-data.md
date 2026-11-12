@@ -69,6 +69,7 @@ pub const FLAG_FLOW_RIGHT: u8 = 1 << 2; // 液体・気体の水平移動の向�
 pub const FLAG_BURNING: u8 = 1 << 3;  // 燃焼中 (仕様 03 §4)
 pub const FLAG_BODY: u8 = 1 << 4;     // 剛体が書き込んだセル (仕様 05)。保存しない
 pub const FLAG_BOUNCED: u8 = 1 << 5;  // 液体・気体が水平移動で 1 回はね返った (仕様 02 §8)
+pub const FLAG_SMOOTH: u8 = 1 << 6;   // 滑らかな剛体が書いたセル。セルの描画は描かない (仕様 05 §11)。保存しない
 ```
 
 `Cell::default()` は「空」(全フィールド 0) である。

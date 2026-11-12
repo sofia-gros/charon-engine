@@ -1,6 +1,6 @@
 //! 仕様 07 §5: 爆風のセルを粒子へ移し、剛体には既存の損傷経路を使う。
 
-use charon_core::cell::{Cell, FLAG_BODY, MaterialId};
+use charon_core::cell::{Cell, FLAG_BODY, FLAG_SMOOTH, MaterialId};
 use charon_core::coords::CellPos;
 use charon_core::world::World;
 
@@ -51,7 +51,7 @@ pub fn explode(
             let particle = Particle {
                 pos: [x as f32 + 0.5, y as f32 + 0.5],
                 vel: velocity,
-                cell: cell.with(FLAG_BODY, false),
+                cell: cell.with(FLAG_BODY, false).with(FLAG_SMOOTH, false),
             };
             if cell.has(FLAG_BODY) {
                 let owner = physics.bodies.iter().enumerate().find_map(|(index, body)| {

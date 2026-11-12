@@ -41,11 +41,11 @@ use charon_game::defs::Definitions;
 use charon_game::game::{GameInput, GameState};
 use charon_game::wand::SpellTable;
 use charon_game::{EntityId, EntityWorld};
-use charon_physics::{CELLS_PER_METER, PhysicsEngine};
+use charon_physics::{BodyRender, CELLS_PER_METER, PhysicsEngine};
 use charon_render::{
     BackgroundLayerPass, BackgroundPass, BackgroundSource, CellPass, CompositePass,
     DeepBackgroundClock, DeepBackgroundParams, DeepBackgroundPass, EntityPass, FullscreenPass,
-    GpuContext, LightPass, PassList,
+    GpuContext, LightPass, PassList, SmoothBodyPass, SmoothBodySprite,
 };
 use charon_world::background::BackgroundWorld;
 use charon_world::building::{BuildOp, Layer, apply_build};
@@ -826,11 +826,13 @@ impl App {
             visible_chunks(&self.world, &self.background, origin, [scene_width, scene_height]);
         let mut background = BackgroundAdapter(&mut self.background);
         let sprites = sprites(&self.entities, &self.game);
-        if let Err(err) = passes.render_with_game(
+        let smooth = smooth_sprites(&self.physics);
+        if let Err(err) = passes.render_with_bodies(
             gpu,
             &mut self.world,
             Some(&mut background),
             &sprites,
+            &smooth,
             &visible,
             &view,
             origin,
@@ -904,9 +906,33 @@ pub fn build_passes_with(
         passes.add(pass);
         clock
     });
+    // 滑らかな剛体 (仕様 05 §11)。奥の背景のあと、後処理の前。
+    passes.add(SmoothBodyPass::new(gpu, materials, ambient));
     passes
         .add(FullscreenPass::post_process(gpu, include_str!("../../charon-render/src/bloom.wgsl")));
     Ok((passes, clock))
+}
+
+/// 描き方が `Smooth` の剛体から、滑らかな描画 (仕様 05 §11) の入力を作る。`id` は剛体の添字。
+pub(crate) fn smooth_sprites(physics: &PhysicsEngine) -> Vec<SmoothBodySprite<'_>> {
+    physics
+        .bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, body)| body.render == BodyRender::Smooth)
+        .filter_map(|(index, body)| {
+            let pose = physics.body_pose(index)?;
+            Some(SmoothBodySprite {
+                id: index as u64,
+                width: body.width,
+                height: body.height,
+                cells: &body.cells,
+                center: pose.center,
+                origin: body.origin,
+                angle: pose.angle,
+            })
+        })
+        .collect()
 }
 
 /// 前景が退避されても、独立した背景チャンクは可視領域で描く。

@@ -66,6 +66,19 @@ defs.layer(
 エンジンの実行部分に呪文名や体力の値は書かれていません。デモ (`charon-demo`) も同じ手順で、
 `assets/mods/fse_demo/` の RON と `crates/charon-app/src/demo.rs` の `demo_loadout()` だけがゲーム側です。
 
+## 滑らかな剛体 (ドットと滑らかを選ぶ)
+
+剛体は、既定ではスタンプしたセルがそのまま格子の上に描かれます (ドット)。剛体ごとに**滑らか**を選ぶと、画面の解像度で、正確な位置と角度で、縁を滑らかに描きます。世界の全体はドットのまま、家具などだけを滑らかに見せたいときに使います。物理 (衝突・押しのけ・光の遮りと発光) は、どちらでも同じです。
+
+```rust
+use charon_physics::BodyRender;
+
+let table = physics.create_body(width, height, cells, &materials, [x, y])?;
+physics.set_render(table, BodyRender::Smooth); // BodyRender::Dots に戻せる
+```
+
+`charon-app` は、滑らかな剛体を自動で描きます。自分で `PassList` を組むときは `SmoothBodyPass::new(gpu, &materials, ambient)` を合成のあと・後処理の前に追加し、毎フレーム `PassList::render_with_bodies` に `SmoothBodySprite` (`PixelBody` の `cells`・`origin` と `PhysicsEngine::body_pose`) を渡します。描画の種類は保存されないので、読み込んだあとに指定し直してください。壊れた剛体の破片は、元の描き方を引き継ぎます。
+
 ## 背景のさらに奥の shader (動き回る虹色)
 
 ゲームは、背景のさらに奥で動き回る shader を足せます (`charon-render` の `DeepBackgroundPass`)。光の影響を受けず、前景・背景のセルの後ろに隠れ、洞窟の空間にだけ見えます。`AppOptions` に渡します。

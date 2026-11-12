@@ -49,6 +49,8 @@ struct Scene {
     deep: Option<DeepBackgroundParams>,
     /// 塊を動かす時刻 (tick)。
     tick: u64,
+    /// 滑らかな剛体のスプライトを渡さない (スタンプしたセルが描かれないことを確かめる)。
+    skip_smooth: bool,
 }
 
 impl Scene {
@@ -66,6 +68,7 @@ impl Scene {
             player: None,
             deep: Some(crate::demo::demo_deep_background(SEED)),
             tick: 0,
+            skip_smooth: false,
         }
     }
 
@@ -269,12 +272,14 @@ fn render_world(gpu: &GpuContext, scene: &mut Scene, center: CellPos) -> (wgpu::
     let output = target(gpu);
     let view = output.create_view(&Default::default());
     let mut background = BackgroundAdapter(&mut scene.background);
+    let smooth = if scene.skip_smooth { Vec::new() } else { crate::smooth_sprites(&scene.physics) };
     passes
-        .render_with_game(
+        .render_with_bodies(
             gpu,
             &mut scene.world,
             Some(&mut background),
             &sprites,
+            &smooth,
             &visible,
             &view,
             origin,
@@ -683,6 +688,135 @@ fn deep_background_is_behind_cells() {
     let everything = same_fraction(&without, &with, (0, 0, 1600, 900), (0, 0), 0);
     assert!(everything < 0.985, "石の外には塊がある ({everything})");
     assert!(vivid(&with) > vivid(&without) + 5_000);
+}
+
+/// 画素の矩形 (セル座標 → 画素)。
+fn cell_rect(center: CellPos, x0: i32, y0: i32, x1: i32, y1: i32) -> (usize, usize, usize, usize) {
+    let origin = Scene::origin(center);
+    let px = |cell: i32, o: f32| (((cell as f32 - o) * ZOOM as f32).max(0.0)) as usize;
+    (
+        px(x0, origin[0]),
+        px(y0, origin[1]),
+        px(x1, origin[0]).min(WIDTH as usize),
+        px(y1, origin[1]).min(HEIGHT as usize),
+    )
+}
+
+fn region_pixels(pixels: &[u8], (x0, y0, x1, y1): (usize, usize, usize, usize)) -> Vec<[u8; 4]> {
+    let mut out = Vec::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (y * WIDTH as usize + x) * 4;
+            out.push([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]);
+        }
+    }
+    out
+}
+
+/// 4×4 画素の塊の中の、明るさの最大と最小の差の平均。セルの格子 (ドット) だと小さく、
+/// 縁が画素の細かさで滑らかに描かれていると大きい。
+fn block_detail(pixels: &[u8], (x0, y0, x1, y1): (usize, usize, usize, usize)) -> f64 {
+    let luma = |x: usize, y: usize| {
+        let i = (y * WIDTH as usize + x) * 4;
+        (i32::from(pixels[i]) * 3 + i32::from(pixels[i + 1]) * 6 + i32::from(pixels[i + 2])) / 10
+    };
+    let (mut total, mut blocks) = (0i64, 0i64);
+    let block = ZOOM as usize;
+    for by in (y0..y1 - block + 1).step_by(block) {
+        for bx in (x0..x1 - block + 1).step_by(block) {
+            let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+            for y in by..by + block {
+                for x in bx..bx + block {
+                    let l = luma(x, y);
+                    lo = lo.min(l);
+                    hi = hi.max(l);
+                }
+            }
+            total += i64::from(hi - lo);
+            blocks += 1;
+        }
+    }
+    total as f64 / blocks as f64
+}
+
+/// 仕様 05 §11: 滑らかな剛体は、スタンプしたセルを描かず、画面の解像度で縁を滑らかに描く。
+#[test]
+fn demo_renders_smooth_body() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = room_scene(&pack);
+    assert_eq!(scene.physics.bodies[3].render, charon_physics::BodyRender::Smooth);
+    // 滑らかな十字 (60, 226) とドットの十字 (80, 250) のまわり 28 × 28 セル。
+    let smooth_area = cell_rect(center, 46, 212, 74, 240);
+    let dots_area = cell_rect(center, 66, 236, 94, 264);
+
+    // (1) 通常の描画。
+    let (texture, with_sprite) = render_world(&gpu, &mut scene, center);
+    // (2) 滑らかな剛体のスプライトを描かない: スタンプしたセルも描かれないので、何もない。
+    scene.skip_smooth = true;
+    let (_, hidden) = render_world(&gpu, &mut scene, center);
+    // (3) すべての剛体を世界から外した画面。
+    scene.physics.unstamp_all(&mut scene.world);
+    let (_, bodiless) = render_world(&gpu, &mut scene, center);
+    // スタンプを外すと光の遮りがわずかに変わるので、各色 6 以内の差を同じとみなす。
+    let near = region_pixels(&hidden, smooth_area)
+        .iter()
+        .zip(region_pixels(&bodiless, smooth_area))
+        .filter(|(a, b)| (0..3).all(|c| (i32::from(a[c]) - i32::from(b[c])).abs() <= 6))
+        .count();
+    let total = region_pixels(&hidden, smooth_area).len();
+    println!("smooth: 描かれない領域で一致した画素 {near} / {total}");
+    assert!(
+        near as f64 > total as f64 * 0.995,
+        "FLAG_SMOOTH のセルはセルの描画では描かれない ({near} / {total})"
+    );
+    let drawn = region_pixels(&with_sprite, smooth_area)
+        .iter()
+        .zip(region_pixels(&bodiless, smooth_area))
+        .filter(|(a, b)| *a != b)
+        .count();
+    println!("smooth: 滑らかな十字で変わった画素 {drawn}");
+    assert!(drawn > 1500, "滑らかな十字が描かれる ({drawn})");
+
+    // (4) ドットの十字は、セルの描画で描かれる (従来どおり)。
+    let dots_drawn = region_pixels(&hidden, dots_area)
+        .iter()
+        .zip(region_pixels(&bodiless, dots_area))
+        .filter(|(a, b)| *a != b)
+        .count();
+    assert!(dots_drawn > 1500, "ドットの十字はセルとして描かれる ({dots_drawn})");
+
+    // (5) 縁の細かさ: 滑らかな方が、画素の細かさで縁が変わる。
+    let smooth_detail = block_detail(&with_sprite, smooth_area);
+    let dots_detail = block_detail(&with_sprite, dots_area);
+    println!("smooth: 縁の細かさ 滑らか {smooth_detail:.3} / ドット {dots_detail:.3}");
+    assert!(
+        smooth_detail > dots_detail * 1.25,
+        "滑らかな縁は、セルの格子より細かい ({smooth_detail:.3} / {dots_detail:.3})"
+    );
+    capture("smooth", "world", &with_sprite);
+    let ui = render_ui(&gpu, &scene, center, &texture, true);
+    capture("smooth", "ui", &ui);
+}
+
+/// 仕様 05 §11: 滑らかな剛体は、角度を少し変えただけでも見た目が変わる (セルの格子にそろえない)。
+#[test]
+fn smooth_body_turns_below_cell_resolution() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = room_scene(&pack);
+    let area = cell_rect(center, 46, 212, 74, 240);
+    let rotate = |scene: &mut Scene, delta: f32| scene.physics.rotate_body(3, delta);
+    let (_, base) = render_world(&gpu, &mut scene, center);
+    rotate(&mut scene, 0.02); // 約 1.1 度 (セル 1 つぶんの動きよりずっと小さい)
+    let (_, turned) = render_world(&gpu, &mut scene, center);
+    let changed = region_pixels(&base, area)
+        .iter()
+        .zip(region_pixels(&turned, area))
+        .filter(|(a, b)| (0..3).any(|c| (i32::from(a[c]) - i32::from(b[c])).abs() > 3))
+        .count();
+    println!("smooth: 0.02 ラジアンで変わった画素 {changed}");
+    assert!(changed > 60, "わずかな回転でも縁の画素が変わる ({changed})");
 }
 
 #[test]

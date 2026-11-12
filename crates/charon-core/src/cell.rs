@@ -45,6 +45,9 @@ pub const FLAG_BURNING: u8 = 1 << 3;
 pub const FLAG_BODY: u8 = 1 << 4;
 /// 液体・気体が水平移動で 1 回はね返った (仕様 02 §8)。
 pub const FLAG_BOUNCED: u8 = 1 << 5;
+/// 滑らかな剛体が書き込んだセル (仕様 05 §11)。セルの描画は描かず、滑らかな描画のパスが描く。保存しない。
+/// シミュレーションは `FLAG_BODY` と同じに扱い、このフラグは無視する。
+pub const FLAG_SMOOTH: u8 = 1 << 6;
 
 impl Cell {
     /// 読み込まれていない領域を表すセル。
@@ -81,8 +84,15 @@ mod tests {
 
     #[test]
     fn flags_do_not_overlap() {
-        let all =
-            [FLAG_PARITY, FLAG_FALLING, FLAG_FLOW_RIGHT, FLAG_BURNING, FLAG_BODY, FLAG_BOUNCED];
+        let all = [
+            FLAG_PARITY,
+            FLAG_FALLING,
+            FLAG_FLOW_RIGHT,
+            FLAG_BURNING,
+            FLAG_BODY,
+            FLAG_BOUNCED,
+            FLAG_SMOOTH,
+        ];
         let mut seen = 0u8;
         for f in all {
             assert_eq!(f.count_ones(), 1);

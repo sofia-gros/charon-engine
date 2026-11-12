@@ -21,6 +21,8 @@ pub struct FrameContext<'a, 'source> {
     pub world: &'a mut World,
     pub background: Option<&'a mut (dyn BackgroundSource + 'source)>,
     pub entities: &'a [crate::EntitySprite],
+    /// 滑らかな剛体 (仕様 05 §11)。`SmoothBodyPass` が描く。
+    pub smooth: &'a [crate::SmoothBodySprite<'a>],
     pub visible: &'a [ChunkPos],
     pub scene: &'a wgpu::TextureView,
     /// ping-pong 光テクスチャ。偶数回の伝播後は 0 が最終結果。
@@ -162,6 +164,22 @@ impl PassList {
         output: &wgpu::TextureView,
         origin: [f32; 2],
     ) -> Result<(), CellPassError> {
+        self.render_with_bodies(ctx, world, background, entities, &[], visible, output, origin)
+    }
+
+    /// `render_with_game` に、滑らかな剛体 (仕様 05 §11) を足したもの。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_bodies(
+        &mut self,
+        ctx: &GpuContext,
+        world: &mut World,
+        background: Option<&mut dyn BackgroundSource>,
+        entities: &[crate::EntitySprite],
+        smooth: &[crate::SmoothBodySprite<'_>],
+        visible: &[ChunkPos],
+        output: &wgpu::TextureView,
+        origin: [f32; 2],
+    ) -> Result<(), CellPassError> {
         let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("charon frame"),
         });
@@ -169,6 +187,7 @@ impl PassList {
             world,
             background,
             entities,
+            smooth,
             visible,
             scene: &self.scene_view,
             light: [&self.light_views[0], &self.light_views[1]],
