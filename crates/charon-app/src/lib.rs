@@ -2,6 +2,7 @@
 
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
+mod demo_ui;
 mod gesture;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod headless_tests;
@@ -47,6 +48,7 @@ use charon_world::streaming::MemoryStore;
 use charon_world::streaming::Streamer;
 #[cfg(target_arch = "wasm32")]
 use charon_world::web_save::WebSnapshot;
+use demo_ui::{DemoAction, FrameStats, Overlay, next_seed, paste, pointer_cell};
 use gesture::TouchGestures;
 use ui::Gui;
 use winit::application::ApplicationHandler;
@@ -144,6 +146,21 @@ pub struct AppOptions {
     pub demo: bool,
 }
 
+/// `Main Menu` の `Singleplayer` / `Random Seed` で作り直した、新しい世界の一式。
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct DemoSession {
+    pub world: World,
+    pub streamer: Streamer,
+    pub save_root: PathBuf,
+    pub metadata: WorldMeta,
+    pub physics: PhysicsEngine,
+}
+
+/// seed を受け取り、その seed の世界を作る。保存先は seed ごとに分けること。
+#[cfg(not(target_arch = "wasm32"))]
+pub type RestartFn = Box<dyn FnMut(u64) -> Result<DemoSession, Box<dyn std::error::Error>>>;
+
 /// 無限ワールドと保存を接続してウィンドウを起動する。
 /// 起動に必要なワールド・保存先・物理状態をそれぞれ明示的に渡す。
 #[cfg(not(target_arch = "wasm32"))]
@@ -168,6 +185,7 @@ pub fn run_with_streaming(
         metadata,
         physics,
         AppOptions::default(),
+        None,
     )
 }
 
@@ -184,10 +202,13 @@ pub fn run_with_streaming_options(
     metadata: WorldMeta,
     physics: PhysicsEngine,
     options: AppOptions,
+    restart: Option<RestartFn>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let background = BackgroundWorld::load(&save_root, world.materials(), &metadata.materials)?;
     let mut app = App::new(world, brush_material, make_world);
     app.options = options;
+    app.spawn_pending = options.player_spawn;
+    app.restart = restart;
     app.background = background;
     app.streaming = Some(StreamingState { streamer, save_root, metadata });
     app.physics = physics;
@@ -245,7 +266,16 @@ struct App {
     options: AppOptions,
     keys: KeyState,
     player: Option<EntityId>,
+    /// まだ生成していないプレイヤーの初期位置。生成に失敗したら `None` にする。
+    spawn_pending: Option<[i32; 2]>,
     free_camera: bool,
+    /// `Main Menu` で押された操作。描画の後に処理する。
+    pending_action: Option<DemoAction>,
+    restart_count: u64,
+    ctrl: bool,
+    selecting: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    restart: Option<RestartFn>,
     physics: PhysicsEngine,
     physics_initialized: bool,
     grab: Option<Grab>,
@@ -282,7 +312,14 @@ impl App {
             options: AppOptions::default(),
             keys: KeyState::default(),
             player: None,
+            spawn_pending: None,
             free_camera: false,
+            pending_action: None,
+            restart_count: 0,
+            ctrl: false,
+            selecting: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            restart: None,
             physics: PhysicsEngine::new(),
             physics_initialized: true,
             grab: None,
@@ -496,6 +533,75 @@ impl App {
         }
     }
 
+    /// `Main Menu` の操作を、描画で借りたものを返した後に実行する。
+    fn handle_demo_action(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(action) = self.pending_action.take() else { return };
+        match action {
+            DemoAction::Quit => event_loop.exit(),
+            DemoAction::Singleplayer => self.restart_session(event_loop, 1),
+            DemoAction::RandomSeed => {
+                self.restart_count += 1;
+                let seed = next_seed(self.world.seed(), self.restart_count);
+                self.restart_session(event_loop, seed);
+            }
+        }
+    }
+
+    /// 今の世界を保存してから、`seed` の世界・保存・物理に入れ替える。作り直せなければ終了する。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restart_session(&mut self, event_loop: &ActiveEventLoop, seed: u64) {
+        let Some(window) = self.window.clone() else { return };
+        if self.restart.is_none() {
+            eprintln!("この起動では世界を作り直せません");
+            return;
+        }
+        if let Err(err) = self.save_world() {
+            eprintln!("ワールドの保存に失敗: {err}");
+        }
+        let session = match self.restart.as_mut().map(|restart| restart(seed)) {
+            Some(Ok(session)) => session,
+            Some(Err(err)) => {
+                eprintln!("世界を作り直せません: {err}");
+                event_loop.exit();
+                return;
+            }
+            None => return,
+        };
+        let DemoSession { world, streamer, save_root, metadata, physics } = session;
+        self.background = BackgroundWorld::load(&save_root, world.materials(), &metadata.materials)
+            .unwrap_or_else(|err| {
+                eprintln!("背景の読み込みに失敗: {err}");
+                BackgroundWorld::new()
+            });
+        self.world = world;
+        self.streaming = Some(StreamingState { streamer, save_root, metadata });
+        self.physics = physics;
+        self.physics_initialized = false;
+        self.entities = EntityWorld::new();
+        self.player = None;
+        self.spawn_pending = self.options.player_spawn;
+        self.free_camera = false;
+        self.grab = None;
+        self.operations.clear();
+        self.timer.reset();
+        self.previous = None;
+        self.passes = None;
+        if let Some(gui) = self.gui.as_mut() {
+            gui.controls.origin = [0.0, 0.0];
+            if let Some(demo) = gui.demo.as_mut() {
+                demo.selection = None;
+                demo.paste_armed = false;
+            }
+        }
+        if let Err(err) = self.init_passes(window.inner_size()) {
+            eprintln!("再開始後の描画パスの作成に失敗: {err}");
+            event_loop.exit();
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn restart_session(&mut self, _event_loop: &ActiveEventLoop, _seed: u64) {}
+
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         let (Some(window), Some(gpu), Some(passes)) =
             (self.window.as_ref(), self.gpu.as_ref(), self.passes.as_mut())
@@ -547,9 +653,10 @@ impl App {
         let physics = &mut self.physics;
         let entities = &mut self.entities;
         let player = &mut self.player;
-        let player_spawn = &mut self.options.player_spawn;
+        let player_spawn = &mut self.spawn_pending;
         let initialized = &mut self.physics_initialized;
         let mut stream_error: Option<String> = None;
+        let mut physics_ms = 0.0_f32;
         let step = || {
             if stream_error.is_some() {
                 return;
@@ -596,9 +703,11 @@ impl App {
                 stream_error = Some(err.to_string());
                 return;
             }
+            let physics_started = Instant::now();
             if let Err(err) = physics.step(world) {
                 stream_error = Some(err.to_string());
             }
+            physics_ms += physics_started.elapsed().as_secs_f32() * 1000.0;
         };
         advance_frame(&mut self.timer, elapsed, paused, step_once, step);
         if paused
@@ -613,6 +722,8 @@ impl App {
             return;
         }
         let tick_ms = now.elapsed().as_secs_f32() * 1000.0;
+        let stats =
+            FrameStats { frame_ms: elapsed.as_secs_f32() * 1000.0, tick_ms, phys_ms: physics_ms };
         passes.set_zoom(gpu, zoom);
         passes.set_light_quality(light_quality);
         let Some(surface) = gpu.surface() else { return };
@@ -668,7 +779,12 @@ impl App {
             return;
         }
         if let Some(gui) = &mut self.gui {
-            gui.render(gpu, window, &self.world, &view, tick_ms);
+            let scene =
+                Overlay { world: &self.world, physics: &self.physics, entities: &self.entities };
+            let action = gui.render(gpu, window, &scene, &view, stats);
+            if action.is_some() {
+                self.pending_action = action;
+            }
         }
         gpu.queue.present(frame);
         self.process_actions(window.inner_size());
@@ -896,11 +1012,16 @@ impl ApplicationHandler for App {
         }
         if let Some(gpu) = &self.gpu {
             let previous = self.gui.take().map(|gui| gui.controls);
-            let mut gui = Gui::new(gpu, &window, self.brush_material);
+            let mut gui = Gui::new(
+                gpu,
+                &window,
+                self.brush_material,
+                self.options.demo.then(|| &**self.world.materials()),
+            );
             if let Some(controls) = previous {
                 gui.controls = controls;
             } else {
-                gui.controls.rainbow = self.options.rainbow_sand.is_some();
+                gui.controls.rainbow = self.options.rainbow_sand;
                 #[cfg(target_arch = "wasm32")]
                 {
                     gui.controls.web_status = self.web_status.clone();
@@ -959,7 +1080,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if let Some(gpu) = &self.gpu {
-                    let mut gui = Gui::new(gpu, &window, self.brush_material);
+                    let mut gui = Gui::new(gpu, &window, self.brush_material, None);
                     gui.controls.web_status = self.web_status.clone();
                     self.gui = Some(gui);
                 }
@@ -1009,7 +1130,47 @@ impl ApplicationHandler for App {
             } else {
                 false
             };
-            if !grabbing && !used_by_body && !consumed && !gesture {
+            // 参照画面: `Ctrl` + ドラッグで矩形を選び、`Paste` が有効なら次のクリックで貼る。
+            let mut handled = false;
+            if !grabbing
+                && !used_by_body
+                && !consumed
+                && !gesture
+                && let Some(demo) = self.gui.as_mut().and_then(|gui| gui.demo.as_mut())
+            {
+                let at = match pointer {
+                    PointerEvent::Down { pos, .. }
+                    | PointerEvent::Move { pos, .. }
+                    | PointerEvent::Up { pos, .. } => pointer_cell(pos, zoom, origin),
+                };
+                if let Some(cell) = at {
+                    match pointer {
+                        PointerEvent::Down { .. } if self.ctrl => {
+                            demo.selection = Some([cell, cell]);
+                            self.selecting = true;
+                            handled = true;
+                        }
+                        PointerEvent::Move { .. } if self.selecting => {
+                            if let Some([start, _]) = demo.selection {
+                                demo.selection = Some([start, cell]);
+                            }
+                            handled = true;
+                        }
+                        PointerEvent::Up { .. } if self.selecting => {
+                            self.selecting = false;
+                            handled = true;
+                        }
+                        PointerEvent::Down { .. } if demo.paste_armed => {
+                            if let Some(clip) = demo.clip.as_ref() {
+                                paste(&mut self.world, clip, cell);
+                            }
+                            handled = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if !grabbing && !used_by_body && !consumed && !gesture && !handled {
                 if let Some(layer) = build_layer {
                     if let Err(err) = apply_build_pointer(
                         &mut self.world,
@@ -1023,11 +1184,7 @@ impl ApplicationHandler for App {
                         eprintln!("建築に失敗: {err}");
                     }
                 } else {
-                    let rainbow = self
-                        .gui
-                        .as_ref()
-                        .filter(|gui| gui.controls.rainbow)
-                        .and(self.options.rainbow_sand);
+                    let rainbow = self.gui.as_ref().and_then(|gui| gui.controls.rainbow);
                     self.operations.extend(apply_pointer(
                         &mut self.world,
                         selected,
@@ -1054,6 +1211,7 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => self.ctrl = modifiers.state().control_key(),
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = self.gpu.as_mut()
@@ -1081,7 +1239,10 @@ impl ApplicationHandler for App {
                     window.request_redraw();
                 }
             }
-            WindowEvent::RedrawRequested => self.redraw(event_loop),
+            WindowEvent::RedrawRequested => {
+                self.redraw(event_loop);
+                self.handle_demo_action(event_loop);
+            }
             _ => {}
         }
     }

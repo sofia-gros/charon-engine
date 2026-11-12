@@ -1,17 +1,20 @@
 //! 仕様 06 §8: 材質一覧とブラシ・シミュレーション操作の UI。
 
 use charon_core::cell::MaterialId;
+use charon_core::material::MaterialTable;
 use charon_core::world::World;
 use charon_render::{GpuContext, LightQuality};
 use charon_world::building::Layer;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+use crate::demo_ui::{DemoAction, DemoUi, FrameStats, Overlay};
+
 #[derive(Debug)]
 pub(super) struct Controls {
     pub(super) selected: MaterialId,
-    /// 真のとき、ブラシは材質の代わりに x 座標で色を変える虹色の砂を置く (仕様 09 §2)。
-    pub(super) rainbow: bool,
+    /// `Some(先頭の ID)` のとき、ブラシは材質の代わりに x 座標で色を変える虹色の材質群を置く (仕様 09 §2)。
+    pub(super) rainbow: Option<MaterialId>,
     pub(super) build_layer: Option<Layer>,
     pub(super) brush_radius: u32,
     pub(super) paused: bool,
@@ -34,7 +37,7 @@ impl Controls {
     pub(super) fn new(selected: MaterialId) -> Self {
         Self {
             selected,
-            rainbow: false,
+            rainbow: None,
             build_layer: None,
             brush_radius: 3,
             paused: false,
@@ -60,6 +63,8 @@ pub(super) struct Gui {
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
     pub(super) controls: Controls,
+    /// 参照画面の UI (仕様 09 §5)。`None` のときは従来の Sandbox パネル。
+    pub(super) demo: Option<DemoUi>,
 }
 
 impl std::fmt::Debug for Gui {
@@ -69,7 +74,12 @@ impl std::fmt::Debug for Gui {
 }
 
 impl Gui {
-    pub(super) fn new(gpu: &GpuContext, window: &Window, selected: MaterialId) -> Self {
+    pub(super) fn new(
+        gpu: &GpuContext,
+        window: &Window,
+        selected: MaterialId,
+        demo: Option<&MaterialTable>,
+    ) -> Self {
         let context = egui::Context::default();
         let state = egui_winit::State::new(
             context.clone(),
@@ -83,7 +93,13 @@ impl Gui {
             .surface_config()
             .map_or(charon_render::PassList::scene_format(), |config| config.format);
         let renderer = egui_wgpu::Renderer::new(&gpu.device, format, Default::default());
-        Self { context, state, renderer, controls: Controls::new(selected) }
+        Self {
+            context,
+            state,
+            renderer,
+            controls: Controls::new(selected),
+            demo: demo.map(DemoUi::new),
+        }
     }
 
     pub(super) fn on_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
@@ -94,13 +110,21 @@ impl Gui {
         &mut self,
         gpu: &GpuContext,
         window: &Window,
-        world: &World,
+        scene: &Overlay<'_>,
         target: &wgpu::TextureView,
-        tick_ms: f32,
-    ) {
+        stats: FrameStats,
+    ) -> Option<DemoAction> {
+        let world = scene.world;
+        let tick_ms = stats.tick_ms;
         let input = self.state.take_egui_input(window);
         let controls = &mut self.controls;
+        let demo = &mut self.demo;
+        let mut action = None;
         let mut output = self.context.run_pass(input, |context| {
+            if let Some(demo) = demo.as_mut() {
+                action = demo.draw(context, controls, scene, stats, world.tick());
+                return;
+            }
             egui::Window::new("Sandbox").default_pos([12.0, 12.0]).show(context, |ui| {
                 ui.label("Materials");
                 egui::ScrollArea::vertical().max_height(270.0).show(ui, |ui| {
@@ -115,7 +139,7 @@ impl Gui {
                             .clicked()
                         {
                             controls.selected = material_id;
-                            controls.rainbow = false;
+                            controls.rainbow = None;
                         }
                     }
                 });
@@ -138,7 +162,7 @@ impl Gui {
                 ui.label("Drag a rigid body; scroll while holding to rotate it.");
                 if ui.button("Eraser").clicked() {
                     controls.selected = MaterialId::EMPTY;
-                    controls.rainbow = false;
+                    controls.rainbow = None;
                 }
                 ui.horizontal(|ui| {
                     if ui.button(if controls.paused { "Play" } else { "Pause" }).clicked() {
@@ -240,6 +264,7 @@ impl Gui {
         for id in output.textures_delta.free.drain() {
             self.renderer.free_texture(&id);
         }
+        action
     }
 }
 
