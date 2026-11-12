@@ -208,9 +208,23 @@ mod tests {
     #[allow(clippy::unwrap_used)] // GPU が存在すれば失敗をその場で検出する。
     fn light_pass_renders_offscreen() {
         let instance = wgpu::Instance::default();
+        let required_adapter = std::env::var("CHARON_REQUIRED_GPU_ADAPTER").ok();
+        let capture_path = std::env::var_os("CHARON_GPU_CAPTURE_PATH");
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            assert!(
+                required_adapter.is_none() && capture_path.is_none(),
+                "指定した GPU アダプターを取得できません"
+            );
             return; // GPU のない CI では WGSL 構文テストが動く。
         };
+        let info = adapter.get_info();
+        if let Some(name) = required_adapter.as_deref() {
+            assert!(
+                info.name.contains(name) && info.device_type == wgpu::DeviceType::DiscreteGpu,
+                "離散 GPU {name:?} が必要ですが、選択されたアダプターは {info:?} です"
+            );
+        }
+        println!("GPU adapter: {info:?}");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             required_features: wgpu::Features::empty(),
             required_limits: requested_limits(&adapter.limits()),
@@ -218,23 +232,26 @@ mod tests {
         }))
         .unwrap();
         let ctx = GpuContext { instance, adapter, device, queue, surface: None, config: None };
+        let materials = charon_core::material::MaterialTable::builtin().unwrap();
         let mut passes = PassList::new(&ctx, 256, 256, 4);
         passes.add(BackgroundPass::new(wgpu::Color::WHITE));
-        passes.add(
-            BackgroundLayerPass::new(
-                &ctx,
-                &charon_core::material::MaterialTable::builtin().unwrap(),
-                4,
-            )
-            .unwrap(),
-        );
+        passes.add(CellPass::new(&ctx, &materials, PassList::scene_format(), 4).unwrap());
+        passes.add(BackgroundLayerPass::new(&ctx, &materials, 4).unwrap());
         passes.add(EntityPass::new(&ctx));
         passes.add(LightPass::new(&ctx, passes.scene_size(), passes.light_format()));
         passes.add(CompositePass::new(&ctx));
         passes.add(FullscreenPass::post_process(&ctx, include_str!("bloom.wgsl")));
         assert_eq!(
             passes.names().collect::<Vec<_>>(),
-            ["background", "background_layer", "entities", "light", "composite", "postprocess"]
+            [
+                "background",
+                "cells",
+                "background_layer",
+                "entities",
+                "light",
+                "composite",
+                "postprocess"
+            ]
         );
         let output = ctx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("charon light test output"),
@@ -249,6 +266,7 @@ mod tests {
         let mut world =
             charon_core::testkit::world_from_ascii(&charon_core::testkit::box_art(64, 64), 1);
         charon_core::testkit::fill(&mut world, 0, 8, 63, 8, '#');
+        charon_core::testkit::place(&mut world, 5, 3, 's');
         let mut background = TestBackground { cells: [MaterialId::EMPTY; CHUNK_AREA], dirty: None };
         background.cells[10 * 64 + 10] = world.materials().id("wood").unwrap();
         background.dirty = Some(Rect::point(10, 10));
@@ -308,6 +326,12 @@ mod tests {
         let entity = &pixels[(64 * 256 + 64) * 4..(64 * 256 + 64) * 4 + 4];
         let sky = &pixels[(64 * 256 + 96) * 4..(64 * 256 + 96) * 4 + 4];
         assert_ne!(entity, sky, "entity should cover the sky independently of cells");
+        let sand = &pixels[(14 * 256 + 22) * 4..(14 * 256 + 22) * 4 + 4];
+        let adjacent_sky = &pixels[(14 * 256 + 30) * 4..(14 * 256 + 30) * 4 + 4];
+        assert_ne!(sand, adjacent_sky, "sand should be rendered independently of the sky");
+        if let Some(path) = capture_path {
+            std::fs::write(path, &pixels[..]).unwrap();
+        }
     }
 
     #[test]

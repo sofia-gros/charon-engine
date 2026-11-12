@@ -66,3 +66,14 @@ Windows の起動確認を WebGPU / WebGL2 の成功として扱わない。
 Windows の保存処理とファイル再読込を、各 seed 1〜8 で検査する。
 これらは入力と保存のロジックを確認するが、ウィンドウの描画・実際のマウス/タッチイベント・
 OS の最小化と復帰を確認したことにはならない。
+
+## M9 Windows 実 GPU 描画の検証 (T9.5)
+
+2026-11-12: `nvidia-smi` で NVIDIA GeForce RTX 4060 / ドライバー 617.42 を確認。
+Windows 11 Pro 上で `CHARON_REQUIRED_GPU_ADAPTER=RTX 4060` を指定し、
+`cargo test -p charon-render --lib light_pass_renders_offscreen -- --nocapture` を実行。
+テストが取得した実際のアダプターは **NVIDIA GeForce RTX 4060 / DiscreteGpu / Vulkan / NVIDIA 617.42**。GPU が取得できない場合や、選択したアダプターが RTX 4060 の離散 GPU でない場合は、この指定でテストが失敗する (通常の GPU なし CI では従来どおりスキップ)。
+
+`light_pass_renders_offscreen` は GPU 上で背景・セル・背景レイヤー・エンティティ・照明・合成・後処理を実行。光の品質 Off / Low / High の 3 通りを描画し、High の 256×256 出力を GPU から読み出して空と洞窟の明るさ、木と空の色差、エンティティと空の色差、砂セルと隣の空の色差を検査し、**1 件通過**した。High の読み出し結果を [`screenshots/T9.5-rtx4060-offscreen.png`](screenshots/T9.5-rtx4060-offscreen.png) に保存し、画像の内容を目視で確認。テストでは `CHARON_GPU_CAPTURE_PATH` を指定すると RGBA8 の GPU 読出し結果をそのパスに書き出す。記録画像はこのバイト列を PNG に変換したもの。
+
+これは **実 GPU のオフスクリーン描画検証**であり、ウィンドウのサーフェスへの表示、実際の GUI 操作・最小化/復帰・ウィンドウのスクリーンショット、DX12 バックエンドや GPU フレーム時間を検証した結果ではない。CPU 側シミュレーションの 100 万セル / 8 ms 目標を GPU の存在だけで達成したことにもならない。
