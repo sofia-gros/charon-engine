@@ -120,7 +120,7 @@ impl Gui {
         let controls = &mut self.controls;
         let demo = &mut self.demo;
         let mut action = None;
-        let mut output = self.context.run_pass(input, |context| {
+        let output = self.context.run_pass(input, |context| {
             if let Some(demo) = demo.as_mut() {
                 action = demo.draw(context, controls, scene, stats, world.tick());
                 return;
@@ -225,49 +225,62 @@ impl Gui {
             }
         });
         self.state.handle_platform_output(window, output.platform_output);
-        let pixels_per_point = self.context.pixels_per_point();
-        let jobs = self.context.tessellate(output.shapes, pixels_per_point);
         let size = window.inner_size();
-        let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [size.width, size.height],
-            pixels_per_point,
-        };
-        for (id, deltas) in output.textures_delta.set.drain() {
-            for delta in deltas {
-                self.renderer.update_texture(&gpu.device, &gpu.queue, id, &delta);
-            }
-        }
-        let mut encoder = gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("charon egui") });
-        let commands =
-            self.renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &jobs, &screen);
-        {
-            let mut pass = encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("charon egui"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                })
-                .forget_lifetime();
-            self.renderer.render(&mut pass, &jobs, &screen);
-        }
-        gpu.queue.submit(commands.into_iter().chain([encoder.finish()]));
-        for id in output.textures_delta.free.drain() {
-            self.renderer.free_texture(&id);
-        }
+        paint_egui(
+            &mut self.renderer,
+            &self.context,
+            gpu,
+            [size.width, size.height],
+            target,
+            output.shapes,
+            output.textures_delta,
+        );
         action
     }
 }
 
+/// egui の図形を `target` の上に重ねて描く。ウィンドウに依存しないので、画面なしの描画検査でも使う。
+pub(super) fn paint_egui(
+    renderer: &mut egui_wgpu::Renderer,
+    context: &egui::Context,
+    gpu: &GpuContext,
+    size: [u32; 2],
+    target: &wgpu::TextureView,
+    shapes: Vec<egui::epaint::ClippedShape>,
+    mut textures_delta: egui::TexturesDelta,
+) {
+    let pixels_per_point = context.pixels_per_point();
+    let jobs = context.tessellate(shapes, pixels_per_point);
+    let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: size, pixels_per_point };
+    for (id, deltas) in textures_delta.set.drain() {
+        for delta in deltas {
+            renderer.update_texture(&gpu.device, &gpu.queue, id, &delta);
+        }
+    }
+    let mut encoder = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("charon egui") });
+    let commands = renderer.update_buffers(&gpu.device, &gpu.queue, &mut encoder, &jobs, &screen);
+    {
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("charon egui"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            })
+            .forget_lifetime();
+        renderer.render(&mut pass, &jobs, &screen);
+    }
+    gpu.queue.submit(commands.into_iter().chain([encoder.finish()]));
+    for id in textures_delta.free.drain() {
+        renderer.free_texture(&id);
+    }
+}
 fn draw_debug(context: &egui::Context, world: &World, controls: &Controls) {
     let painter = context.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,

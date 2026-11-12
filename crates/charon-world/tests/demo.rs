@@ -268,3 +268,45 @@ fn demo_background_label() {
     }
     assert!(labelled > 0, "どこかの緑バイオームに `green biome` がある");
 }
+
+#[test]
+fn demo_background_is_populated_once() {
+    use charon_world::background::BackgroundWorld;
+    let table = table();
+    let generator = generator(&table);
+    let m = generator.materials;
+    // ラベルのある緑バイオームの帯を探し、その帯の 64×64 チャンクを順に処理する。
+    let (seed, band) = (1..=8u64)
+        .flat_map(|seed| (-12..12).map(move |band| (seed, band)))
+        .find(|&(seed, band)| {
+            biome(seed, band * 200 + 100) == Biome::Green
+                && (0..700).any(|y| {
+                    (band * 200..band * 200 + 200)
+                        .any(|x| generator.background_cell(seed, x, y) != MaterialId::EMPTY)
+                })
+        })
+        .unwrap();
+    let chunks: Vec<_> = (band * 200 / 64 - 1..=(band * 200 + 200) / 64)
+        .flat_map(|cx| (0..11).map(move |cy| ChunkPos::new(cx, cy)))
+        .collect();
+    let mut background = BackgroundWorld::new();
+    let mut populated = BTreeSet::new();
+    let written = generator.populate_background(seed, &chunks, &mut background, &mut populated);
+    assert_eq!(written, text_cells(GREEN_LABEL, 2, false).len(), "ラベル 1 つ分");
+    assert_eq!(populated.len(), chunks.len());
+    let count = |background: &BackgroundWorld| {
+        background
+            .iter()
+            .map(|(_, chunk)| chunk.cells.iter().filter(|&&c| c == m.bg_text_green).count())
+            .sum::<usize>()
+    };
+    assert_eq!(count(&background), written);
+    // 処理済みのチャンクは何度呼んでも書かない。既存の背景 (建築) も上書きしない。
+    assert_eq!(generator.populate_background(seed, &chunks, &mut background, &mut populated), 0);
+    let mut built = BackgroundWorld::new();
+    built.set(charon_core::coords::CellPos::new(band * 200 + 3, 100), m.sign_blue);
+    let mut fresh = BTreeSet::new();
+    let again = generator.populate_background(seed, &chunks, &mut built, &mut fresh);
+    assert!(again <= written);
+    assert_eq!(built.get(charon_core::coords::CellPos::new(band * 200 + 3, 100)), m.sign_blue);
+}

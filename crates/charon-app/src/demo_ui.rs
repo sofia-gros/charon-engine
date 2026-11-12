@@ -286,7 +286,7 @@ impl DemoUi {
         );
 
         egui::Window::new("Debug")
-            .default_pos([8.0, 16.0])
+            .default_pos([6.0, 14.0])
             .default_open(false)
             .resizable(false)
             .show(context, |ui| {
@@ -323,7 +323,7 @@ impl DemoUi {
             });
 
         egui::Window::new("Main Menu")
-            .default_pos([84.0, 16.0])
+            .default_pos([92.0, 14.0])
             .default_open(true)
             .resizable(false)
             .show(context, |ui| {
@@ -339,7 +339,7 @@ impl DemoUi {
             });
 
         egui::Window::new("Draw")
-            .default_pos([170.0, 16.0])
+            .default_pos([204.0, 14.0])
             .default_open(true)
             .resizable(false)
             .show(context, |ui| {
@@ -361,14 +361,25 @@ impl DemoUi {
                             0.0,
                             egui::Color32::from_rgba_unmultiplied(r, g, b, a.max(120)),
                         );
-                        if matches!(swatch.target, SwatchTarget::Rainbow(_)) {
+                        if let SwatchTarget::Rainbow(first) = swatch.target {
                             // 虹色は 12 本の縦縞で示す。
-                            painter.rect_stroke(
-                                response.rect.shrink(4.0),
-                                0.0,
-                                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 255, 255)),
-                                egui::StrokeKind::Inside,
-                            );
+                            let strip = response.rect.width() / 12.0;
+                            for i in 0..12u16 {
+                                let [r, g, b, _] = overlay
+                                    .world
+                                    .materials()
+                                    .get(MaterialId(first.0.saturating_add(i)))
+                                    .color;
+                                let x = response.rect.left() + strip * f32::from(i);
+                                painter.rect_filled(
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(x, response.rect.top()),
+                                        egui::pos2(x + strip + 0.5, response.rect.bottom()),
+                                    ),
+                                    0.0,
+                                    egui::Color32::from_rgb(r, g, b),
+                                );
+                            }
                         }
                         painter.rect_stroke(
                             response.rect,
@@ -404,7 +415,7 @@ impl DemoUi {
             });
 
         egui::Window::new("Clipboard")
-            .default_pos([360.0, 16.0])
+            .default_pos([566.0, 14.0])
             .default_open(false)
             .resizable(false)
             .show(context, |ui| {
@@ -455,7 +466,7 @@ impl DemoUi {
             });
 
         egui::Window::new("Registries")
-            .default_pos([440.0, 16.0])
+            .default_pos([670.0, 14.0])
             .default_open(false)
             .resizable(false)
             .show(context, |ui| {
@@ -545,7 +556,7 @@ impl DemoUi {
 
     fn draw_overlays(&self, context: &egui::Context, controls: &Controls, overlay: &Overlay<'_>) {
         let painter = context.layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
+            egui::Order::Background,
             egui::Id::unique("charon demo overlay"),
         ));
         let scale = controls.zoom as f32 / context.pixels_per_point();

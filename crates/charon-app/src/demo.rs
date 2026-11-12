@@ -118,6 +118,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             player_spawn: Some(PLAYER_SPAWN),
             rainbow_sand: Some(demo_materials.rainbow_sand),
             demo: true,
+            background: Some(DemoGenerator { materials: demo_materials }),
         },
         brush: demo_materials.rainbow_sand,
     })

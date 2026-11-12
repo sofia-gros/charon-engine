@@ -23,7 +23,8 @@
 - 参照の絵素材 (`gamedir/assets/texture/` は CC BY-NC 4.0) と、参照の材質表・生成式のコピー。見本の色・形・文字は本エンジンで描き直す。
 - CPU 使用率とメモリ使用量。標準ライブラリだけでは取れないので、新しい依存を足さずに **表示しない** (グラフの 4 系列は `mspf`、`fps`、`tick mspt`、`phys mspt`)。
 - 参照の `Z` / `X` / `C` キーの正確な意味。README は組を書くだけで機能を書かない。移動・ジャンプ・自由カメラだけを実装し、残りは未対応と記録する。
-- 動画に写る参照のデバッグ線の色分けの意味。
+- 動画に写る参照のデバッグ線の色分けの意味。地形コライダーの輪郭は、固体のセルのうち周囲に固体でないセルがあるものを緑の画素で描く (簡略化した折れ線にはしない)。構造物の外形線は描かない。
+- 参照の材質見本の質感のある絵。見本は材質の `color` の単色の四角にする (虹色だけ 12 色の縞)。
 
 ## 2. データ MOD `fse_demo` (`assets/mods/fse_demo`)
 
@@ -31,8 +32,8 @@
 
 | 名前 | 相 | 内容 |
 |---|---|---|
-| `rainbow_sand_0` … `rainbow_sand_11` | 粉体 | 色相 0°、30°、…、330° の砂 (`density: 1600`、`friction: 30`)。 |
-| `rainbow_rock_0` … `rainbow_rock_11` | 固体 | 同じ 12 色の固体 (`density: 2600`)。 |
+| `rainbow_sand_0` … `rainbow_sand_11` | 粉体 | 色相 0°、30°、…、330° の砂 (`density: 1600`、`friction: 30`)。暗い洞窟で明るく見えるよう、色の 1/2 を `emission` にする。 |
+| `rainbow_rock_0` … `rainbow_rock_11` | 固体 | 同じ 12 色の固体 (`density: 2600`)。色の 1/3 を `emission` にする。 |
 | `glow_moss_yellow` / `glow_moss_green` / `glow_moss_red` | 固体 | 洞窟の壁。`emission` が弱い黄 (90, 70, 10)・緑 (10, 90, 20)・赤 (100, 15, 10)。 |
 | `glow_orange` | 固体 | 文字用。`emission: (255, 140, 20)`。 |
 | `sign_blue` | 固体 | `Tile Entity` の枠と文字。`emission: (40, 90, 110)`。 |
@@ -103,6 +104,18 @@
 | `keyboard_maps_to_input` | キー列が `PlayerInput` に正しく写る (左右同時は中立) |
 | `demo_scene_is_deterministic` | デモの世界・剛体・プレイヤーを seed 1〜8 で 150 tick (チャンクの読み込み遅延 30 tick のあと) 進めた、世界・プレイヤー・剛体のハッシュが 2 回の実行で一致し、プレイヤーが 1 人生成されて接地し、剛体 3 つがスタンプされている。seed が違えばハッシュも違う |
 | `demo_bodies_are_valid_and_inside_the_room` | 剛体 3 つが作れ、部屋の内側に収まる |
-| `demo_renders_on_gpu` | GPU があるとき、デモ世界のオフスクリーン描画が暗い背景・光る苔・プレイヤーを含む (GPU なしではスキップ) |
+| `perf_history_is_bounded` | 計測履歴が直近 120 フレームに収まり、異常な値は 0 になる |
+| `rainbow_swatches_are_grouped` | `Draw` の見本が虹色を砂・岩で 1 つずつにまとめ、`empty` と `boundary` を含まない |
+| `clipboard_copy_paste_roundtrip` | コピーした矩形が貼り付けで同じ並びになり、空は何も置かず、未読み込み・大きすぎる矩形は拒否される |
+| `terrain_edges_follow_solid_boundaries` | 地形の輪郭が固体の外周だけで、砂は輪郭にならず、上限で打ち切る |
+| `random_seed_is_deterministic_and_changes` | `Random Seed` の seed が決定的で 0 にならず、呼ぶたびに変わる |
+| `demo_ui_draws_a_frame` | 画面なしで egui の 3 フレームを出し、全パネルと重ね描きが図形を出す |
+| `rainbow_brush_colors_by_x` | 虹色ブラシが各セルの x 座標で色を選ぶ (直径 25 セルで 6 色以上) |
+| `demo_background_is_populated_once` | 背景の文字が 1 度だけ作られ、処理済み・既存の背景を上書きしない |
+| `demo_renders_on_gpu` | GPU があるとき、5 つの場面 (部屋・虹色の山・黄・緑・赤のバイオーム) をオフスクリーンに描いて画素を検査する。どの場面も暗い洞窟 (平均の明るさが小さい) で発光する材質が見え、部屋は看板の青、虹色の山は 11 色以上の縞、黄・緑・赤はそれぞれの色の壁が現れる。GPU なしではスキップする。`CHARON_REQUIRED_GPU_ADAPTER` を指定すると、その名前を含む離散 GPU でなければ失敗する。`CHARON_DEMO_CAPTURE_DIR` を指定すると各場面を `<場面>_world.rgba` (UI なし) と `<場面>_ui.rgba` (UI あり) で書き出す |
+
+## 8. 暗さの設定
+
+参照は光の届かない空間がほぼ黒で、光る材質のまわりだけが見える。合成パスに環境光の設定 `CompositePass::with_ambient` を足し、既定 (`CompositePass::new`) は従来の 0.12 のまま変えない。デモは環境光 0.045、光の届かない空間の背景色 (0.012, 0.014, 0.02) を使う (`build_passes` の引数)。従来のサンドボックスの見た目は変わらない。
 
 GPU・ウィンドウでの見え方は自動テストでは完全には確かめられない。実機の確認結果は `docs/PLATFORM_CHECK.md` に分けて記録し、確認していない項目を達成済みと書かない。

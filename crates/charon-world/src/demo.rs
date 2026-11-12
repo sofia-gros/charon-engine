@@ -1,11 +1,14 @@
 //! 仕様 09: 参照デモ場面の生成。虹色の選び方、字形、洞窟の生成器。
 
+use std::collections::BTreeSet;
+
 use charon_core::cell::MaterialId;
 use charon_core::chunk::Chunk;
-use charon_core::coords::{CHUNK_AREA, CHUNK_SIZE, ChunkPos};
+use charon_core::coords::{CHUNK_AREA, CHUNK_SIZE, CellPos, ChunkPos};
 use charon_core::material::MaterialTable;
 use charon_core::rng::hash;
 
+use crate::background::BackgroundWorld;
 use crate::generator::{ChunkGenerator, generate_cells};
 
 /// 虹色の材質の数 (色相 30° 刻み)。
@@ -286,6 +289,36 @@ impl DemoGenerator {
         } else {
             MaterialId::EMPTY
         }
+    }
+
+    /// 読み込まれたチャンクのうち、まだ処理していないものの背景 (`green biome` の文字) を作る。
+    /// すでに背景のチャンクがある位置 (保存済みや利用者が建築した背景) は書き換えない。
+    /// `populated` に処理したチャンクを記録し、書いたセルの数を返す。
+    pub fn populate_background(
+        &self,
+        seed: u64,
+        chunks: &[ChunkPos],
+        background: &mut BackgroundWorld,
+        populated: &mut BTreeSet<ChunkPos>,
+    ) -> usize {
+        let mut written = 0;
+        for &pos in chunks {
+            if !populated.insert(pos) || background.chunk(pos).is_some() {
+                continue;
+            }
+            let origin = pos.origin();
+            for ly in 0..CHUNK_SIZE {
+                for lx in 0..CHUNK_SIZE {
+                    let (x, y) = (origin.x + lx, origin.y + ly);
+                    let material = self.background_cell(seed, x, y);
+                    if material != MaterialId::EMPTY {
+                        background.set(CellPos::new(x, y), material);
+                        written += 1;
+                    }
+                }
+            }
+        }
+        written
     }
 
     fn classify(

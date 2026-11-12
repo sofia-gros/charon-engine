@@ -55,6 +55,7 @@ FallingSandEngine の調査で見つかった問題に、それぞれ対応さ�
 | M7 | ライティングと後処理 | 実装・自動テスト完了（T7.4 の Android 60 fps 実測は依頼者の指示で免除、未検証。Windows GUI 目視・撮影も未実施） |
 | M8 | ゲーム層 | T8.1〜T8.8 の実装と自動テストを完了。T8.8 の実ブラウザー動作・保存は依頼者の指示で後日検証（未検証）。Windows GUI の操作・撮影も未検証 |
 | M9 | デスクトップ性能の計測と改善 | T9.1〜T9.4 の計測と T9.5 の RTX 4060 オフスクリーン描画検証を完了。最適化案は不採用。100 万セル / 8 ms は未達 (84.509 ms)、休眠 10,000 チャンク / 0.2 ms は達成。Windows GUI 操作は未検証 |
+| M10 | 参照デモ場面 (`charon-demo`) | T10.1〜T10.6 の実装と自動テストを完了。RTX 4060 (Vulkan) のオフスクリーン描画で 5 場面を確認。ウィンドウでのマウス・キー操作の目視は未検証 (操作許可が得られなかった)。Web・Android・Linux は未検証 |
 
 ---
 
@@ -227,9 +228,11 @@ Android・Web・Windows GUI の延期中の実機項目は M9 の完了条件に
 | T10.1 | 仕様 09、データ MOD `assets/mods/fse_demo`、`rainbow_index` | `demo_mod_loads`、`rainbow_index_is_periodic` |
 | T10.2 | `DemoGenerator` (洞窟・バイオーム・苔・塊・文字・部屋・背景) と `text_cells` | `demo_generator_is_pure`、`demo_room_is_open`、`demo_moss_and_blobs`、`demo_text_is_drawn`、`demo_background_label` |
 | T10.3 | キーボード入力、プレイヤー操作、追従・自由カメラ、虹色ブラシ | `player_follows_camera`、`keyboard_maps_to_input` |
-| T10.4 | 参照画面の UI (メニュー、`Draw`、`Clipboard`、`Registries`、計測グラフ、`Debug` 表示) | UI の状態遷移の単体テスト |
-| T10.5 | `charon-demo`、剛体 3 つ、プレイヤーの配置、`Tile Entity` | `demo_scene_is_deterministic` |
-| T10.6 | 実 GPU のオフスクリーン描画、参照フレームとの並置、記録 | `demo_renders_on_gpu`、`PLATFORM_CHECK.md` に結果と未検証項目 |
+| T10.4 | 参照画面の UI (メニュー、`Draw`、`Clipboard`、`Registries`、計測グラフ、`Debug` 表示) | `perf_history_is_bounded`、`rainbow_swatches_are_grouped`、`clipboard_copy_paste_roundtrip`、`terrain_edges_follow_solid_boundaries`、`random_seed_is_deterministic_and_changes`、`demo_ui_draws_a_frame` |
+| T10.5 | `charon-demo`、剛体 3 つ、プレイヤーの配置、`Tile Entity`。1 tick の更新を `Sim` に分離 | `demo_scene_is_deterministic`、`demo_bodies_are_valid_and_inside_the_room` |
+| T10.6 | 実 GPU のオフスクリーン描画、背景の文字、環境光の設定、参照フレームとの比較、記録 | `demo_renders_on_gpu`、`demo_background_is_populated_once`、`PLATFORM_CHECK.md` に結果と未検証項目 |
+
+T10.6 では RTX 4060 (Vulkan) で 5 場面をオフスクリーンに描き、参照動画のフレームと見比べた。見え方は [`docs/screenshots/M10-*.png`](screenshots/) にある。参照のフレームはこのリポジトリに入れない。ウィンドウでの操作の目視、Web・Android・Linux の確認は未検証で、成功とは扱わない。
 
 ---
 

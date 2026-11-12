@@ -15,7 +15,7 @@ mod passes;
 pub use background_pass::{BackgroundLayerPass, BackgroundSource};
 pub use cell_pass::{CellPass, CellPassError, CellView};
 pub use cells::{PaletteBytes, cell_to_texel, palette_bytes};
-pub use composite::CompositePass;
+pub use composite::{CompositePass, DEFAULT_AMBIENT};
 pub use entity_pass::{EntityPass, EntitySprite};
 pub use layers::LayerAllocator;
 pub use light_pass::LightPass;
@@ -88,6 +88,24 @@ impl GpuContext {
             .map_err(GpuError::Device)?;
         let config = configure_surface(&surface, &adapter, &device, width, height)?;
         Ok(Self { instance, adapter, device, queue, surface: Some(surface), config })
+    }
+
+    /// ウィンドウなしの GPU。描画テストや画像の書き出しに使い、サーフェスは持たない。
+    /// 使えるアダプターがなければ `GpuError::Adapter` を返す。
+    pub async fn headless() -> Result<Self, GpuError> {
+        let instance = wgpu::Instance::default();
+        let adapter =
+            instance.request_adapter(&Default::default()).await.map_err(GpuError::Adapter)?;
+        let limits = requested_limits(&adapter.limits());
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features: wgpu::Features::empty(),
+                required_limits: limits,
+                ..Default::default()
+            })
+            .await
+            .map_err(GpuError::Device)?;
+        Ok(Self { instance, adapter, device, queue, surface: None, config: None })
     }
 
     /// `suspended` でサーフェスだけを手放す。デバイスとキューは維持する。

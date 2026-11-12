@@ -4,6 +4,8 @@
 mod browser_storage;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod demo;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod demo_render;
 mod demo_ui;
 mod gesture;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -148,6 +150,8 @@ pub struct AppOptions {
     pub rainbow_sand: Option<MaterialId>,
     /// 参照画面の UI を使う。
     pub demo: bool,
+    /// 読み込んだチャンクの背景 (`green biome` の文字) を作る生成器。
+    pub background: Option<charon_world::demo::DemoGenerator>,
 }
 
 /// `Main Menu` の `Singleplayer` / `Random Seed` で作り直した、新しい世界の一式。
@@ -278,6 +282,8 @@ struct App {
     restart_count: u64,
     ctrl: bool,
     selecting: bool,
+    /// 背景を作り終えたチャンク (`AppOptions::background` があるとき)。
+    bg_populated: BTreeSet<ChunkPos>,
     #[cfg(not(target_arch = "wasm32"))]
     restart: Option<RestartFn>,
     physics: PhysicsEngine,
@@ -322,6 +328,7 @@ impl App {
             restart_count: 0,
             ctrl: false,
             selecting: false,
+            bg_populated: BTreeSet::new(),
             #[cfg(not(target_arch = "wasm32"))]
             restart: None,
             physics: PhysicsEngine::new(),
@@ -396,25 +403,19 @@ impl App {
             passes.resize(gpu, size.width, size.height);
             return Ok(());
         }
-        let mut passes = PassList::new(gpu, size.width, size.height, 4);
-        let layer_count = (size.width.div_ceil(64) + 1) * (size.height.div_ceil(64) + 1);
-        let cells =
-            CellPass::new(gpu, self.world.materials(), PassList::scene_format(), layer_count)
-                .map_err(|err| err.to_string())?;
-        passes.add(BackgroundPass::new(wgpu::Color { r: 0.08, g: 0.10, b: 0.14, a: 1.0 }));
-        passes.add(
-            BackgroundLayerPass::new(gpu, self.world.materials(), layer_count)
-                .map_err(|err| err.to_string())?,
-        );
-        passes.add(cells);
-        passes.add(EntityPass::new(gpu));
-        passes.add(LightPass::new(gpu, passes.scene_size(), passes.light_format()));
-        passes.add(CompositePass::new(gpu));
-        passes.add(FullscreenPass::post_process(
+        let (clear, ambient) = if self.options.demo {
+            (DEMO_CLEAR, DEMO_AMBIENT)
+        } else {
+            (DEFAULT_CLEAR, charon_render::DEFAULT_AMBIENT)
+        };
+        self.passes = Some(build_passes(
             gpu,
-            include_str!("../../charon-render/src/bloom.wgsl"),
-        ));
-        self.passes = Some(passes);
+            self.world.materials(),
+            size.width,
+            size.height,
+            clear,
+            ambient,
+        )?);
         Ok(())
     }
 
@@ -585,6 +586,7 @@ impl App {
         self.player = None;
         self.spawn_pending = self.options.player_spawn;
         self.free_camera = false;
+        self.bg_populated.clear();
         self.grab = None;
         self.operations.clear();
         self.timer.reset();
@@ -710,6 +712,15 @@ impl App {
                 return;
             }
         };
+        if let Some(generator) = self.options.background {
+            let chunks = self.world.chunk_positions();
+            generator.populate_background(
+                self.world.seed(),
+                &chunks,
+                &mut self.background,
+                &mut self.bg_populated,
+            );
+        }
         let view = frame.texture.create_view(&Default::default());
         let scene_width = window.inner_size().width.div_ceil(zoom.max(1));
         let scene_height = window.inner_size().height.div_ceil(zoom.max(1));
@@ -750,6 +761,39 @@ impl App {
         gpu.queue.present(frame);
         self.process_actions(window.inner_size());
     }
+}
+
+/// 従来のサンドボックスの背景色と、参照デモの (光の届かない空間がほぼ黒の) 背景色。
+pub const DEFAULT_CLEAR: wgpu::Color = wgpu::Color { r: 0.08, g: 0.10, b: 0.14, a: 1.0 };
+pub const DEMO_CLEAR: wgpu::Color = wgpu::Color { r: 0.012, g: 0.014, b: 0.02, a: 1.0 };
+/// 参照デモの環境光。従来の `DEFAULT_AMBIENT` より暗く、洞窟は光る材質のまわりだけが見える。
+pub const DEMO_AMBIENT: f32 = 0.045;
+
+/// 背景・セル・背景レイヤー・エンティティ・光・合成・ブルームの描画パスを、この順で並べる (仕様 06 §4)。
+/// アプリ本体と、実 GPU でのオフスクリーン描画の検査が同じ構成を使う。
+/// `clear` は光の届かない空間の背景色、`ambient` はそこでの明るさの下限。
+pub fn build_passes(
+    gpu: &GpuContext,
+    materials: &charon_core::material::MaterialTable,
+    width: u32,
+    height: u32,
+    clear: wgpu::Color,
+    ambient: f32,
+) -> Result<PassList, String> {
+    let mut passes = PassList::new(gpu, width, height, 4);
+    let layer_count = (width.div_ceil(64) + 1) * (height.div_ceil(64) + 1);
+    let cells = CellPass::new(gpu, materials, PassList::scene_format(), layer_count)
+        .map_err(|err| err.to_string())?;
+    passes.add(BackgroundPass::new(clear));
+    passes
+        .add(BackgroundLayerPass::new(gpu, materials, layer_count).map_err(|err| err.to_string())?);
+    passes.add(cells);
+    passes.add(EntityPass::new(gpu));
+    passes.add(LightPass::new(gpu, passes.scene_size(), passes.light_format()));
+    passes.add(CompositePass::with_ambient(gpu, ambient));
+    passes
+        .add(FullscreenPass::post_process(gpu, include_str!("../../charon-render/src/bloom.wgsl")));
+    Ok(passes)
 }
 
 /// 前景が退避されても、独立した背景チャンクは可視領域で描く。

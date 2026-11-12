@@ -9,10 +9,19 @@ pub struct CompositePass {
     layout: wgpu::BindGroupLayout,
     nearest: wgpu::Sampler,
     linear: wgpu::Sampler,
+    ambient: wgpu::Buffer,
 }
+
+/// 光が届かない場所の明るさの既定値 (仕様 06 §5)。
+pub const DEFAULT_AMBIENT: f32 = 0.12;
 
 impl CompositePass {
     pub fn new(ctx: &GpuContext) -> Self {
+        Self::with_ambient(ctx, DEFAULT_AMBIENT)
+    }
+
+    /// `ambient` (0.0..=1.0) は光が届かない場所の明るさ。暗い洞窟では小さくする。
+    pub fn with_ambient(ctx: &GpuContext, ambient: f32) -> Self {
         let shader = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("charon composite.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
@@ -52,6 +61,16 @@ impl CompositePass {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -88,7 +107,17 @@ impl CompositePass {
                 cache: None,
             })
         };
+        let ambient_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("charon ambient"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut bytes = [0u8; 16];
+        bytes[..4].copy_from_slice(&ambient.clamp(0.0, 1.0).to_le_bytes());
+        ctx.queue.write_buffer(&ambient_buffer, 0, &bytes);
         Self {
+            ambient: ambient_buffer,
             off: pipeline("fs_off"),
             lit: pipeline("fs_lit"),
             layout,
@@ -132,6 +161,7 @@ impl RenderPass for CompositePass {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&self.linear),
                 },
+                wgpu::BindGroupEntry { binding: 4, resource: self.ambient.as_entire_binding() },
             ],
         });
         let mut pass = frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

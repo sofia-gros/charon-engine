@@ -11,7 +11,7 @@
 ![Rust](https://img.shields.io/badge/rust-1.99%2B%20(stable)-orange?logo=rust)
 ![Edition](https://img.shields.io/badge/edition-2024-orange)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-success)
-![Status](https://img.shields.io/badge/status-M9%20%E8%A8%88%E6%B8%AC%E6%B8%88%E3%81%BF%20%2F%20%E6%80%A7%E8%83%BD%E7%9B%AE%E6%A8%99%E6%9C%AA%E9%81%94-blue)
+![Status](https://img.shields.io/badge/status-M10%20%E5%8F%82%E7%85%A7%E3%83%87%E3%83%A2%E5%AE%9F%E8%A3%85%20%2F%20GUI%E6%93%8D%E4%BD%9C%E6%9C%AA%E6%A4%9C%E8%A8%BC-blue)
 
 ![Windows](https://img.shields.io/badge/Windows-%E8%B5%B7%E5%8B%95%E7%A2%BA%E8%AA%8D-blue?logo=windows)
 ![Linux](https://img.shields.io/badge/Linux-%E6%9C%AA%E6%A4%9C%E8%A8%BC-lightgrey?logo=linux&logoColor=white)
@@ -27,8 +27,9 @@
 ---
 
 > [!NOTE]
-> **M8 まで実装・自動テスト済み、M9 の計測と自動検証は完了しました。** Windows の RTX 4060 (Vulkan) でオフスクリーン描画を実行し、出力を確認しました。Windows サンドボックスは起動を確認し、画面不要の入力・停止/再開・保存/再読込テストを追加しています。最新の GUI 操作・ウィンドウ撮影は未検証です。Web は wasm ビルドまで確認し、ブラウザー上の保存・操作は後日検証します。Android 実機も未検証です。詳しくは[現在の状態](#現在の状態)と[プラットフォーム確認](docs/PLATFORM_CHECK.md)をご覧ください。
+> **M10 まで実装・自動テスト済みです (M9 は性能の計測、M10 は FallingSandEngine の参照動画に合わせたデモ)。** Windows の RTX 4060 (Vulkan) でオフスクリーン描画を実行し、出力を確認しました。Windows サンドボックスは起動を確認し、画面不要の入力・停止/再開・保存/再読込テストを追加しています。最新の GUI 操作・ウィンドウ撮影は未検証です。Web は wasm ビルドまで確認し、ブラウザー上の保存・操作は後日検証します。Android 実機も未検証です。詳しくは[現在の状態](#現在の状態)と[プラットフォーム確認](docs/PLATFORM_CHECK.md)をご覧ください。
 > 100 万セル / 8 ms の性能目標は未達 (84.509 ms) です。試した最適化案は改善が確認できず不採用。実測値は[ベンチマーク記録](docs/BENCHMARKS.md)にあります。
+> 参照デモ ([charon-demo](#参照デモを起動)) は RTX 4060 (Vulkan) のオフスクリーン描画で 5 場面を確認しました。ウィンドウでのマウス・キー操作の目視と、Web・Android・Linux での確認は未検証です。
 
 ## 目次
 
@@ -163,6 +164,7 @@ flowchart TD
 | M7 | ライティングと後処理 | ✅ 実装・自動テスト済み。Android 60 fps は未計測 |
 | M8 | ゲーム層 (エンティティ、ワールド生成、MOD、入力同期、Web) | ✅ 実装・自動テスト済み。Web の保存・ポインター操作は実ブラウザーで未検証 |
 | M9 | Windows のシミュレーション性能の再計測と改善 | ✅ 計測・自動検証、RTX 4060 (Vulkan) のオフスクリーン描画を確認。最適化案は不採用。100 万セルは 84.509 ms/tick で 8 ms 目標未達。休眠 10,000 チャンクは 43.415 µs/tick で達成 |
+| M10 | 参照デモ場面 (`charon-demo`)。暗い洞窟・バイオーム・虹色の砂・剛体・プレイヤー・参照画面の UI | ✅ 実装・自動テスト済み。RTX 4060 のオフスクリーン描画で確認。ウィンドウ操作・Web・Android・Linux は未検証 |
 
 各マイルストーンのタスクと完了条件は [docs/ROADMAP.md](docs/ROADMAP.md) に、実機確認の結果と未実施項目は [docs/PLATFORM_CHECK.md](docs/PLATFORM_CHECK.md) にあります。T8.8 は Windows 実行ファイルの起動に加えて画面不要の入力・保存・再開テストを確認済みで、GUI 操作・撮影と Web 実機確認は後日実施します。
 
@@ -195,6 +197,29 @@ cargo run -p charon-sandbox --bin charon-sandbox
 
 ワールドの保存先は起動時の作業ディレクトリにある `saves/default` です。最新の Windows GUI での配置・復帰や撮影は未検証です。
 
+### 参照デモを起動
+
+[FallingSandEngine](https://github.com/PieKing1215/FallingSandEngine) の参照動画に合わせたデモです。暗い洞窟を、光る材質だけが照らします。黄・緑・赤のバイオームがあり、虹色の砂を注いで山にできます。スタート地点の部屋には X 字・輪・Z 字の剛体と `Tile Entity` の看板があります。デスクトップ専用です。
+
+```bash
+cargo run -p charon-sandbox --bin charon-demo
+```
+
+| 操作 | |
+|---|---|
+| `A` / `D` / `←` / `→` | 左右に歩く |
+| `W` / `↑` / `Space` / `C` | ジャンプ |
+| `F` | 自由カメラ (`WASD` で移動、`Shift` で速く) |
+| マウスの左ボタン | 選んだ材質を置く (既定は虹色の砂)。剛体はつかんで動かせる |
+| `Ctrl` + ドラッグ → `Clipboard` の `Copy` / `Paste` | 矩形のコピーと貼り付け |
+| `Main Menu` | `Singleplayer` (seed 1 に戻る)、`Random Seed` (新しい seed)、`Quit` |
+
+「同じ」の範囲と、再現しないもの (CPU・メモリのグラフ、参照の絵素材、`Z` / `X` キーなど) は[仕様 09](docs/spec/09-demo-scene.md)にあります。実 GPU の画像:
+
+| | |
+|---|---|
+| ![部屋と剛体](docs/screenshots/M10-room-debug.png) | ![虹色の砂の山](docs/screenshots/M10-rainbow-pile.png) |
+| ![黄バイオーム](docs/screenshots/M10-yellow-biome.png) | ![赤バイオーム](docs/screenshots/M10-red-biome.png) |
 ### 確認
 
 コミットの前に実行します。CI も同じスクリプトを実行します。
