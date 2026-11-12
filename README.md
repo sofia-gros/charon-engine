@@ -190,9 +190,11 @@ rustup target add aarch64-linux-android wasm32-unknown-unknown
 ```
 
 - **Linux でウィンドウを開く場合**: システムライブラリ `libxkbcommon-x11` (Debian / Ubuntu では `libxkbcommon-x11-0`) が必要です。
-  ない環境では起動直後に `Library libxkbcommon-x11.so could not be loaded.` で panic します。
-  GPU も Vulkan ドライバーもない環境では、`VK_ICD_FILENAMES` でソフトウェア Vulkan (SwiftShader など) の
-  ICD ファイルを指すと、描画テストを CPU で実行できます (物理 GPU の検証にはなりません)
+  ない環境では起動直後に `Library libxkbcommon-x11.so could not be loaded.` で panic します
+- **GPU のない Linux でウィンドウを開く場合**: X11 のウィンドウに対応するソフトウェア Vulkan として、
+  `mesa-vulkan-drivers` (lavapipe) を入れ、`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` を指定します
+  (物理 GPU の検証にはなりません)。Chromium 同梱の SwiftShader はオフスクリーンの描画テストには使えますが、
+  ウィンドウには対応しません
 - **Web を動かす場合**: `wasm-bindgen-cli` が必要です。`Cargo.lock` の `wasm-bindgen` と**同じ版**を入れます
   (現在は 0.2.130)
 

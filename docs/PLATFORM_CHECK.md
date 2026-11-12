@@ -136,7 +136,7 @@ Windows の RTX 4060 の結果とは別に記録し、一方から他方の成�
 | 実際の WebGPU 非対応ブラウザー (Firefox など) | 未検証。`navigator.gpu` を隠した Chromium で模擬した |
 | `web_save_roundtrip` のブラウザー上での照合 | 保存・復元は上の手動操作で目視確認。材質名・前景・背景・剛体を機械的に照合する検証は未実施 |
 | タッチ操作 | 未検証 |
-| Linux のネイティブ GUI (`charon-sandbox`、`charon-demo` の起動、マウス操作) | **未検証。** システムライブラリ `libxkbcommon-x11` がなく、Xvfb 上の起動は `Library libxkbcommon-x11.so could not be loaded.` で panic する (コードの不具合ではなく環境) |
+| Linux のネイティブ GUI | `charon-demo` は下の「Linux ネイティブ GUI」のとおり確認済み (ソフトウェア描画)。`charon-sandbox` の通常サンドボックスは未検証 |
 | 物理 GPU (Linux) | なし。SwiftShader のみ |
 | Android | 依頼者の指示で対象外 (クロスコンパイルも実施していない) |
 
@@ -149,4 +149,43 @@ Windows の RTX 4060 の結果とは別に記録し、一方から他方の成�
   これは描画テストの画像であり、`cargo run -p charon-sandbox --bin charon-demo` でウィンドウを操作した結果ではない。
 
 GPU のない環境では、これらのテストはアダプターが取れないと何もせず `ok` で戻る。`ok` は描画の成功を意味しないので、`--nocapture` で `GPU adapter:` の行が出ているかを見ること。
+
+### Linux ネイティブ GUI で `charon-demo` (ソフトウェア描画)
+
+`cargo run -p charon-sandbox --bin charon-demo` を、ウィンドウマネージャーのない Xvfb (1280×800) 上で実行した。
+**物理 GPU ではなく、Mesa の lavapipe (CPU) による描画。** 約 46〜55 fps (デバッグビルド)。
+
+環境の準備 (依頼者の許可を得て `apt` で追加):
+
+| 追加したもの | 理由 |
+|---|---|
+| `libxkbcommon-x11-0` | winit の X11 バックエンドが必要とする。ないと起動直後に `Library libxkbcommon-x11.so could not be loaded.` で panic |
+| `mesa-vulkan-drivers` (lavapipe) | ウィンドウのサーフェスに対応するソフトウェア Vulkan。`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` で指定 |
+
+Chromium 同梱の SwiftShader はオフスクリーン専用で、X11 のウィンドウには対応しない
+(`Vulkan driver does not support VK_KHR_xlib_surface` で GPU の初期化に失敗する)。
+オフスクリーンの描画テストには使えるが、ウィンドウを開くデモには使えない。
+
+画面と操作 (X11 の XTest で合成した入力。実際のキーボード・マウスではない):
+
+| 操作 | 結果 |
+|---|---|
+| 起動 | 洞窟、`Tile Entity` の枠、プレイヤー、X 字・輪・Z 字の剛体、虹色の砂、橙の逆さの文字、UI、計測グラフが表示された。ログにエラーなし。画面: [M11-linux-demo-start.png](screenshots/M11-linux-demo-start.png) |
+| 左ボタンで砂を置く | 虹色の砂が床に積もり、床の光が変わった |
+| 剛体のドラッグ | X 字の剛体をつかんで持ち上げると傾いて宙に浮き、隣の輪が押されて動いた。画面: [M11-linux-demo-grab.png](screenshots/M11-linux-demo-grab.png) |
+| `D` を 1.5 秒 | プレイヤーが右へ歩き、カメラが追従して世界が左へ流れ、X 字の剛体と輪を押した |
+| `Space` | ジャンプ中、プレイヤーの下端が床から約 55 px 浮き、着地後は元の高さに戻った |
+| `Main Menu` の `Random Seed` | 周囲の洞窟が作り直され (画面の約 19% が変化)、スタート部屋は同じ配置で再生成された |
+| `Main Menu` の `Quit` | プロセスが終了した |
+
+注意: ウィンドウマネージャーがない Xvfb ではキーボードフォーカスが設定されず、最初の `D` は届かなかった。
+`XSetInputFocus` でウィンドウにフォーカスを与えると届いた (アプリの不具合ではなく環境)。
+
+未確認: 物理 GPU、`F` の自由カメラ、`Ctrl` ドラッグでの `Clipboard` の `Copy` / `Paste`、最小化・復帰、
+実際のキーボード・マウス・タッチ入力。
+
+### Web サンドボックスの画面 (WebGL2 経路)
+
+水と砂を置いた後の実画面: [M11-web-sandbox-webgl2.png](screenshots/M11-web-sandbox-webgl2.png)
+(Chromium のソフトウェア WebGL2。パネル最下行の保存状態は、この画像の時点では修正前で文字化けしている)。
 
