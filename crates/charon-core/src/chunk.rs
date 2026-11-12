@@ -55,6 +55,10 @@ pub struct Chunk {
     pub collider_dirty: bool,
     /// 描画側へ再送が必要な範囲 (仕様 06)。
     pub render_dirty: Option<Rect>,
+    /// 液体のセル数と気体のセル数。`write` だけが更新する。
+    /// 空き地を見張る液体・気体が近くにあるかを、セルを走査せずに調べるために使う。
+    liquid_cells: u32,
+    gas_cells: u32,
 }
 
 impl Default for Chunk {
@@ -72,7 +76,30 @@ impl Chunk {
             next_dirty: None,
             collider_dirty: false,
             render_dirty: None,
+            liquid_cells: 0,
+            gas_cells: 0,
         }
+    }
+
+    /// このチャンクに `phase` (液体または気体) のセルがあるか。
+    /// `FLAG_BODY` のセルも数えるので、あるのに `false` を返すことはない。
+    pub(crate) fn has_phase(&self, phase: Phase) -> bool {
+        match phase {
+            Phase::Liquid => self.liquid_cells > 0,
+            Phase::Gas => self.gas_cells > 0,
+            _ => false,
+        }
+    }
+
+    fn count_phase(&mut self, phase: Phase, add: bool) {
+        let counter = match phase {
+            Phase::Liquid => &mut self.liquid_cells,
+            Phase::Gas => &mut self.gas_cells,
+            _ => return,
+        };
+        // 数えた分だけ引くので 0 を下回らない。
+        debug_assert!(add || *counter > 0);
+        *counter = if add { *counter + 1 } else { counter.saturating_sub(1) };
     }
 
     /// チャンク内座標 (0..64) のセルを読む。
@@ -89,6 +116,12 @@ impl Chunk {
         let i = index(lx, ly);
         let old = self.cells[i];
         self.cells[i] = cell;
+        let (old_phase, new_phase) =
+            (materials.get(old.material).phase, materials.get(cell.material).phase);
+        if old_phase != new_phase {
+            self.count_phase(old_phase, false);
+            self.count_phase(new_phase, true);
+        }
         add_rect(&mut self.render_dirty, Rect::point(lx, ly));
         if is_collidable(old, materials) || is_collidable(cell, materials) {
             self.collider_dirty = true;
@@ -145,6 +178,7 @@ pub(crate) fn wake_region(lx: i32, ly: i32, mut f: impl FnMut(i32, i32, Rect)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell::MaterialId;
 
     fn collect(lx: i32, ly: i32) -> Vec<(i32, i32, Rect)> {
         let mut v = Vec::new();
@@ -177,6 +211,35 @@ mod tests {
             collect(-10, 5),
             vec![(-1, 0, Rect { min_x: 52, min_y: 3, max_x: 56, max_y: 7 })]
         );
+    }
+
+    #[test]
+    fn phase_counts_follow_every_write() {
+        let materials = MaterialTable::builtin().unwrap();
+        let (water, steam, sand) = (
+            materials.id("water").unwrap(),
+            materials.id("steam").unwrap(),
+            materials.id("sand").unwrap(),
+        );
+        let cell = |material| Cell { material, ..Cell::default() };
+        let mut chunk = Chunk::new();
+        assert!(!chunk.has_phase(Phase::Liquid) && !chunk.has_phase(Phase::Gas));
+        chunk.write(1, 1, cell(water), &materials);
+        chunk.write(2, 1, cell(water), &materials);
+        chunk.write(3, 1, cell(steam), &materials);
+        chunk.write(4, 1, cell(sand), &materials);
+        assert!(chunk.has_phase(Phase::Liquid) && chunk.has_phase(Phase::Gas));
+        // 同じ相への上書きでは数が変わらない。
+        chunk.write(1, 1, cell(water), &materials);
+        chunk.write(1, 1, cell(sand), &materials);
+        assert!(chunk.has_phase(Phase::Liquid), "水がもう 1 つ残っている");
+        chunk.write(2, 1, cell(MaterialId::EMPTY), &materials);
+        chunk.write(3, 1, cell(sand), &materials);
+        assert!(!chunk.has_phase(Phase::Liquid) && !chunk.has_phase(Phase::Gas));
+        // 数え直しても同じになる (数が実際のセルと一致している)。
+        let count =
+            |p: Phase| chunk.cells.iter().filter(|c| materials.get(c.material).phase == p).count();
+        assert_eq!((count(Phase::Liquid), count(Phase::Gas)), (0, 0));
     }
 
     #[test]

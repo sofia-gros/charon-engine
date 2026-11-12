@@ -146,6 +146,10 @@ impl<'a> Neighborhood<'a> {
     fn wake_watchers(&mut self, x: i32, y: i32) {
         for (dy, watcher) in [(1, Phase::Liquid), (-1, Phase::Gas)] {
             let row = y - dy;
+            // 見つかる相のセルが 9 チャンクのどこにもなければ、走査しても何も起こさない。
+            if !self.chunks.iter().flatten().any(|c| c.has_phase(watcher)) {
+                continue;
+            }
             if !self.is_open_for(x, row, watcher) {
                 continue;
             }
