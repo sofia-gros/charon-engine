@@ -1,0 +1,106 @@
+# 仕様 09: M10 参照デモ場面 (`charon-demo`)
+
+対象: M10。仕様 01〜08 の材質・決定性・保存・描画・ゲーム層の規則は変えない。この仕様は既存の機能を組み合わせる **データ MOD、生成器、UI、起動ファイル** だけを追加する。`charon-core` のシミュレーションには手を入れない。
+
+## 1. 参照と「同じ」の意味
+
+参照は FallingSandEngine リポジトリ (PieKing1215/FallingSandEngine) の README が載せる `demo.mp4` (1920×1016、30 fps、61.6 秒) である。README は動画の内容を説明していないため、**動画を実際に取得して 4 秒ごとに抜き出したフレームの観察**を根拠にする。観察した内容は次のとおり。
+
+| 観察 | 動画で見えたもの |
+|---|---|
+| 世界 | 地上のない暗い洞窟。縦横に長く続き、カメラが横断する。洞窟の壁は微かに発光し、バイオームごとに色が違う (黄・緑・赤)。 |
+| 光 | 色付きの光。発光する材質のまわりだけが明るく、色が混ざる。 |
+| 材質 | 虹色の砂を注ぐと山になり、位置によって色が変わる縦の縞ができる。洞窟には虹色の塊 (横方向に色が変わる)、緑・橙の鉱床が点在する。 |
+| 文字 | 黄バイオームの洞窟に発光する橙の文字 `yellow thing` (上下逆さのものもある)。緑バイオームの背景に薄い `green biome`。 |
+| 剛体 | X 字、輪、Z 字の剛体が部屋の床に転がっている。`Tile Entity` と書かれた枠が部屋にある。 |
+| プレイヤー | 小さな箱のプレイヤーが常に画面の中心近くにあり、カメラが追従する。 |
+| 構造物 | 壁と通路で作られた部屋。 |
+| UI | 左上に `Debug`、`Main Menu` (`Singleplayer`、`Random Seed`、`Quit`)、材質の見本が並ぶ `Draw`、`Clipboard` (`Nothing here...`)、`Registries`。右下に `mspf` / `fps` / `tick mspt` / `phys mspt` のグラフ。左下に `Development Build` とビルド情報。左上端に FPS。 |
+| デバッグ表示 | 地形のコライダーの輪郭線、構造物の外形線、剛体の印 (`X`)。 |
+
+**「同じこと」とは、この表の各項目を、Charon Engine の既存機能で同じ操作・同じ見え方になるよう実装することを指す。** ピクセル単位の一致は目標にしない。次は再現しない (または別の方法に置き換える)。
+
+- 参照の絵素材 (`gamedir/assets/texture/` は CC BY-NC 4.0) と、参照の材質表・生成式のコピー。見本の色・形・文字は本エンジンで描き直す。
+- CPU 使用率とメモリ使用量。標準ライブラリだけでは取れないので、新しい依存を足さずに **表示しない** (グラフの 4 系列は `mspf`、`fps`、`tick mspt`、`phys mspt`)。
+- 参照の `Z` / `X` / `C` キーの正確な意味。README は組を書くだけで機能を書かない。移動・ジャンプ・自由カメラだけを実装し、残りは未対応と記録する。
+- 動画に写る参照のデバッグ線の色分けの意味。
+
+## 2. データ MOD `fse_demo` (`assets/mods/fse_demo`)
+
+仕様 07 §6 のデータ MOD として置く。`manifest.ron` は `(id: "fse_demo", version: 1)`、`reactions.ron` は `[]`、`script.ron` は置かない。名前は `fse_demo:` で修飾される。
+
+| 名前 | 相 | 内容 |
+|---|---|---|
+| `rainbow_sand_0` … `rainbow_sand_11` | 粉体 | 色相 0°、30°、…、330° の砂 (`density: 1600`、`friction: 30`)。 |
+| `rainbow_rock_0` … `rainbow_rock_11` | 固体 | 同じ 12 色の固体 (`density: 2600`)。 |
+| `glow_moss_yellow` / `glow_moss_green` / `glow_moss_red` | 固体 | 洞窟の壁。`emission` が弱い黄 (90, 70, 10)・緑 (10, 90, 20)・赤 (100, 15, 10)。 |
+| `glow_orange` | 固体 | 文字用。`emission: (255, 140, 20)`。 |
+| `sign_blue` | 固体 | `Tile Entity` の枠と文字。`emission: (40, 90, 110)`。 |
+| `green_ore` / `orange_ore` | 固体 | 鉱床。緑 (60, 220, 90) と橙 (240, 140, 40)。弱く発光する。 |
+| `bg_text_green` | 固体 | 背景レイヤーの `green biome` の文字。色は暗い緑。 |
+
+虹色の 12 色は `(240,60,60)`、`(245,150,50)`、`(240,225,60)`、`(150,230,60)`、`(70,225,80)`、`(60,225,150)`、`(60,225,225)`、`(60,150,240)`、`(80,90,245)`、`(150,80,240)`、`(225,70,225)`、`(240,60,150)` の順で、アルファ 255。
+
+**虹色の選び方 (位置で色が変わる):** `rainbow_index(x) = x.div_euclid(4).rem_euclid(12)`。虹色のブラシ・生成器・塊は、セルの x 座標からこの添字を求め、`rainbow_sand_0` / `rainbow_rock_0` の ID に加える。12 個は ID が連続する (定義順)。
+
+## 3. `DemoGenerator` (`charon-world`)
+
+`ChunkGenerator` と、背景用の `background_cell(seed, x, y) -> MaterialId` を実装する。他のチャンクを参照せず、仕様 04 §4 と同じ純粋性を守る。整数のみ、乱数は `rng::hash` だけ。材質の ID は生成器に渡す (名前は引数を作る呼び出し側が解決する)。
+
+- **縦方向:** `y < 0` と `y >= 640` はすべて `stone`。
+- **バイオーム:** `band = x.div_euclid(384)`。`band == 0` は平坦 (苔なし)。それ以外は `hash(seed, 0, band, 0, SALT_DEMO_BIOME) % 4` が 0 = 黄、1 = 緑、2 = 赤、3 = 平坦。
+- **洞窟:** `cave(x, y) = (2 * octave(x, y, 32, S_A) + octave(x, y, 16, S_B)) / 3` (各 `octave` は仕様 04 §4 の値ノイズで 0..=255)。`cave < 100` を空洞とする。
+- **壁の苔:** 空洞でないセルの上下左右 2 セル以内に空洞があり、バイオームが黄・緑・赤なら対応する `glow_moss_*`。それ以外は `stone`。
+- **塊:** 空洞のセルで、`hash(seed, 0, x.div_euclid(48), y.div_euclid(48), S_BLOB) & 7 == 0` の領域かつ `octave(x, y, 12, S_BLOB2) < 40` なら `rainbow_rock_{rainbow_index(x)}`。同様に `S_GREEN` で `green_ore`、`S_ORANGE` で `orange_ore` (領域の閾値は `& 15 == 0`、値の閾値は 36)。
+- **文字 `yellow thing`:** 幅 160 の帯 `t = x.div_euclid(160)` が黄バイオームで `hash(seed, 0, t, 0, S_TEXT) & 1 == 0` のとき、左端 `x0 = t*160 + 40 + hash % 40` に置く。縦位置は `k = 0..24` を順に、`y0 = 16 + hash(seed, t, k, S_TEXT_Y) % 600` として `(x0, y0 + 3)` と `(x0 + 66, y0 + 3)` が空洞である最初の `y0`。見つからなければ置かない。`hash(...) & 2 != 0` のとき 180° 回転する。字は 5×7、送り幅 6、`glow_orange`。文字のドットが立つセルだけを上書きする。
+- **部屋 (`x ∈ [4, 188)`, `y ∈ [196, 268)`):** 上の規則を使わず固定。外周 4 セルは `stone`、内側 `x ∈ [8, 184)`, `y ∈ [200, 264)` は空、床の行 `y = 264..268` は `stone`。部屋の `x ∈ [100, 166)`, `y ∈ [215, 222)` に `Tile Entity` を `sign_blue` で描く。部屋は `band == 0` の中にある。
+- **背景:** 緑バイオームの帯で、`hash(seed, 0, x.div_euclid(200), 0, S_BG) & 1 == 0` のとき、縦位置 `y0 = 40 + hash % 500`、左端 `x0 = (x.div_euclid(200)) * 200 + 20` に `green biome` を拡大率 2 で `bg_text_green` を描く。それ以外は `EMPTY`。
+
+字形は 5×7 のビットマップで、`y e l o w t h i n g r b m T E` と空白を持つ。`text_cells` は `(文字列, 拡大率, 回転) → 立つセルの集合` を返す純粋関数にする。
+
+## 4. プレイヤーと追従カメラ (`charon-app`)
+
+- 入力は `PlayerInput` だけにする (仕様 07 §2.2)。`A` / `←` = 左、`D` / `→` = 右、`W` / `↑` / `Space` / `C` = ジャンプ。左右が同時なら中立。入力は固定 tick に 1 回、ID 順に適用する。
+- 自由カメラ (`F` で切り替え): 押している間 `WASD` / 矢印でカメラを 1 フレーム 4 セル (`Shift` で 12 セル) 動かし、プレイヤーは中立入力のままにする。
+- 追従 (既定): 毎フレーム、カメラの原点をプレイヤー中心がシーンの中央になる位置にする。整数に切り捨てる。
+- `charon-app` の `AppOptions { follow_player: bool, demo: bool }` を足し、既存の `run*` の挙動は `AppOptions::default()` で変えない。
+
+## 5. 参照画面の UI (`charon-app`、egui)
+
+`demo` が真のときだけ参照の配置にする。既存の Sandbox パネルは `demo` が偽のとき従来どおり。
+
+- 左上の細い帯: `Debug`、`Main Menu`、`Draw`、`Clipboard`、`Registries` の見出し。クリックで各パネルが開閉する。
+- `Main Menu`: `Singleplayer` (最初の世界に戻る)、`Random Seed` (新しい seed で作り直す)、`Quit`。
+- `Draw`: 全材質の色見本 (材質の `color`) の格子。選ぶと `selected` になる。虹色の材質は 1 つの見本 `Rainbow` にまとめ、描くときだけ x で色を変える。
+- `Clipboard`: `Ctrl` + ドラッグで矩形を選び `Copy` で材質を保存し、`Paste` を押してからクリックした位置に置く。何もなければ `Nothing here...`。
+- `Registries`: 材質名・相・密度・色の一覧 (読み取り専用)。
+- 右下: 直近 120 フレームの `mspf`、`fps`、`tick mspt`、`phys mspt` の折れ線と現在値。
+- 左下: `Development Build` とクレートの版。左上端: FPS。
+- `Debug`: チャンク境界・休眠範囲・地形コライダーの輪郭・剛体の位置の印を切り替える。
+
+## 6. デモの起動と場面 (`apps/sandbox`)
+
+`charon-demo` (`[[bin]]`、デスクトップ専用) を足す。
+
+- `ModPack::load` で `fse_demo` を読み、`DemoGenerator` を `Streamer` に渡す。保存先は `saves/demo`。
+- プレイヤーは部屋の `x = 40`, `y = 248` (左上、セル) に `spawn_player`。
+- 剛体は部屋の床の上に 3 つ: X 字 (`ice`、16×16)、輪 (`wood`、外径 18)、Z 字 (`stone`、16×16)。x はそれぞれ 80、110、140 付近。
+- 選択材質の既定は `Rainbow`。
+
+## 7. 必須テスト
+
+| テスト | 確認 |
+|---|---|
+| `demo_mod_loads` | `fse_demo` が読め、虹色 12 個ずつと他の名前が定義され、虹色の ID が連続し、同じ並びを何度読んでも同じ |
+| `demo_generator_is_pure` | seed 1〜8 で、生成順を逆にしても同じチャンク。負座標を含む |
+| `demo_room_is_open` | 部屋の内側は空、床は固体、プレイヤーが生成でき、剛体 3 つを重ならず置ける |
+| `demo_moss_and_blobs` | 黄・緑・赤の帯に対応する苔、虹色の塊 (x で色が変わる)、鉱床が一定数ある |
+| `demo_text_is_drawn` | `yellow thing` が黄バイオームの 1 つ以上の帯に描かれ、180° 回転した版もある。`Tile Entity` が部屋にある |
+| `demo_background_label` | 緑バイオームの背景に `green biome` があり、前景や他バイオームの背景にはない |
+| `rainbow_index_is_periodic` | `rainbow_index` が x で周期 12、負座標でも 0..=11 |
+| `player_follows_camera` | 追従カメラが、プレイヤー中心をシーンの中央に置く |
+| `keyboard_maps_to_input` | キー列が `PlayerInput` に正しく写る (左右同時は中立) |
+| `demo_scene_is_deterministic` | デモの世界・剛体・プレイヤーを seed 1〜8 で 120 tick 進めた `state_hash` が同じ実行で一致 |
+| `demo_renders_on_gpu` | GPU があるとき、デモ世界のオフスクリーン描画が暗い背景・光る苔・プレイヤーを含む (GPU なしではスキップ) |
+
+GPU・ウィンドウでの見え方は自動テストでは完全には確かめられない。実機の確認結果は `docs/PLATFORM_CHECK.md` に分けて記録し、確認していない項目を達成済みと書かない。

@@ -17,6 +17,7 @@
 | [06-rendering-platform](spec/06-rendering-platform.md) | wgpu、シェーダー、Android、メインループ |
 | [07-game-layer](spec/07-game-layer.md) | エンティティ、生成、建築、剛体熱、MOD、同期、Web |
 | [08-performance](spec/08-performance.md) | デスクトップ性能の再測定・分析・決定性を保つ最適化 |
+| [09-demo-scene](spec/09-demo-scene.md) | FallingSandEngine の参照動画に合わせたデモ場面 |
 
 テストの書き方は [`docs/TESTING.md`](TESTING.md) にある。
 
@@ -216,6 +217,19 @@ Web の `web_save_roundtrip`（ブラウザー）と `web_input_and_resume` は�
 T9.1〜T9.4 の計測と自動検証は完了。T9.3 の粉体の初回判定を省く案は改善が確認できず不採用とし、実装を戻した。T9.4 の並列 100 万セルは 84.509 ms/tick で 8 ms 目標未達、休眠 10,000 チャンクは 43.415 µs/tick で 0.2 ms 目標を達成。測定の条件と他の場面は [`BENCHMARKS.md`](BENCHMARKS.md) に記録した。
 T9.5 では RTX 4060 (Vulkan) 上でオフスクリーン描画・GPU からの画素読出しと検査を実行し、画像を保存した。Windows GUI の操作・サーフェス描画は引き続き未検証。
 Android・Web・Windows GUI の延期中の実機項目は M9 の完了条件に含めず、未検証として残す。
+
+## M10 参照デモ場面
+
+読む仕様: [09 の全部](spec/09-demo-scene.md)、06 §3〜§8、07 §2〜§4。2026-11-12 の依頼で、FallingSandEngine の `demo.mp4` と同じことができる動作デモを作る。「同じ」の範囲と再現しないものは仕様 09 §1 に固定した。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T10.1 | 仕様 09、データ MOD `assets/mods/fse_demo`、`rainbow_index` | `demo_mod_loads`、`rainbow_index_is_periodic` |
+| T10.2 | `DemoGenerator` (洞窟・バイオーム・苔・塊・文字・部屋・背景) と `text_cells` | `demo_generator_is_pure`、`demo_room_is_open`、`demo_moss_and_blobs`、`demo_text_is_drawn`、`demo_background_label` |
+| T10.3 | キーボード入力、プレイヤー操作、追従・自由カメラ、虹色ブラシ | `player_follows_camera`、`keyboard_maps_to_input` |
+| T10.4 | 参照画面の UI (メニュー、`Draw`、`Clipboard`、`Registries`、計測グラフ、`Debug` 表示) | UI の状態遷移の単体テスト |
+| T10.5 | `charon-demo`、剛体 3 つ、プレイヤーの配置、`Tile Entity` | `demo_scene_is_deterministic` |
+| T10.6 | 実 GPU のオフスクリーン描画、参照フレームとの並置、記録 | `demo_renders_on_gpu`、`PLATFORM_CHECK.md` に結果と未検証項目 |
 
 ---
 

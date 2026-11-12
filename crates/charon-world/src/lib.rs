@@ -2,6 +2,7 @@
 
 pub mod background;
 pub mod building;
+pub mod demo;
 pub mod generator;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod region;
