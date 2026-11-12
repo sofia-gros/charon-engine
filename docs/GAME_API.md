@@ -66,6 +66,30 @@ defs.layer(
 エンジンの実行部分に呪文名や体力の値は書かれていません。デモ (`charon-demo`) も同じ手順で、
 `assets/mods/fse_demo/` の RON と `crates/charon-app/src/demo.rs` の `demo_loadout()` だけがゲーム側です。
 
+## 手と道具 (左手 = 武器、右手 = 道具)
+
+操作は 2 つの手に割り当てます。**左手は武器 (杖、左クリック)、右手は道具 (ワイヤーフック、右クリック)** で、独立して同時に使えます (手は割り当ての概念で、見た目には反映しません)。
+
+```rust
+// 入力: fire = 左クリック (武器)、tool = 右クリック (道具)、aim は共通のマウスの方向。
+let input = GameInput { fire: true, tool: true, aim: (3, -4) };
+
+// 道具を持たせる (杖を持つキャラクターに)。名前は hooks.ron の定義。
+game.equip_hook(player, &defs, "grapple")?;
+
+// 出ているワイヤー (描画用)。
+if let Some(rope) = game.rope(player) { /* rope.points() は点列 (セル座標) */ }
+```
+
+ワイヤーフックは `hooks.ron` で定義します (エンジンの既定は `assets/hooks.ron`、MOD で追加・`replace: true` で上書き)。
+
+```ron
+[(name: "long_grapple", max_length: 320, min_length: 4, speed: 320, segments: 32, gravity: 6,
+  iterations: 8, reel_speed: 24, pull_accel: 8, pull_max: 48, cooldown: 20)]
+```
+
+右クリックを押した瞬間にワイヤーが出て、先端が地形に着くとプレイヤーを引きます。押している間は巻き取り、離すと外れます。ワイヤーは重力でしなり、地形に食い込みません。`charon-app` では `PlayerLoadout { max_hp, wand, hook: Some("grapple".into()) }` で渡し、`B` キー (または `Draw` の `Paint`) で左ボタンをブラシに切り替えられます。物理は浮動小数点で、同一ビルド・同一プラットフォームでだけ決定的です。
+
 ## 敵
 
 敵の**種類**は `enemies.ron` (エンジンの既定とゲームの追加・上書き) で決め、**生成**はゲームが API を呼びます。動き (視界と視線で目標を選び、追う・跳ぶ・撃つ・接触ダメージ) と、倒れた敵の撤去はエンジンが行います。

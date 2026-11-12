@@ -411,6 +411,7 @@ impl DemoUi {
                     }
                 });
                 ui.add(egui::Slider::new(&mut controls.brush_radius, 1..=24).text("Brush"));
+                ui.checkbox(&mut controls.paint, "Paint with left button (B)");
                 if ui.button("Eraser").clicked() {
                     controls.selected = MaterialId::EMPTY;
                     controls.rainbow = None;
@@ -749,8 +750,17 @@ fn draw_wand_panel(context: &egui::Context, overlay: &Overlay<'_>) {
                     egui::Color32::from_rgb(90, 90, 230),
                     format!("{}/{}", wand.mana, wand.mana_max),
                 );
+                if let Some(hook) = overlay.game.hooks.get(&id) {
+                    let state = match hook.rope().map(|r| r.phase()) {
+                        Some(charon_physics::rope::RopePhase::Flying) => "flying",
+                        Some(charon_physics::rope::RopePhase::Anchored) => "anchored",
+                        None if hook.cooldown() > 0 => "cooling",
+                        None => "ready",
+                    };
+                    ui.label(format!("Tool (right): {} · {state}", hook.def.name));
+                }
                 ui.label(format!(
-                    "Next: {next} · Shots: {} · Enemies: {}{}",
+                    "Weapon (left) next: {next} · Shots: {} · Enemies: {}{}",
                     overlay.game.projectiles.len(),
                     overlay.game.enemies.len(),
                     if vitals.alive() { "" } else { " · DEAD" }

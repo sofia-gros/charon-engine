@@ -492,6 +492,52 @@ fn demo_renders_wand_panel() {
     assert!(mana_ui > mana_world + 100, "マナのバーが描かれる ({mana_ui} / {mana_world})");
 }
 
+/// 仕様 10 §9.5: ワイヤーが描かれ、`Wand` パネルに道具 (`Tool (right)`) の行が出る。
+#[test]
+fn demo_renders_hook() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = room_scene(&pack);
+    let id = scene.player.unwrap();
+    assert!(scene.game.hooks.contains_key(&id), "デモのプレイヤーは右手にフックを持つ");
+    let (_, without_rope) = render_world(&gpu, &mut scene, center);
+
+    // 右ボタン相当の入力で、天井へワイヤーを撃つ。
+    let seed = scene.world.seed();
+    for tick in 0..8 {
+        let input = GameInput { tool: true, aim: (16, -48), ..Default::default() };
+        scene
+            .game
+            .step(
+                &mut scene.world,
+                &mut scene.physics,
+                &mut scene.entities,
+                &[(id, input)],
+                tick,
+                seed,
+            )
+            .unwrap();
+    }
+    let rope = scene.game.rope(id).expect("ワイヤーが出ている");
+    assert!(rope.anchor().is_some(), "天井に着いている");
+    let (texture, world_pixels) = render_world(&gpu, &mut scene, center);
+    assert_ne!(world_pixels, without_rope, "ワイヤーが描かれる");
+    let changed = world_pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(without_rope.as_chunks::<4>().0)
+        .filter(|(a, b)| a != b)
+        .count();
+    println!("hook: ワイヤーで変わった画素 {changed}");
+    assert!(changed > 200, "ワイヤーの点列が画素に現れる ({changed})");
+
+    let ui_pixels = render_ui(&gpu, &scene, center, &texture, true);
+    assert_ne!(ui_pixels, world_pixels);
+    capture("hook", "world", &world_pixels);
+    capture("hook", "ui", &ui_pixels);
+}
+
 #[test]
 fn demo_renders_on_gpu() {
     let Some(gpu) = test_gpu() else { return };

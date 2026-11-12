@@ -17,7 +17,7 @@ mod sim;
 mod timestep;
 mod ui;
 
-pub use player::{KeyState, follow_origin, try_spawn_player};
+pub use player::{KeyCommand, KeyState, follow_origin, try_spawn_player};
 pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
 use sim::{Sim, sprites};
@@ -176,8 +176,10 @@ pub struct EnemySpawn {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerLoadout {
     pub max_hp: i32,
-    /// `Definitions::wand` に渡す杖の名前。
+    /// 左手の武器: `Definitions::wand` に渡す杖の名前。
     pub wand: String,
+    /// 右手の道具: `Definitions::hook` に渡すワイヤーフックの名前 (仕様 10 §9.5)。
+    pub hook: Option<String>,
 }
 
 /// `Main Menu` の `Singleplayer` / `Random Seed` で作り直した、新しい世界の一式。
@@ -304,8 +306,10 @@ struct App {
     player: Option<EntityId>,
     /// 体力・杖・弾 (仕様 10 §6)。
     game: GameState,
-    /// 右ボタンを押している間 true。
-    firing: bool,
+    /// 左ボタン (武器) を押している間 true。
+    weapon_down: bool,
+    /// 右ボタン (道具) を押している間 true。
+    tool_down: bool,
     /// 最後に見たカーソルの位置 (ウィンドウのピクセル)。
     cursor: [f32; 2],
     /// まだ生成していないプレイヤーの初期位置。生成に失敗したら `None` にする。
@@ -359,7 +363,8 @@ impl App {
             keys: KeyState::default(),
             player: None,
             game: GameState::new(SpellTable::default()),
-            firing: false,
+            weapon_down: false,
+            tool_down: false,
             cursor: [0.0, 0.0],
             spawn_pending: None,
             enemies_pending: Vec::new(),
@@ -396,7 +401,16 @@ impl App {
             .definitions
             .as_deref()
             .map_or_else(|| GameState::new(SpellTable::default()), GameState::from_definitions);
-        self.firing = false;
+        self.weapon_down = false;
+        self.tool_down = false;
+    }
+
+    /// 左ボタンが武器になるか: プレイヤーがいて (装備を渡されていて)、描画モードでも自由カメラでもない。
+    fn weapon_mode(&self) -> bool {
+        self.options.follow_player
+            && self.options.player.is_some()
+            && !self.free_camera
+            && !self.gui.as_ref().is_some_and(|gui| gui.controls.paint)
     }
 
     fn release_grab(&mut self) {
@@ -705,15 +719,15 @@ impl App {
         } else {
             self.keys.player_input()
         };
-        // 仕様 10 §6.3: 右ボタンを押している間、カーソルの方向へ撃つ。
-        let action = if self.options.follow_player && !self.free_camera && self.firing {
-            self.player
+        // 仕様 10 §9.5: 左ボタン = 武器、右ボタン = 道具。どちらもカーソルの方向へ使う。
+        let paint = self.gui.as_ref().is_some_and(|gui| gui.controls.paint);
+        let action = if self.options.follow_player {
+            let aim = self
+                .player
                 .and_then(|id| self.entities.get(id))
                 .zip(pointer_cell(self.cursor, zoom, origin))
-                .map_or_else(GameInput::default, |(player, target)| GameInput {
-                    fire: true,
-                    aim: player::aim_at(player, target),
-                })
+                .map(|(player, target)| player::aim_at(player, target));
+            player::game_input(self.weapon_down, self.tool_down, paint, self.free_camera, aim)
         } else {
             GameInput::default()
         };
@@ -1171,12 +1185,24 @@ impl ApplicationHandler for App {
         let consumed = self.gui.as_mut().is_some_and(|gui| gui.on_event(&window, &event));
         if self.options.follow_player {
             // UI が文字入力などでキーを使うときは押下を無視する。離したキーは常に反映する。
-            if self.keys.event(&event, !consumed) {
-                self.free_camera = !self.free_camera;
+            match self.keys.event(&event, !consumed) {
+                Some(KeyCommand::ToggleFreeCamera) => {
+                    self.free_camera = !self.free_camera;
+                    self.weapon_down = false;
+                    self.tool_down = false;
+                }
+                Some(KeyCommand::TogglePaint) => {
+                    if let Some(gui) = self.gui.as_mut() {
+                        gui.controls.paint = !gui.controls.paint;
+                    }
+                    self.weapon_down = false;
+                }
+                None => {}
             }
             if matches!(event, WindowEvent::Focused(false)) {
                 self.keys.release_all();
-                self.firing = false;
+                self.weapon_down = false;
+                self.tool_down = false;
             }
         }
         let gesture = if let (WindowEvent::Touch(touch), Some(gui)) = (&event, self.gui.as_mut()) {
@@ -1247,7 +1273,17 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            if !grabbing && !used_by_body && !consumed && !gesture && !handled {
+            // 離したときは、どの状況でも武器を止める。
+            if matches!(pointer, PointerEvent::Up { .. }) {
+                self.weapon_down = false;
+            }
+            let free = !grabbing && !used_by_body && !consumed && !gesture && !handled;
+            if free && self.weapon_mode() {
+                // 仕様 10 §9.5: 武器モードでは、左ボタンは武器 (ブラシは描かない)。
+                if matches!(pointer, PointerEvent::Down { .. }) {
+                    self.weapon_down = true;
+                }
+            } else if free {
                 if let Some(layer) = build_layer {
                     if let Err(err) = apply_build_pointer(
                         &mut self.world,
@@ -1294,7 +1330,7 @@ impl ApplicationHandler for App {
             }
             // 押下は UI が使っていなければ撃つ。離したときは常に止める。
             WindowEvent::MouseInput { button: MouseButton::Right, state, .. } => {
-                self.firing = state == ElementState::Pressed && !consumed;
+                self.tool_down = state == ElementState::Pressed && !consumed;
             }
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {

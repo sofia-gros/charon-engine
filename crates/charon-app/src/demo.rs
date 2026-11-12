@@ -40,9 +40,14 @@ impl DemoConfig {
     }
 }
 
-/// デモ (ゲーム側) のプレイヤーの装備 (仕様 10 §7.4)。杖は `fse_demo` の `wands.ron` の定義。
+/// デモ (ゲーム側) のプレイヤーの装備 (仕様 10 §7.4・§9.5)。左手の武器は `fse_demo` の `wands.ron` の杖、
+/// 右手の道具はエンジンの既定のワイヤーフック。
 pub(crate) fn demo_loadout() -> PlayerLoadout {
-    PlayerLoadout { max_hp: 100, wand: "fse_demo:starter".to_owned() }
+    PlayerLoadout {
+        max_hp: 100,
+        wand: "fse_demo:starter".to_owned(),
+        hook: Some("grapple".to_owned()),
+    }
 }
 
 /// デモ (ゲーム側) が部屋に置く敵 (仕様 10 §8.5)。種類はエンジンの既定の定義。
@@ -331,6 +336,78 @@ mod tests {
         }
     }
 
+    /// 仕様 10 §9.5: デモのプレイヤーは右手にワイヤーフックを持って始まり、右ボタン相当の入力 (`tool`) で
+    /// 部屋の天井へワイヤーを撃って引かれる。左ボタン相当の入力 (`fire`) の杖とは同時に使える (画面なし)。
+    #[test]
+    fn demo_hook_in_scene() {
+        for seed in 1..=3 {
+            let dir = TestDir::new();
+            let OpenDemo { session, options, .. } = open_demo(&config(&dir), seed).unwrap();
+            let DemoSession { mut world, streamer, save_root, metadata, mut physics } = session;
+            let mut streaming = Some(StreamingState { streamer, save_root, metadata });
+            let mut initialized = false;
+            let mut entities = EntityWorld::new();
+            let mut player = None;
+            let mut spawn = options.player_spawn;
+            let mut enemy_spawns = Vec::new();
+            let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
+            let mut physics_ms = 0.0;
+            let (mut anchored_at, mut start_y, mut shots) = (None, None, 0);
+            let mut top = i64::MAX;
+            for tick in 0..300 {
+                // 床に立ってから、天井へ向けて右ボタンを押し続け、左ボタンも押す。
+                let action = if tick >= 150 {
+                    GameInput { fire: true, tool: true, aim: (16, -48) }
+                } else {
+                    GameInput::default()
+                };
+                Sim {
+                    world: &mut world,
+                    streaming: &mut streaming,
+                    physics: &mut physics,
+                    initialized: &mut initialized,
+                    entities: &mut entities,
+                    player: &mut player,
+                    spawn: &mut spawn,
+                    game: &mut game,
+                    definitions: options.definitions.as_deref(),
+                    loadout: options.player.as_ref(),
+                    enemy_spawns: &mut enemy_spawns,
+                }
+                .tick(ChunkPos::new(0, 3), PlayerInput::default(), action, &mut physics_ms)
+                .unwrap();
+                // プレイヤーは周囲のチャンクが読み込まれてから生まれる。
+                let Some(id) = player else { continue };
+                let e = entities.get(id).unwrap();
+                if tick == 149 {
+                    start_y = Some(e.y16);
+                    assert!(
+                        game.hooks.contains_key(&id),
+                        "seed {seed}: 右手にフックを持って始まる"
+                    );
+                    assert!(game.rope(id).is_none());
+                }
+                if anchored_at.is_none() && game.rope(id).and_then(|r| r.anchor()).is_some() {
+                    anchored_at = Some(tick);
+                }
+                if tick >= 150 {
+                    top = top.min(e.y16);
+                }
+                shots = shots.max(game.projectiles.len());
+            }
+            let anchored_at = anchored_at.expect("ワイヤーが天井に着く");
+            assert!((150..=160).contains(&anchored_at), "seed {seed}: tick {anchored_at}");
+            let start_y = start_y.unwrap();
+            assert!(
+                start_y - top > 5 * 16,
+                "seed {seed}: 引かれて上がる ({} セル)",
+                (start_y - top) / 16
+            );
+            assert!(shots > 0, "seed {seed}: 武器 (左手) も同時に撃てる");
+            streaming.take().unwrap().streamer.finish().unwrap();
+        }
+    }
+
     /// 仕様 10 §7: デモ (ゲーム側) の杖と呪文は `fse_demo` の RON から来て、エンジン既定の `bomb` を上書きする。
     #[test]
     fn demo_definitions_come_from_the_game_files() {
@@ -382,7 +459,7 @@ mod tests {
             for tick in 0..260 {
                 // プレイヤーが床に立ってから、右へ撃ち続ける。
                 let action = if tick >= 150 {
-                    GameInput { fire: true, aim: (16, 0) }
+                    GameInput { fire: true, aim: (16, 0), ..Default::default() }
                 } else {
                     GameInput::default()
                 };

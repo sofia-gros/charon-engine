@@ -2,9 +2,19 @@
 
 use charon_core::coords::CellPos;
 use charon_core::world::World;
+use charon_game::game::GameInput;
 use charon_game::{Entity, EntityError, EntityId, EntityWorld, PlayerInput};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
+
+/// キーが押されて起きる操作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyCommand {
+    /// `F`: 自由カメラの切り替え。
+    ToggleFreeCamera,
+    /// `B`: 左ボタンの割り当て (武器 / ブラシ) の切り替え。
+    TogglePaint,
+}
 
 /// 押されているキー。`A`/`D`/`←`/`→` が左右、`W`/`↑`/`Space`/`C` がジャンプ。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,19 +48,23 @@ impl KeyState {
     }
 
     /// ウィンドウのイベントを反映する。`allow_press` が偽のときは押下を無視する (UI の文字入力中)。
-    /// `F` が押された (繰り返しでない) とき true を返す。
-    pub fn event(&mut self, event: &WindowEvent, allow_press: bool) -> bool {
-        let WindowEvent::KeyboardInput { event, .. } = event else { return false };
-        let PhysicalKey::Code(code) = event.physical_key else { return false };
+    /// `F` / `B` が押された (繰り返しでない) とき、対応する操作を返す。
+    pub fn event(&mut self, event: &WindowEvent, allow_press: bool) -> Option<KeyCommand> {
+        let WindowEvent::KeyboardInput { event, .. } = event else { return None };
+        let PhysicalKey::Code(code) = event.physical_key else { return None };
         let pressed = event.state == ElementState::Pressed;
         if pressed && !allow_press {
-            return false;
+            return None;
         }
-        if code == KeyCode::KeyF {
-            return pressed && !event.repeat;
-        }
-        self.set(code, pressed);
-        false
+        let command = match code {
+            KeyCode::KeyF => Some(KeyCommand::ToggleFreeCamera),
+            KeyCode::KeyB => Some(KeyCommand::TogglePaint),
+            _ => {
+                self.set(code, pressed);
+                return None;
+            }
+        };
+        if pressed && !event.repeat { command } else { None }
     }
 
     /// 1 tick の入力。左右が同時なら中立。
@@ -78,6 +92,22 @@ pub fn follow_origin(entity: &Entity, viewport: [u32; 2], zoom: u32) -> [f32; 2]
     let center_x = entity.x16.div_euclid(16) + i64::from(entity.width) / 2;
     let center_y = entity.y16.div_euclid(16) + i64::from(entity.height) / 2;
     [(center_x - scene[0] / 2) as f32, (center_y - scene[1] / 2) as f32]
+}
+
+/// 仕様 10 §9.5: マウスのボタンをゲームの入力へ。**左手 = 武器 (左ボタン)、右手 = 道具 (右ボタン)**。
+/// 描画モード (`paint`) のあいだは左ボタンがブラシなので武器は撃たない。自由カメラのあいだは何も使わない。
+/// `aim` は 2 つで共通の狙い (プレイヤーがいなければ `None`)。
+pub(crate) fn game_input(
+    left: bool,
+    right: bool,
+    paint: bool,
+    free_camera: bool,
+    aim: Option<(i32, i32)>,
+) -> GameInput {
+    if free_camera {
+        return GameInput::default();
+    }
+    GameInput { fire: left && !paint, tool: right, aim: aim.unwrap_or((0, 0)) }
 }
 
 /// プレイヤーの中心からカーソルのセルの中心への向き (1/16 セル単位)。仕様 10 §6.3。
@@ -189,6 +219,34 @@ mod tests {
         let id = entities.spawn(-24, -40, 8, 16).unwrap();
         let negative = entities.get(id).unwrap().clone();
         assert_eq!(follow_origin(&negative, [64, 64], 1), [2.0 - 32.0, 5.0 - 32.0]);
+    }
+
+    #[test]
+    fn mouse_buttons_map_to_weapon_and_tool() {
+        let aim = Some((3, -4));
+        // 左ボタン = 武器、右ボタン = 道具。独立していて、同時にも使える。
+        assert_eq!(
+            game_input(true, false, false, false, aim),
+            GameInput { fire: true, tool: false, aim: (3, -4) }
+        );
+        assert_eq!(
+            game_input(false, true, false, false, aim),
+            GameInput { fire: false, tool: true, aim: (3, -4) }
+        );
+        assert_eq!(
+            game_input(true, true, false, false, aim),
+            GameInput { fire: true, tool: true, aim: (3, -4) }
+        );
+        assert!(!game_input(false, false, false, false, aim).fire);
+        // 描画モードでは左ボタンはブラシで、武器にならない。右ボタンの道具は使える。
+        assert_eq!(
+            game_input(true, true, true, false, aim),
+            GameInput { fire: false, tool: true, aim: (3, -4) }
+        );
+        // 自由カメラのあいだは、どちらも使わない。
+        assert_eq!(game_input(true, true, false, true, aim), GameInput::default());
+        // プレイヤーがいなければ狙いは (0, 0)。
+        assert_eq!(game_input(true, true, false, false, None).aim, (0, 0));
     }
 
     #[test]

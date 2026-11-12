@@ -30,6 +30,8 @@ pub struct Entity {
     pub width: u8,
     pub height: u8,
     pub grounded: bool,
+    /// 外力による横向きの速度 (1/16 セル / tick)。ワイヤーの引っ張りなど (仕様 10 §9.2)。
+    pub ext_vx: i16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,8 +91,10 @@ impl EntityWorld {
         }
         let next_id = self.next_id.checked_add(1).ok_or(EntityError::ExhaustedIds)?;
         let id = EntityId(self.next_id);
-        self.entities
-            .insert(id, Entity { id, x16, y16, vx: 0, vy: 0, width, height, grounded: false });
+        self.entities.insert(
+            id,
+            Entity { id, x16, y16, vx: 0, vy: 0, width, height, grounded: false, ext_vx: 0 },
+        );
         self.next_id = next_id;
         Ok(id)
     }
@@ -127,6 +131,7 @@ impl EntityWorld {
                 .chain(entity.vx.to_le_bytes())
                 .chain(entity.vy.to_le_bytes())
                 .chain([entity.width, entity.height, u8::from(entity.grounded)])
+                .chain(entity.ext_vx.to_le_bytes())
             {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
             }
@@ -213,7 +218,9 @@ pub fn step_entity(
     world: &World,
 ) {
     debug_assert!((-1..=1).contains(&input.horizontal));
-    entity.vx = i16::from(input.horizontal.clamp(-1, 1)) * walk_speed.clamp(0, 96);
+    entity.vx = (i16::from(input.horizontal.clamp(-1, 1)) * walk_speed.clamp(0, 96)
+        + entity.ext_vx)
+        .clamp(-512, 512);
     if entity.grounded && input.jump {
         entity.vy = -jump_speed.clamp(0, 96);
         entity.grounded = false;
@@ -225,6 +232,7 @@ pub fn step_entity(
         let next_x = entity.x16 + step_x;
         if collides(next_x, entity.y16, entity.width, entity.height, world) {
             entity.vx = 0;
+            entity.ext_vx = 0;
             break;
         }
         entity.x16 = next_x;
@@ -243,6 +251,8 @@ pub fn step_entity(
     if entity.vy == 0 && !entity.grounded {
         entity.grounded = collides(entity.x16, entity.y16 + 1, entity.width, entity.height, world);
     }
+    // 外力の速度は、接地中は速く、空中はゆっくり減る (0 方向へ丸める)。
+    entity.ext_vx = if entity.grounded { entity.ext_vx * 3 / 4 } else { entity.ext_vx * 15 / 16 };
 }
 
 /// 半開区間の端を含むセルだけを検査し、未読み込み/範囲外も壁とする。

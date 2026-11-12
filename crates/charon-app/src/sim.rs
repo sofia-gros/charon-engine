@@ -14,9 +14,36 @@ use charon_render::EntitySprite;
 use crate::player::{area_loaded, try_spawn_player};
 use crate::{EnemySpawn, PlayerLoadout, StreamingState};
 
+/// ワイヤーを、点列の間を 1 セル間隔でうめた 1×1 の点と、先端の 2×2 の点にする (仕様 10 §9.5)。
+fn rope_sprites(points: &[[f32; 2]], out: &mut Vec<EntitySprite>) {
+    let to16 = |v: f32| (v * 16.0).round() as i64;
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+        let steps = length.ceil().max(1.0) as usize;
+        for k in 0..steps {
+            let t = k as f32 / steps as f32;
+            out.push(EntitySprite {
+                x16: to16(a[0] + (b[0] - a[0]) * t),
+                y16: to16(a[1] + (b[1] - a[1]) * t),
+                width: 1,
+                height: 1,
+            });
+        }
+    }
+    if let Some(head) = points.last() {
+        out.push(EntitySprite {
+            x16: to16(head[0]) - 16,
+            y16: to16(head[1]) - 16,
+            width: 2,
+            height: 2,
+        });
+    }
+}
+
 /// エンティティと飛んでいる弾の描画用の矩形。弾は 2×2 セルの点。
 pub(crate) fn sprites(entities: &EntityWorld, game: &GameState) -> Vec<EntitySprite> {
-    entities
+    let mut out: Vec<EntitySprite> = entities
         .iter()
         .map(|entity| EntitySprite {
             x16: entity.x16,
@@ -30,7 +57,13 @@ pub(crate) fn sprites(entities: &EntityWorld, game: &GameState) -> Vec<EntitySpr
             width: 2,
             height: 2,
         }))
-        .collect()
+        .collect();
+    for hook in game.hooks.values() {
+        if let Some(rope) = hook.rope() {
+            rope_sprites(rope.points(), &mut out);
+        }
+    }
+    out
 }
 
 /// 1 tick が触れるものを借りたもの。
@@ -162,7 +195,15 @@ impl Sim<'_> {
             return;
         }
         match (Vitals::new(loadout.max_hp), definitions.wand(&loadout.wand)) {
-            (Ok(vitals), Ok(wand)) => self.game.add_character(id, vitals, wand),
+            (Ok(vitals), Ok(wand)) => {
+                self.game.add_character(id, vitals, wand);
+                // 右手の道具 (ワイヤーフック)。定義がなければ報告して、道具なしで続ける。
+                if let Some(hook) = &loadout.hook
+                    && let Err(err) = self.game.equip_hook(id, definitions, hook)
+                {
+                    eprintln!("道具 {hook} を持たせられません: {err}");
+                }
+            }
             (vitals, wand) => {
                 eprintln!(
                     "プレイヤーの装備を作れません: 体力 {:?}、杖 {:?}",

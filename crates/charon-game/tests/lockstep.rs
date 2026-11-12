@@ -134,7 +134,7 @@ fn lockstep_rejects_mismatch() {
             ConnectionInfo::new(&world, &[], "build-one".to_string(), "parallel".to_string());
         let mut lockstep = Lockstep::new(&players, &world, &entities, None, info.clone()).unwrap();
         let mut changed = info.clone();
-        changed.version = 3;
+        changed.version = charon_game::lockstep::PROTOCOL_VERSION + 1;
         assert!(matches!(lockstep.connect(players[0], &changed), Err(LockstepError::Mismatch)));
         changed = info.clone();
         changed.materials.swap(2, 3);
@@ -164,7 +164,7 @@ fn lockstep_rejects_mismatch() {
         };
         let before = (world.tick(), world.state_hash(), entities.state_hash());
         let packet = input.encode();
-        assert_eq!(&packet[..2], &[2, 0]);
+        assert_eq!(&packet[..2], &[3, 0]);
         assert_eq!(&packet[2..10], &0u64.to_le_bytes());
         assert_eq!(&packet[10..18], &players[0].0.to_le_bytes());
         assert_eq!(TickInput::decode(&packet).unwrap(), input);
@@ -174,7 +174,7 @@ fn lockstep_rejects_mismatch() {
         for invalid in [&packet[..19], &[0, 0, 0][..]] {
             assert!(matches!(lockstep.submit_bytes(invalid), Err(LockstepError::InvalidPacket)));
         }
-        for index in [0, 10, 18, 19, 20] {
+        for index in [0, 10, 18, 19, 20, 29] {
             let mut invalid = packet;
             invalid[index] = if index == 0 {
                 1
@@ -312,16 +312,17 @@ fn engine_defs(world: &World) -> Definitions {
 }
 
 #[test]
-fn lockstep_packet_v2_roundtrip() {
+fn lockstep_packet_v3_roundtrip() {
     let input = TickInput {
         tick: 7,
         player: EntityId(3),
         input: PlayerInput { horizontal: -1, jump: true },
-        action: GameInput { fire: true, aim: (-5, 70_000) },
+        action: GameInput { fire: true, tool: true, aim: (-5, 70_000) },
     };
     let packet = input.encode();
-    assert_eq!(packet.len(), 29);
-    assert_eq!(&packet[..2], &[2, 0]);
+    assert_eq!(packet.len(), 30);
+    assert_eq!(&packet[..2], &[3, 0]);
+    assert_eq!(packet[29], 1, "tool は末尾の 1 バイト");
     assert_eq!(packet[20], 1);
     assert_eq!(&packet[21..25], &(-5i32).to_le_bytes());
     assert_eq!(&packet[25..29], &70_000i32.to_le_bytes());
@@ -336,6 +337,11 @@ fn lockstep_packet_v2_roundtrip() {
     let mut bad_fire = packet;
     bad_fire[20] = 2;
     assert!(matches!(TickInput::decode(&bad_fire), Err(LockstepError::InvalidPacket)));
+    let mut bad_tool = packet;
+    bad_tool[29] = 2;
+    assert!(matches!(TickInput::decode(&bad_tool), Err(LockstepError::InvalidPacket)));
+    // 古い 29 バイトのパケットは長さが違う。
+    assert!(matches!(TickInput::decode(&packet[..29]), Err(LockstepError::InvalidPacket)));
     for offset in [21, 25] {
         let mut huge = packet;
         huge[offset..offset + 4].copy_from_slice(&1_000_001i32.to_le_bytes());
@@ -347,9 +353,11 @@ fn lockstep_packet_v2_roundtrip() {
         edge[offset..offset + 4].copy_from_slice(&(-1_000_000i32).to_le_bytes());
         assert!(TickInput::decode(&edge).is_ok(), "上限ちょうどは通る");
     }
-    let mut version1 = packet;
-    version1[..2].copy_from_slice(&1u16.to_le_bytes());
-    assert!(matches!(TickInput::decode(&version1), Err(LockstepError::Mismatch)));
+    for old in [1u16, 2] {
+        let mut stale = packet;
+        stale[..2].copy_from_slice(&old.to_le_bytes());
+        assert!(matches!(TickInput::decode(&stale), Err(LockstepError::Mismatch)), "v{old}");
+    }
     assert!(matches!(TickInput::decode(&packet[..20]), Err(LockstepError::InvalidPacket)));
 }
 
@@ -375,7 +383,7 @@ fn game_trace(seed: u64, reversed: bool) -> Vec<u64> {
                 tick,
                 player: players[index],
                 input: PlayerInput::default(),
-                action: GameInput { fire, aim },
+                action: GameInput { fire, aim, ..Default::default() },
             }
             .encode();
             lockstep.submit_bytes(&packet).unwrap();
@@ -409,7 +417,7 @@ fn lockstep_game_hash_is_order_independent() {
                 tick: 0,
                 player,
                 input: PlayerInput::default(),
-                action: GameInput { fire: player == players[0], aim: (1, 0) },
+                action: GameInput { fire: player == players[0], aim: (1, 0), ..Default::default() },
             })
             .unwrap();
     }

@@ -9,7 +9,9 @@ use charon_core::rng;
 use charon_core::world::World;
 use charon_physics::PhysicsEngine;
 
-use crate::defs::{Definitions, EnemyDef};
+use charon_physics::rope::{Rope, RopeEvent, RopeParams, RopePhase, tether_velocity};
+
+use crate::defs::{Definitions, EnemyDef, HookDef};
 use crate::projectile::{Hit, ProjectileWorld};
 use crate::vitals::{Vitals, VitalsError, VitalsTable, covered_cells, step_environment};
 use crate::wand::{CastError, CastOutcome, SpellTable, Wand, WandError};
@@ -24,10 +26,13 @@ pub const SALT_WANDER: u32 = 0x574E_4452;
 /// 狙いのベクトルの各成分の上限 (仕様 10 §5.2)。
 const MAX_AIM: i64 = 1_000_000;
 
-/// 1 tick のゲーム入力。`aim` は向きのベクトル。
+/// 1 tick のゲーム入力。左手 = 武器 (`fire`)、右手 = 道具 (`tool`)。`aim` は 2 つで共通の向きのベクトル。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GameInput {
+    /// 武器 (杖) を撃つ。左クリック。
     pub fire: bool,
+    /// 道具 (ワイヤーフック) を使う。右クリック。押している間、ワイヤーを巻き取る。
+    pub tool: bool,
     pub aim: (i32, i32),
 }
 
@@ -40,6 +45,8 @@ pub enum GameError {
     UnknownEnemy(String),
     /// 敵の攻撃が、呪文表にない呪文を参照している。
     UnknownSpell(String),
+    /// 定義にないワイヤーフック。
+    UnknownHook(String),
     Entity(EntityError),
     Wand(WandError),
     Vitals(VitalsError),
@@ -52,6 +59,7 @@ impl std::fmt::Display for GameError {
             Self::Cast(e) => write!(f, "詠唱に失敗: {e}"),
             Self::UnknownEnemy(name) => write!(f, "敵 \"{name}\" は定義されていません"),
             Self::UnknownSpell(name) => write!(f, "敵の攻撃の呪文 \"{name}\" が表にありません"),
+            Self::UnknownHook(name) => write!(f, "ワイヤーフック \"{name}\" は定義されていません"),
             Self::Entity(e) => write!(f, "敵を生成できません: {e}"),
             Self::Wand(e) => write!(f, "{e}"),
             Self::Vitals(e) => write!(f, "{e}"),
@@ -70,6 +78,25 @@ pub struct Enemy {
     contact_cooldown: u16,
 }
 
+/// 右手に持つワイヤーフック 1 つ (仕様 10 §9.4)。定義の写しを持つ。
+#[derive(Clone, Debug)]
+pub struct Hook {
+    pub def: HookDef,
+    rope: Option<Rope>,
+    cooldown: u16,
+    held: bool,
+}
+
+impl Hook {
+    pub fn rope(&self) -> Option<&Rope> {
+        self.rope.as_ref()
+    }
+
+    pub fn cooldown(&self) -> u16 {
+        self.cooldown
+    }
+}
+
 /// `GameState::step` の結果。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StepReport {
@@ -84,6 +111,8 @@ pub struct GameState {
     pub projectiles: ProjectileWorld,
     pub wands: BTreeMap<EntityId, Wand>,
     pub enemies: BTreeMap<EntityId, Enemy>,
+    /// 右手のワイヤーフック。
+    pub hooks: BTreeMap<EntityId, Hook>,
     pub spells: SpellTable,
 }
 
@@ -139,6 +168,18 @@ fn line_clear(world: &World, from: (i64, i64), to: (i64, i64)) -> bool {
     }
 }
 
+/// 定義から物理の設定へ (仕様 10 §9.3)。長さはセル、速さは 1/16 セル / tick を割る。
+fn rope_params(def: &HookDef) -> RopeParams {
+    RopeParams {
+        segments: usize::from(def.segments),
+        max_length: f32::from(def.max_length),
+        min_length: f32::from(def.min_length),
+        gravity: f32::from(def.gravity) / 16.0,
+        iterations: usize::from(def.iterations),
+        reel_speed: f32::from(def.reel_speed) / 16.0,
+    }
+}
+
 impl GameState {
     pub fn new(spells: SpellTable) -> Self {
         Self {
@@ -146,6 +187,7 @@ impl GameState {
             projectiles: ProjectileWorld::new(),
             wands: BTreeMap::new(),
             enemies: BTreeMap::new(),
+            hooks: BTreeMap::new(),
             spells,
         }
     }
@@ -159,6 +201,26 @@ impl GameState {
     pub fn add_character(&mut self, id: EntityId, vitals: Vitals, wand: Wand) {
         self.vitals.insert(id, vitals);
         self.wands.insert(id, wand);
+    }
+
+    /// 仕様 10 §9.4: 杖を持つキャラクターの右手にワイヤーフック `name` を持たせる。
+    pub fn equip_hook(
+        &mut self,
+        id: EntityId,
+        defs: &Definitions,
+        name: &str,
+    ) -> Result<(), GameError> {
+        let def = defs.hook(name).ok_or_else(|| GameError::UnknownHook(name.to_owned()))?;
+        if !self.wands.contains_key(&id) {
+            return Err(GameError::InvalidAction);
+        }
+        self.hooks.insert(id, Hook { def: def.clone(), rope: None, cooldown: 0, held: false });
+        Ok(())
+    }
+
+    /// 出ているワイヤー (描画用)。
+    pub fn rope(&self, id: EntityId) -> Option<&Rope> {
+        self.hooks.get(&id)?.rope.as_ref()
     }
 
     /// 仕様 10 §8.2: 定義 `name` の敵を、左上のセル `cell` に作る。失敗したときは何も変えない。
@@ -258,6 +320,8 @@ impl GameState {
         for (pid, id) in shooters {
             self.projectiles.set_grace(pid, id);
         }
+        // (3') 道具 (ワイヤーフック)。
+        self.step_hooks(world, entities, &by_id);
         // (4) 敵。
         self.step_enemies(world, entities, tick, seed);
         // (5) 弾の移動と着弾。
@@ -275,6 +339,70 @@ impl GameState {
             entities.remove(id);
         }
         Ok(StepReport { hits, defeated })
+    }
+
+    /// 仕様 10 §9.4: ワイヤーフックを ID 昇順に更新し、張ったワイヤーでプレイヤーを引く。
+    fn step_hooks(
+        &mut self,
+        world: &World,
+        entities: &mut EntityWorld,
+        inputs: &BTreeMap<EntityId, GameInput>,
+    ) {
+        let ids: Vec<EntityId> = self.hooks.keys().copied().collect();
+        for id in ids {
+            let input = inputs.get(&id).copied().unwrap_or_default();
+            let alive = self.vitals.get(id).is_some_and(Vitals::alive);
+            let Some(entity) = entities.get(id).cloned() else { continue };
+            let (cx, cy) = center16(&entity);
+            let hand = [cx as f32 / 16.0, cy as f32 / 16.0];
+            let Some(hook) = self.hooks.get_mut(&id) else { continue };
+            hook.cooldown = hook.cooldown.saturating_sub(1);
+            let def = hook.def.clone();
+            let params = rope_params(&def);
+            let tool = input.tool && alive;
+            // 押した tick に撃つ (出ていなくて、待ち時間が明けているとき)。
+            if tool && !hook.held && hook.rope.is_none() && hook.cooldown == 0 {
+                let direction = [input.aim.0 as f32, input.aim.1 as f32];
+                hook.rope = Rope::launch(hand, direction, f32::from(def.speed) / 16.0, &params);
+            }
+            hook.held = tool;
+            // 離した、または倒れたら外す。
+            if hook.rope.is_some() && !tool {
+                hook.rope = None;
+                hook.cooldown = def.cooldown;
+                continue;
+            }
+            let Some(rope) = hook.rope.as_mut() else { continue };
+            let reel = tool && rope.phase() == RopePhase::Anchored;
+            let mut solid =
+                |p: [f32; 2]| blocks_sight(world, p[0].floor() as i64, p[1].floor() as i64);
+            if rope.step(hand, reel, &params, &mut solid) == RopeEvent::Lost {
+                hook.rope = None;
+                hook.cooldown = def.cooldown;
+                continue;
+            }
+            if rope.phase() != RopePhase::Anchored {
+                continue;
+            }
+            // 張ったワイヤーでプレイヤーの速度を直す (振り子と巻き取り)。
+            let Some(body) = entities.get_mut(id) else { continue };
+            // 次の tick の重力 (`step_entity` が vy に 4 足す) を見込んで補正する。
+            let velocity = [f32::from(body.vx) / 16.0, (f32::from(body.vy) + 4.0) / 16.0];
+            let next = tether_velocity(
+                rope,
+                hand,
+                velocity,
+                reel,
+                f32::from(def.pull_accel) / 16.0,
+                f32::from(def.pull_max) / 16.0,
+            );
+            if !next.iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            let control = i32::from(body.vx) - i32::from(body.ext_vx);
+            body.vy = ((next[1] * 16.0).round() - 4.0).clamp(-256.0, 256.0) as i16;
+            body.ext_vx = ((next[0] * 16.0).round() as i32 - control).clamp(-512, 512) as i16;
+        }
     }
 
     /// 最も近く、視界と視線の通る生存中のキャラクター (仕様 10 §8.3 の 2)。
@@ -435,6 +563,12 @@ impl GameState {
         for (&id, wand) in &self.wands {
             feed(&id.0.to_le_bytes());
             feed(&wand.state_hash().to_le_bytes());
+        }
+        for (&id, hook) in &self.hooks {
+            feed(&id.0.to_le_bytes());
+            feed(&hook.cooldown.to_le_bytes());
+            feed(&[u8::from(hook.held)]);
+            feed(&hook.rope.as_ref().map_or(0, Rope::state_hash).to_le_bytes());
         }
         for (&id, enemy) in &self.enemies {
             feed(&id.0.to_le_bytes());

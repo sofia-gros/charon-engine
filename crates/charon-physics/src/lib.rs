@@ -7,6 +7,7 @@ mod explosion;
 mod forces;
 mod heat;
 mod particle;
+pub mod rope;
 mod save;
 mod stamp;
 mod terrain;

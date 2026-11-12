@@ -12,12 +12,12 @@ use crate::game::{GameError, GameInput, GameState};
 use crate::mods::{ModError, ModManifest, ModPack};
 use crate::{EntityError, EntityId, EntityWorld, PlayerInput};
 
-pub const PROTOCOL_VERSION: u16 = 2;
-pub const TICK_INPUT_BYTES: usize = 29;
+pub const PROTOCOL_VERSION: u16 = 3;
+pub const TICK_INPUT_BYTES: usize = 30;
 /// 狙いのベクトルの各成分の上限 (仕様 10 §6.2)。
 const MAX_AIM: i32 = 1_000_000;
 
-/// version(2) + tick(8) + player(8) + horizontal(1) + jump(1) + fire(1) + aim_x(4) + aim_y(4)。すべて LE。
+/// version(2) + tick(8) + player(8) + horizontal(1) + jump(1) + fire(1) + aim_x(4) + aim_y(4) + tool(1)。すべて LE。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TickInput {
     pub tick: u64,
@@ -37,6 +37,7 @@ impl TickInput {
         bytes[20] = u8::from(self.action.fire);
         bytes[21..25].copy_from_slice(&self.action.aim.0.to_le_bytes());
         bytes[25..29].copy_from_slice(&self.action.aim.1.to_le_bytes());
+        bytes[29] = u8::from(self.action.tool);
         bytes
     }
 
@@ -63,6 +64,7 @@ impl TickInput {
             || !(-1..=1).contains(&horizontal)
             || bytes[19] > 1
             || bytes[20] > 1
+            || bytes[29] > 1
             || aim.0.unsigned_abs() > MAX_AIM as u32
             || aim.1.unsigned_abs() > MAX_AIM as u32
         {
@@ -72,7 +74,7 @@ impl TickInput {
             tick,
             player,
             input: PlayerInput { horizontal, jump: bytes[19] == 1 },
-            action: GameInput { fire: bytes[20] == 1, aim },
+            action: GameInput { fire: bytes[20] == 1, tool: bytes[29] == 1, aim },
         })
     }
 }

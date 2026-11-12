@@ -74,7 +74,12 @@ fn layer_adds_and_replaces() {
     let enemies = r#"[(name: "grunt", width: 6, height: 12, max_hp: 10, walk_speed: 8,
                        jump_speed: 40, sight: 50, attack: Some("zap"), attack_interval: 30)]"#;
     defs.layer(
-        DefinitionFiles { spells: Some(&text), wands: Some(wands), enemies: Some(enemies) },
+        DefinitionFiles {
+            spells: Some(&text),
+            wands: Some(wands),
+            enemies: Some(enemies),
+            ..Default::default()
+        },
         &materials,
         Some("game"),
     )
@@ -351,4 +356,117 @@ fn mod_definition_errors_stop_loading() {
     let pack = ModPack::load(&[one, two]).unwrap();
     assert!(pack.definitions.spells.id("one:shared").is_some());
     assert!(pack.definitions.spells.id("two:shared").is_some());
+}
+
+fn hook(name: &str, replace: bool, extra: &[(&str, &str)]) -> String {
+    let mut fields = vec![
+        ("max_length", "100"),
+        ("min_length", "4"),
+        ("speed", "320"),
+        ("segments", "24"),
+        ("gravity", "6"),
+        ("iterations", "8"),
+        ("reel_speed", "24"),
+        ("pull_accel", "8"),
+        ("pull_max", "48"),
+        ("cooldown", "20"),
+    ];
+    for (key, value) in extra {
+        let slot = fields.iter_mut().find(|(k, _)| k == key).unwrap();
+        slot.1 = value;
+    }
+    let body: Vec<String> = fields.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+    format!("(name: \"{name}\", replace: {replace}, {})", body.join(", "))
+}
+
+fn hooks_only(text: &str) -> DefinitionFiles<'_> {
+    DefinitionFiles { hooks: Some(text), ..Default::default() }
+}
+
+#[test]
+fn hook_definitions_layer_and_replace() {
+    let materials = materials();
+    let base = Definitions::engine_defaults(&materials).unwrap();
+    // エンジンの既定。
+    assert_eq!(base.hook_names().collect::<Vec<_>>(), ["grapple"]);
+    let grapple = base.hook("grapple").unwrap();
+    assert_eq!((grapple.max_length, grapple.segments, grapple.cooldown), (200, 24, 20));
+    assert!(base.hook("nothing").is_none());
+
+    // ゲームの追加 (名前空間付き) と上書き。
+    let mut defs = base.clone();
+    let text = format!(
+        "[{}, {}]",
+        hook("long", false, &[("max_length", "300")]),
+        hook("grapple", true, &[("pull_max", "100")]),
+    );
+    defs.layer(hooks_only(&text), &materials, Some("game")).unwrap();
+    assert_eq!(defs.hook_names().collect::<Vec<_>>(), ["grapple", "game:long"]);
+    assert_eq!(defs.hook("game:long").unwrap().max_length, 300);
+    assert_eq!(defs.hook("grapple").unwrap().pull_max, 100, "名前をそのまま使って上書き");
+    assert_ne!(defs.content_hash(), base.content_hash(), "上書きで内容ハッシュが変わる");
+
+    // 重複・置き換え先なし・範囲外・構文エラーは何も変えずに拒否する。
+    let hash = defs.content_hash();
+    let mut reject = |text: &str| {
+        let error = defs.layer(hooks_only(text), &materials, None).unwrap_err();
+        assert_eq!(defs.content_hash(), hash, "失敗した層は何も変えない: {error}");
+        error
+    };
+    let one = |name: &str, replace: bool, extra: &[(&str, &str)]| {
+        format!("[{}]", hook(name, replace, extra))
+    };
+    assert!(matches!(
+        reject(&one("grapple", false, &[])),
+        DefsError::Duplicate { kind: "道具", .. }
+    ));
+    assert!(matches!(
+        reject(&one("ghost", true, &[])),
+        DefsError::ReplaceMissing { kind: "道具", .. }
+    ));
+    for (key, bad) in [
+        ("max_length", "3"),
+        ("max_length", "401"),
+        ("min_length", "1"),
+        ("min_length", "65"),
+        ("speed", "15"),
+        ("speed", "513"),
+        ("segments", "3"),
+        ("segments", "65"),
+        ("gravity", "65"),
+        ("iterations", "0"),
+        ("iterations", "33"),
+        ("reel_speed", "97"),
+        ("pull_accel", "65"),
+        ("pull_max", "0"),
+        ("pull_max", "193"),
+        ("cooldown", "601"),
+        ("cooldown", "-1"),
+    ] {
+        assert!(
+            matches!(reject(&one("bad", false, &[(key, bad)])), DefsError::Invalid { .. }),
+            "{key}={bad}"
+        );
+    }
+    // min_length が max_length を超える。
+    assert!(matches!(
+        reject(&one("bad", false, &[("max_length", "10"), ("min_length", "20")])),
+        DefsError::Invalid { .. }
+    ));
+    assert!(matches!(reject("[(name: "), DefsError::Parse { file: "hooks.ron", .. }));
+}
+
+#[test]
+fn mod_hooks_load_after_engine_defaults() {
+    let dir = TempMods::new();
+    let later = format!("[{}]", hook("grapple", true, &[("pull_max", "77")]));
+    let earlier = format!("[{}]", hook("rope", false, &[("max_length", "50")]));
+    let a = dir.add("one", "a_mod", &[("hooks.ron", &earlier)]);
+    let b = dir.add("two", "b_mod", &[("hooks.ron", &later)]);
+    let pack = ModPack::load(&[b, a]).unwrap();
+    assert_eq!(pack.definitions.hook_names().collect::<Vec<_>>(), ["grapple", "a_mod:rope"]);
+    assert_eq!(pack.definitions.hook("grapple").unwrap().pull_max, 77);
+    assert_eq!(pack.definitions.hook("a_mod:rope").unwrap().max_length, 50);
+    // ファイルがなくても読め、エンジンの既定が残る。
+    assert_eq!(ModPack::load(&[]).unwrap().definitions.hook("grapple").unwrap().pull_max, 48);
 }

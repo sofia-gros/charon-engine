@@ -16,6 +16,8 @@ pub(super) struct Controls {
     /// `Some(先頭の ID)` のとき、ブラシは材質の代わりに x 座標で色を変える虹色の材質群を置く (仕様 09 §2)。
     pub(super) rainbow: Option<MaterialId>,
     pub(super) build_layer: Option<Layer>,
+    /// 左ボタンをブラシにする (`B` キー、`Draw` パネルの `Paint`)。偽のとき、プレイヤーがいれば左ボタンは武器 (仕様 10 §9.5)。
+    pub(super) paint: bool,
     pub(super) brush_radius: u32,
     pub(super) paused: bool,
     pub(super) step_once: bool,
@@ -39,6 +41,7 @@ impl Controls {
             selected,
             rainbow: None,
             build_layer: None,
+            paint: false,
             brush_radius: 3,
             paused: false,
             step_once: false,

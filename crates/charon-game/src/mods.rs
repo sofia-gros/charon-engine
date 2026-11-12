@@ -96,6 +96,7 @@ struct Source {
     spells: Option<String>,
     wands: Option<String>,
     enemies: Option<String>,
+    hooks: Option<String>,
     script: Option<(PathBuf, String)>,
 }
 
@@ -150,6 +151,7 @@ impl ModPack {
                 spells: read_optional(directory.path.join("spells.ron"))?,
                 wands: read_optional(directory.path.join("wands.ron"))?,
                 enemies: read_optional(directory.path.join("enemies.ron"))?,
+                hooks: read_optional(directory.path.join("hooks.ron"))?,
                 script: if directory.script {
                     let path = directory.path.join("script.ron");
                     Some((path.clone(), read(path)?))
@@ -183,6 +185,7 @@ impl ModPack {
                         spells: source.spells.as_deref(),
                         wands: source.wands.as_deref(),
                         enemies: source.enemies.as_deref(),
+                        hooks: source.hooks.as_deref(),
                     },
                     &materials,
                     Some(&source.manifest.id),

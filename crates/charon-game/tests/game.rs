@@ -59,7 +59,7 @@ impl Stage {
 }
 
 fn shoot_right() -> GameInput {
-    GameInput { fire: true, aim: (1, 0) }
+    GameInput { fire: true, aim: (1, 0), ..Default::default() }
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn game_rejects_bad_actions_atomically() {
     assert_eq!(stage.game.state_hash(), before);
 
     // 狙いが (0, 0) なら撃たずに続ける (環境ダメージは進む)。
-    stage.step(&[(a, GameInput { fire: true, aim: (0, 0) })]).unwrap();
+    stage.step(&[(a, GameInput { fire: true, aim: (0, 0), ..Default::default() })]).unwrap();
     assert!(stage.game.projectiles.is_empty());
     assert!(stage.game.vitals.get(a).unwrap().hp < MAX_HP);
     assert_eq!(stage.game.wands[&a].mana, 100, "撃っていないのでマナは減らない");

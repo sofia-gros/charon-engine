@@ -1,0 +1,7 @@
+// エンジンが既定で持つ道具 (ワイヤーフック、仕様 10 §9.3)。右手に持ち、右クリックで使う。
+// ゲームは MOD の hooks.ron で足したり、`replace: true` で上書きしたりできる。
+// 長さはセル、speed・reel_speed・pull_max は 1/16 セル / tick、gravity・pull_accel は 1/16 セル / tick²。
+[
+    (name: "grapple", max_length: 200, min_length: 4, speed: 320, segments: 24, gravity: 6,
+     iterations: 8, reel_speed: 24, pull_accel: 8, pull_max: 48, cooldown: 20),
+]

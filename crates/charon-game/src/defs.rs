@@ -10,9 +10,11 @@ use crate::wand::{Fnv, SpellError, SpellTable, Wand, WandError};
 const ENGINE_SPELLS: &str = include_str!("../../../assets/spells.ron");
 const ENGINE_WANDS: &str = include_str!("../../../assets/wands.ron");
 const ENGINE_ENEMIES: &str = include_str!("../../../assets/enemies.ron");
+const ENGINE_HOOKS: &str = include_str!("../../../assets/hooks.ron");
 
 const MAX_WANDS: usize = 256;
 const MAX_ENEMIES: usize = 256;
+const MAX_HOOKS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefsError {
@@ -23,6 +25,7 @@ pub enum DefsError {
     UnknownSpell { owner: String, spell: String },
     Invalid { owner: String, reason: &'static str },
     UnknownWand(String),
+    UnknownHook(String),
     Wand(WandError),
     TooMany(&'static str),
 }
@@ -41,6 +44,7 @@ impl std::fmt::Display for DefsError {
             }
             Self::Invalid { owner, reason } => write!(f, "\"{owner}\": {reason}"),
             Self::UnknownWand(name) => write!(f, "杖 \"{name}\" は定義されていません"),
+            Self::UnknownHook(name) => write!(f, "ワイヤーフック \"{name}\" は定義されていません"),
             Self::Wand(e) => write!(f, "{e}"),
             Self::TooMany(kind) => write!(f, "{kind} が多すぎます"),
         }
@@ -81,6 +85,39 @@ pub struct EnemyDef {
     pub contact_damage: i32,
 }
 
+/// ワイヤーフックの定義 (仕様 10 §9.3)。長さはセル、速さは 1/16 セル / tick。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HookDef {
+    pub name: String,
+    pub max_length: u16,
+    pub min_length: u8,
+    pub speed: u16,
+    pub segments: u8,
+    pub gravity: u8,
+    pub iterations: u8,
+    pub reel_speed: u8,
+    pub pull_accel: u8,
+    pub pull_max: u8,
+    pub cooldown: u16,
+}
+
+#[derive(Deserialize)]
+struct RawHook {
+    name: String,
+    #[serde(default)]
+    replace: bool,
+    max_length: i64,
+    min_length: i64,
+    speed: i64,
+    segments: i64,
+    gravity: i64,
+    iterations: i64,
+    reel_speed: i64,
+    pull_accel: i64,
+    pull_max: i64,
+    cooldown: i64,
+}
+
 #[derive(Deserialize)]
 struct RawWand {
     name: String,
@@ -117,6 +154,7 @@ pub struct DefinitionFiles<'a> {
     pub spells: Option<&'a str>,
     pub wands: Option<&'a str>,
     pub enemies: Option<&'a str>,
+    pub hooks: Option<&'a str>,
 }
 
 /// 呪文・杖・敵の定義。層で重ねる。
@@ -125,6 +163,7 @@ pub struct Definitions {
     pub spells: SpellTable,
     wands: Vec<WandDef>,
     enemies: Vec<EnemyDef>,
+    hooks: Vec<HookDef>,
 }
 
 fn range(
@@ -211,6 +250,7 @@ impl Definitions {
                 spells: Some(ENGINE_SPELLS),
                 wands: Some(ENGINE_WANDS),
                 enemies: Some(ENGINE_ENEMIES),
+                hooks: Some(ENGINE_HOOKS),
             },
             materials,
             None,
@@ -234,6 +274,9 @@ impl Definitions {
         }
         if let Some(text) = files.enemies {
             next.layer_enemies(text, namespace)?;
+        }
+        if let Some(text) = files.hooks {
+            next.layer_hooks(text, namespace)?;
         }
         *self = next;
         Ok(())
@@ -322,6 +365,57 @@ impl Definitions {
         Ok(())
     }
 
+    fn layer_hooks(&mut self, text: &str, namespace: Option<&str>) -> Result<(), DefsError> {
+        let raws: Vec<RawHook> = ron::from_str(text)
+            .map_err(|e| DefsError::Parse { file: "hooks.ron", reason: e.to_string() })?;
+        let mut seen = BTreeSet::new();
+        for raw in raws {
+            let name = qualify("道具", &raw.name, raw.replace, namespace)?;
+            let max_length = range(&name, raw.max_length, 4, 400, "max_length は 4..=400 です")?;
+            let min_length = range(&name, raw.min_length, 2, 64, "min_length は 2..=64 です")?;
+            if min_length > max_length {
+                return Err(DefsError::Invalid {
+                    owner: name,
+                    reason: "min_length は max_length 以下です",
+                });
+            }
+            let speed = range(&name, raw.speed, 16, 512, "speed は 16..=512 です")?;
+            let segments = range(&name, raw.segments, 4, 64, "segments は 4..=64 です")?;
+            let gravity = range(&name, raw.gravity, 0, 64, "gravity は 0..=64 です")?;
+            let iterations = range(&name, raw.iterations, 1, 32, "iterations は 1..=32 です")?;
+            let reel = range(&name, raw.reel_speed, 0, 96, "reel_speed は 0..=96 です")?;
+            let pull = range(&name, raw.pull_accel, 0, 64, "pull_accel は 0..=64 です")?;
+            let pull_max = range(&name, raw.pull_max, 1, 192, "pull_max は 1..=192 です")?;
+            let cooldown = range(&name, raw.cooldown, 0, 600, "cooldown は 0..=600 です")?;
+            let def = HookDef {
+                name,
+                max_length: max_length as u16,
+                min_length: min_length as u8,
+                speed: speed as u16,
+                segments: segments as u8,
+                gravity: gravity as u8,
+                iterations: iterations as u8,
+                reel_speed: reel as u8,
+                pull_accel: pull as u8,
+                pull_max: pull_max as u8,
+                cooldown: cooldown as u16,
+            };
+            place("道具", &mut self.hooks, |h| &h.name, &mut seen, raw.replace, def)?;
+        }
+        if self.hooks.len() > MAX_HOOKS {
+            return Err(DefsError::TooMany("道具"));
+        }
+        Ok(())
+    }
+
+    pub fn hook(&self, name: &str) -> Option<&HookDef> {
+        self.hooks.iter().find(|h| h.name == name)
+    }
+
+    pub fn hook_names(&self) -> impl Iterator<Item = &str> {
+        self.hooks.iter().map(|h| h.name.as_str())
+    }
+
     pub fn wand_def(&self, name: &str) -> Option<&WandDef> {
         self.wands.iter().find(|w| w.name == name)
     }
@@ -379,6 +473,23 @@ impl Definitions {
             hash.bytes(&[0]);
             hash.bytes(&e.attack_interval.to_le_bytes());
             hash.bytes(&e.contact_damage.to_le_bytes());
+        }
+        hash.bytes(&[2]);
+        for h in &self.hooks {
+            hash.bytes(h.name.as_bytes());
+            hash.bytes(&[0]);
+            hash.bytes(&h.max_length.to_le_bytes());
+            hash.bytes(&[h.min_length]);
+            hash.bytes(&h.speed.to_le_bytes());
+            hash.bytes(&[
+                h.segments,
+                h.gravity,
+                h.iterations,
+                h.reel_speed,
+                h.pull_accel,
+                h.pull_max,
+            ]);
+            hash.bytes(&h.cooldown.to_le_bytes());
         }
         hash.finish()
     }

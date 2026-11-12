@@ -309,7 +309,7 @@ fn trace(seed: u64) -> Vec<(u64, u64)> {
     let mut hashes = Vec::new();
     for tick in 0..250 {
         let fire = tick % 7 < 3;
-        let action = GameInput { fire, aim: (1, 0) };
+        let action = GameInput { fire, aim: (1, 0), ..Default::default() };
         let input =
             PlayerInput { horizontal: if tick % 90 < 45 { 1 } else { -1 }, jump: tick % 53 == 0 };
         arena.entities.step_players(&[(player, input)], &arena.world).unwrap();

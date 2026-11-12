@@ -179,7 +179,7 @@ pub struct GameState {
 
 ### 6.3 デモ・サンドボックス
 
-- デモでは、プレイヤーに体力・杖を持たせる (値と呪文はゲーム側の定義、§7.4)。**右ボタンを押している間、カーソルの方向へ撃つ** (狙いはプレイヤーの中心からカーソルのセルの中心への向き)。杖は呪文の並びを順に撃つ。UI が右ボタンの押下を使ったときは撃たない。自由カメラ (`F`) の間は撃たない。
+- デモでは、プレイヤーに体力・杖を持たせる (値と呪文はゲーム側の定義、§7.4)。**左ボタンを押している間、カーソルの方向へ撃つ** (T11.8 で、右ボタンはワイヤーフックの道具になった。§9.5)。狙いはプレイヤーの中心からカーソルのセルの中心への向き。杖は呪文の並びを順に撃つ。UI が押下を使ったときと、自由カメラ (`F`)・描画モードの間は撃たない。
 - 画面の上端の中央に **体力・息・マナのバー、次の呪文の名前、飛んでいる弾の数** を出す (`Wand` パネル。体力 0 のときは `DEAD`)。体力 0 のプレイヤーは入力を受けない (歩けず、撃てない)。
 - 弾はエンティティの描画パスの 2×2 セルの点として描く (色は呪文ごとではなく固定)。爆発はパーティクルが散る。
 - 世界を作り直す (`Main Menu`) と、体力・杖・弾は初期状態に戻る。
@@ -193,10 +193,10 @@ pub struct GameState {
 | `dead_characters_do_not_fire` | 体力 0 のキャラクターは発射しない・環境ダメージを受けない |
 | `lockstep_packet_v2_roundtrip` | 29 バイトの符号化・復号が一致し、不正な `fire`・大きすぎる `aim`・version 1 を拒否する |
 | `lockstep_game_hash_is_order_independent` | 到着順が違っても `game` を含む毎 tick のハッシュが一致し、呪文表が違う接続は拒否される |
-| `demo_wand_fires_in_scene` | デモの世界で右ボタン相当の入力が弾を生み、爆発でセルがパーティクルになる (画面なし) |
+| `demo_wand_fires_in_scene` | デモの世界で左ボタン相当の入力 (`fire`) が弾を生み、爆発でセルがパーティクルになる (画面なし) |
 | `demo_renders_wand_panel` | RTX 4060 のオフスクリーン描画で `Wand` パネルと弾を含む画面を描ける |
 
-ウィンドウでの右ボタン操作は、画面操作の許可がなければ未検証として記録する。
+ウィンドウでのボタン操作は、画面操作の許可がなければ未検証として記録する。
 
 ## 7. T11.7: エンジンの定義層とゲーム側の追加・上書き (`charon-game::defs`)
 
@@ -310,7 +310,85 @@ pub struct GameState {
 | `step_entity_uses_given_speeds` | `walk_speed`・`jump_speed` どおりに動き、`step_player` の結果は変わらない |
 | `demo_enemies_spawn_in_scene` | デモの世界にゲーム側の指定どおり敵が生まれ、決定的に動く (画面なし) |
 
-## 9. 後続 (T11.5) の方針
+## 9. T11.8: ワイヤーフックと装備の切り替え (`charon-physics::rope`、`charon-game::game`)
+
+ワイヤーフックは**道具**で、**右手**に持つ。右クリックで、マウスの方向へ**物理挙動するワイヤー**を撃つ。**左手は武器** (杖) で、左クリックで撃つ。2 つは独立していて、同時に使える (手は操作の割り当ての概念で、見た目には反映しない)。ワイヤーは重力でしなり、地形に食い込まない。先端が地形に当たって止まったら、ワイヤーが張った分だけプレイヤーを引っ張る。右ボタンを押している間は巻き取り、離すと外れる。ワイヤーの物理は浮動小数点 (`f32`、位置はセル単位) で、剛体と同じく `charon-physics` に置く (CLAUDE.md の例外)。同一プラットフォーム・同一ビルドでは同じ入力から同じ結果になるが、異なる環境の一致は主張しない (仕様 07 §7 と同じ)。
+
+### 9.1 ワイヤーの物理 (`charon_physics::rope`)
+
+```rust
+pub struct RopeParams { pub segments: usize, pub max_length: f32, pub min_length: f32,
+    pub gravity: f32, pub iterations: usize, pub reel_speed: f32 }   // 長さはセル、速さはセル / tick
+pub enum RopePhase { Flying, Anchored }
+pub enum RopeEvent { None, Anchored, Lost }
+pub struct Rope { /* 点列、前の点列、phase、rest (静止長)、先端の速度 */ }
+```
+
+- `Rope::launch(hand, direction, speed, &params) -> Option<Rope>`: `direction` が 0 または有限でなければ `None`。点は `segments + 1` 個 (4..=64 個のセグメント)。最初は全点が `hand` にあり、先端 (最後の点) の速度は `direction` を正規化して `speed` 倍にしたもの。`phase = Flying`。
+- `Rope::step(&mut self, hand, reel, &params, solid) -> RopeEvent` を 1 tick に 1 回呼ぶ。`solid(point) -> bool` は点がいるセルが地形か (境界・剛体・固体・粉体)。
+  1. **飛行 (`Flying`)**: 先端の速度に `gravity` を足し、位置を 0.5 セル以下の小刻みに進める。途中で `solid` が真になったら、その直前の位置に先端を置き、`phase = Anchored`、`rest = min(多角線の長さ, max_length)` (下限 `min_length`) とし、`RopeEvent::Anchored`。進み終えたときに手と先端の距離が `max_length` を超えたら `RopeEvent::Lost` (呼び出し側が外す)。
+  2. **巻き取り (`Anchored`)**: `reel` が真なら `rest = max(min_length, rest - reel_speed)`。
+  3. **しなり**: 点 0 は常に `hand`、最後の点 (先端) は動かさない。それ以外の点は Verlet 法 (`p' = p + (p - prev) * 0.995 + (0, gravity)`) で動かし、続いて `iterations` 回、隣り合う点の距離を `seg = rest / segments` (飛行中は `max(手と先端の距離, 0.01) * 1.03 / segments`) に近づける拘束を、点 0 から順に (端の点は動かさずに) 解く。
+  4. **衝突**: 動かした各点が `solid` の中にいたら、動かす前の位置に戻し、その点の速度を 0 にする (地形に食い込まない)。
+- 取り出し: `points()`、`phase()`、`rest_length()`、`polyline_length()`、`anchor() -> Option<[f32; 2]>` (`Anchored` のときの先端)、`state_hash()` (全点・phase・rest のビット列を FNV-1a 64-bit で流す)。
+- `tether_velocity(rope, hand, velocity, reel, pull_accel, speed_cap) -> [f32; 2]`: プレイヤー (または任意の質点) の速度 (セル / tick) を、ワイヤーの拘束で直す。`Anchored` のときだけ働く (飛行中は `velocity` をそのまま返す)。(1) **張っている** (手とアンカーの**直線距離**が `rest_length() - 0.05` 以上。たるんで垂れ下がり、折れ線が伸びきったワイヤーを張っているとは見なさない) ときに `reel` が真なら、手から 3 セル以上離れた最初の点 (なければアンカー) への単位ベクトル `dir` を使って `dir * pull_accel` を足す。(2) 次の位置 `hand + velocity` がアンカーを中心とする半径 `rest_length()` の円の外に出るなら、**円の上に戻す** (ワイヤーは伸びない。振り子と、行き過ぎの修正を兼ねる)。(3) 結果の大きさを `speed_cap` 以下に収める。次の位置が円の中 (たるんでいる) なら (1) 以外は何も変えない。
+
+### 9.2 エンティティの外力速度 (`charon-game`)
+
+`Entity` に `ext_vx: i16` (1/16 セル / tick、既定 0) を足す。`step_entity` は `vx = horizontal * walk_speed + ext_vx` (各成分 ±512 に収める) で動き、x 方向に衝突したら `ext_vx = 0`。動いたあと、`ext_vx` を接地中は `* 3 / 4`、空中は `* 15 / 16` (0 方向へ丸める整数除算) にする。`ext_vx = 0` なら従来どおり (`step_player` の結果は変わらない)。`state_hash` に `ext_vx` を含める。
+
+### 9.3 定義 (`hooks.ron`) とエンジンの既定
+
+仕様 §7 の層・`replace`・名前空間の規則を `hooks.ron` にも使う (エンジンの既定は `assets/hooks.ron`、MOD に省略できる `hooks.ron`)。
+
+```ron
+[(name: "grapple", max_length: 200, min_length: 4, speed: 320, segments: 24, gravity: 6,
+  iterations: 8, reel_speed: 24, pull_accel: 12, pull_max: 128, cooldown: 20)]
+```
+
+- `max_length` 4..=400 (セル)、`min_length` 2..=64 (セル、`max_length` 以下)、`speed` 16..=512、`gravity` 0..=64、`reel_speed` 0..=96、`pull_accel` 0..=64、`pull_max` 1..=192 (いずれも 1/16 セル / tick、`gravity`・`pull_accel` は 1/16 セル / tick²)、`segments` 4..=64、`iterations` 1..=32、`cooldown` 0..=600 (tick)。範囲外は名前を含む `DefsError::Invalid`。
+- `Definitions::hook(name) -> Option<&HookDef>`、`hook_names()`。内容ハッシュ (§7.2) に含める。エンジンの既定は `grapple` 1 つ。
+
+### 9.4 手の割り当てと 1 tick の処理 (`GameState`)
+
+- **左手 = 武器 (杖)、右手 = 道具 (ワイヤーフック)**。`GameInput { fire, tool, aim }`: `fire` は左クリック (武器、§6.1 と同じ)、`tool` は右クリック (道具)、`aim` は 2 つで共通のマウスの方向。2 つは独立で、同じ tick に両方を使える。
+- `GameState::equip_hook(id, &Definitions, name) -> Result<(), GameError>` でフックを持たせる。`name` が定義にないと `GameError::UnknownHook(name)`、`id` が杖を持つキャラクターでなければ `InvalidAction`。フックだけで杖のないキャラクターは、このタスクでは扱わない。
+- `tool` の扱い (ワイヤーがないキャラクターでは何もしない):
+  - `tool` が偽から真に変わった tick に、ワイヤーが出ておらず `cooldown == 0` なら、`aim` の向きに `Rope::launch` (手 = 当たり判定の中心のセル座標、`speed` = 定義の `speed / 16`)。狙いが `(0, 0)` なら撃たない。
+  - ワイヤーが出ていて `tool` が偽 (離した)、またはキャラクターが倒れた、または `Lost` になったら、ワイヤーを外して `cooldown = 定義の cooldown`。
+  - `Anchored` で `tool` が真なら巻き取り (`reel`)。
+- 毎 tick、ワイヤーのあるキャラクターを ID 昇順に、プレイヤーの発射 (§6.1 の (3)) のあとに更新する: `Rope::step` → `Anchored` なら `tether_velocity` でプレイヤーの速度を直し、`vy` と `ext_vx` に書き戻す (`vy` は ±256、`ext_vx` は ±512 に収める)。速度は `(vx, vy + 4) / 16` (`vy` の `+ 4` は、次の tick に `step_entity` が足す重力を見込むため)、書き戻すときは `vy` から 4 を引く。`ext_vx` は、直した横の速度から、この tick の歩きの速度 (`vx - ext_vx`) を引いたもの。`solid` は仕様 §8.3 の「視線を遮るセル」と同じ判定。
+- `StepReport` はそのまま。`GameState::rope(id) -> Option<&Rope>` で描画に渡す。`state_hash` にフックの状態 (`cooldown`・`tool` を押していたか・ワイヤーの `state_hash`) を含める。
+
+### 9.5 `Lockstep` と デモ (ゲーム側)
+
+- パケットを version 3 にする: 30 バイト (v2 の後ろに `tool: u8`、0 か 1)。範囲外は `InvalidPacket`。v2 以前は `Mismatch`。杖を持たない参加者が `tool` を送ったら、`fire` と同じく `InvalidAction` で拒否する。
+- `PlayerLoadout` に `hook: Option<String>` (`Definitions::hook` の名前) を足す。`charon-app` は、プレイヤーの生成時にフックを `equip_hook` する。
+- 入力: **左ボタン = 武器、右ボタン = 道具**。ブラシ (材質を描く、仕様 09) と左ボタンが重なるので、**描画モード** を設ける: `B` キー (または `Draw` パネルの `Paint` チェック) で切り替え、描画モードのあいだは左ボタンがブラシになり (武器は撃たない)、そうでないあいだ左ボタンは武器になる。デモは武器モードで始める。右ボタンは常に道具。UI が押下を使ったとき、自由カメラ (`F`) の間は、どちらも使わない。`Wand` パネルに道具 (`Tool: Hook`) と、ワイヤーの状態 (`flying` / `anchored`) を出す。
+- 描画: ワイヤーは、点列の間を 1 セル間隔でうめた 1×1 の点と、先端の 2×2 の点で描く (エンティティの描画パス。色は固定)。
+
+| テスト | 確認 |
+|---|---|
+| `rope_sags_under_gravity` | 両端を固定した、たるんだワイヤーが重力で垂れ下がり (中点が両端を結ぶ線より下)、長さは `rest` に近い |
+| `rope_flight_anchors_on_solid` | 飛行する先端が地形の手前で止まって `Anchored` になる。速くても (1 tick に 20 セル) すり抜けない |
+| `rope_reeling_shortens_and_stays_taut` | 巻き取りで `rest` が `min_length` まで減り、拘束後の多角線の長さは `rest` を大きく超えない |
+| `rope_stays_out_of_solids` | 地形の角に当たっても、どの点も地形の中にいない |
+| `rope_is_deterministic` | 同じ入力の列から、毎 tick の `state_hash` が一致する (1〜8 の初期条件) |
+| `tether_removes_outward_velocity` | 張ったワイヤーは外向きの速度を除き、巻き取りで内向きに加速し、上限を守る。張っていなければ変えない |
+| `entity_external_velocity_decays` | `ext_vx` が接地中・空中で減り、壁で 0 になる。`ext_vx = 0` のとき `step_player` と同じ |
+| `hook_launches_and_anchors` | 右ボタン相当の入力で、狙った方向へワイヤーが飛び、壁に当たって `Anchored` になる |
+| `hook_pulls_player_toward_anchor` | 着弾後、押している間はアンカーに近づき、床や壁を抜けず、`min_length` で止まる |
+| `hook_swings_without_stretching` | 張ったワイヤーでぶら下がるプレイヤーが振り子のように揺れ、アンカーまでの距離が `rest` を大きく超えない |
+| `hook_release_and_cooldown` | 離すとワイヤーが外れ、`cooldown` の間は撃てない。倒れても外れる |
+| `hook_respects_max_length` | 最大の長さの外の壁には届かず、`Lost` で外れる |
+| `weapon_and_tool_are_independent` | 武器 (`fire`) と道具 (`tool`) を同じ tick に使え、ワイヤーが出ていても杖が撃てる。杖のないキャラクターの `tool`・ワイヤーのない `tool` は何も起こさない |
+| `hook_definitions_layer_and_replace` | `hooks.ron` の追加・`replace`・MOD・範囲検査・内容ハッシュ |
+| `lockstep_packet_v3_roundtrip` | 30 バイトの符号化・復号が一致し、不正な `tool`・v2 を拒否する (v2 のテストを置き換える) |
+| `demo_hook_in_scene` | デモの世界で、プレイヤーがフックを持って始まり、右ボタン相当の入力 (`tool`) でワイヤーが壁に着弾してプレイヤーが引かれ、左ボタン相当の入力 (`fire`) では杖が撃てる (画面なし) |
+| `mouse_buttons_map_to_weapon_and_tool` | 左ボタン = 武器、右ボタン = 道具。描画モードでは左ボタンは武器にならない。UI が使った押下と自由カメラの間は何も使わない (`charon-app`) |
+| `demo_renders_hook` | RTX 4060 のオフスクリーン描画で、ワイヤーと `Item: Hook` を含む画面を描ける |
+
+## 10. 後続 (T11.5) の方針
 
 - **T11.5 掘る道具・浮遊**: 掘るは `Payload` の一種 (半径内のセルをパーティクルへ移す)。浮遊は `PlayerInput` の拡張 (燃料を消費し、`vy` を上向きに足す)。
 - いずれも着手前に、この文書へ表のテスト名と式を書く。
