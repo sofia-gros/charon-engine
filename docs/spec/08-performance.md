@@ -23,9 +23,15 @@ M9 は Windows 上の `charon-core` の性能を測り、実測で特定した�
 
 T9.1 と同じ場面・同じマシンで、プロファイルまたは局所計測から、セル更新、熱・反応判定、チャンクの取り出し／復元などの内訳を調べる。計測方法・サンプル数・実測値・限界を `docs/BENCHMARKS.md` に追記する。最大の実測コストと変更するコードパスを特定し、**T9.3 に着手する前に**この節に処理の前後条件、変更を許す範囲、期待する計測結果を具体的に追記する。測定できなければ推測で方式を決めず、理由と不足している計測を報告する。
 
+2026-11-12 の局所計測では、9 フェーズの更新処理が計測した tick のほぼ全時間を占め、粉体セルを 16 セル間隔で採取した 8,192 サンプルでは移動段階の累積時間が他の各段階より大きかった (値と計測上の制限は `docs/BENCHMARKS.md`)。よって T9.3 は **`sim/movement.rs` の `move_powder` の真下への移動部分のみ**を変更する。
+
+現在は真下のセルを `below = nb.get(x, y + 1)` で読み `can_displace(materials, cell, below)` が真であると確かめ、液体への抵抗判定と `fall_steps` の後、`while` の最初の条件で同じ位置を再び `nb.get` / `can_displace` している。判定後から最初の `swap` まで `Neighborhood` を変える処理はない。**初回だけ**確認済みの真下へ `nb.swap(x, y, x, y + 1)` し、`cy = y + 1`、`moved = 1` として、残りの歩数だけ従来と同じ順序で `can_displace` と `swap` を繰り返す。液体への抵抗・乱数・`fall_steps`・移動後の `FLAG_FALLING` と `vy`・`wake_neighbors` と、斜め・停止時の処理は一切変えない。初回判定が偽のときの処理も変えない。
+
+期待する計測結果は、同じ tick 1 の `falling_sand_1m` の中央値が T9.1 の 82.554 ms より短くなること。測定誤差だけの可能性があるため同じ CPU・コマンドで再計測し、改善が確認できなければこの変更を採用せず測定結果を残す。8 ms 達成は期待値に含めない。
+
 ## 4. T9.3: 測定箇所の最適化
 
-§3 で確定したコードパスのみを変更する。変更の前後で同じ CPU と計測条件を使い、`optimization_matches_baseline` で複数 seed の毎 tick の `state_hash` を比較する。`parallel_matches_serial`、`golden_hashes`、`mass_is_conserved` と休眠テストも通す。性能が改善しなければ最適化を採用せず、測定結果と原因を記録する。挙動を変える必要が判明したら `CLAUDE.md` の仕様不一致の手順に従う。
+§3 で確定したコードパスのみを変更する。変更の前後で同じ CPU と計測条件を使い、`optimization_matches_baseline` で seed 1〜8 の毎 tick の `state_hash` を比較する。場面は `world_from_ascii(&box_art(62, 64), seed)` に砂を `(12, 3)..=(20, 10)`、水を `(25, 0)..=(33, 8)` の矩形に `testkit::fill` で配置する。変更前のコードから tick 1〜16 のハッシュを生成し、`tests/golden/optimization.txt` に seed 昇順・tick 昇順で固定する。テストはこの全 128 個と毎 tick 比較し、最適化後に基準を作り直さない。`parallel_matches_serial`、`golden_hashes`、`mass_is_conserved` と休眠テストも通す。性能が改善しなければ最適化を採用せず、測定結果と原因を記録する。挙動を変える必要が判明したら `CLAUDE.md` の仕様不一致の手順に従う。
 
 ## 5. T9.4: 再計測と状態の確定
 
