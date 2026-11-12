@@ -101,7 +101,8 @@
 | `rainbow_index_is_periodic` | `rainbow_index` が x で周期 12、負座標でも 0..=11 |
 | `player_follows_camera` | 追従カメラが、プレイヤー中心をシーンの中央に置く |
 | `keyboard_maps_to_input` | キー列が `PlayerInput` に正しく写る (左右同時は中立) |
-| `demo_scene_is_deterministic` | デモの世界・剛体・プレイヤーを seed 1〜8 で 120 tick 進めた `state_hash` が同じ実行で一致 |
+| `demo_scene_is_deterministic` | デモの世界・剛体・プレイヤーを seed 1〜8 で 150 tick (チャンクの読み込み遅延 30 tick のあと) 進めた、世界・プレイヤー・剛体のハッシュが 2 回の実行で一致し、プレイヤーが 1 人生成されて接地し、剛体 3 つがスタンプされている。seed が違えばハッシュも違う |
+| `demo_bodies_are_valid_and_inside_the_room` | 剛体 3 つが作れ、部屋の内側に収まる |
 | `demo_renders_on_gpu` | GPU があるとき、デモ世界のオフスクリーン描画が暗い背景・光る苔・プレイヤーを含む (GPU なしではスキップ) |
 
 GPU・ウィンドウでの見え方は自動テストでは完全には確かめられない。実機の確認結果は `docs/PLATFORM_CHECK.md` に分けて記録し、確認していない項目を達成済みと書かない。

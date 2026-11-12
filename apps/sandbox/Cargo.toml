@@ -20,6 +20,10 @@ crate-type = ["cdylib", "rlib"]
 name = "charon-sandbox"
 path = "src/main.rs"
 
+[[bin]]
+name = "charon-demo"
+path = "src/demo_main.rs"
+
 [package.metadata.android]
 package = "dev.charon.sandbox"
 build_targets = ["aarch64-linux-android"]

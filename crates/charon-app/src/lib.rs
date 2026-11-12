@@ -2,6 +2,8 @@
 
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod demo;
 mod demo_ui;
 mod gesture;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -9,12 +11,14 @@ mod headless_tests;
 mod player;
 mod pointer;
 mod replay;
+mod sim;
 mod timestep;
 mod ui;
 
 pub use player::{KeyState, follow_origin, try_spawn_player};
 pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
+use sim::Sim;
 pub use timestep::FixedTimestep;
 use timestep::advance_frame;
 
@@ -648,66 +652,23 @@ impl App {
         if let Some(state) = self.streaming.as_mut() {
             state.streamer.set_load_radius(radius);
         }
-        let world = &mut self.world;
-        let streaming = &mut self.streaming;
-        let physics = &mut self.physics;
-        let entities = &mut self.entities;
-        let player = &mut self.player;
-        let player_spawn = &mut self.spawn_pending;
-        let initialized = &mut self.physics_initialized;
         let mut stream_error: Option<String> = None;
         let mut physics_ms = 0.0_f32;
+        let mut sim = Sim {
+            world: &mut self.world,
+            streaming: &mut self.streaming,
+            physics: &mut self.physics,
+            initialized: &mut self.physics_initialized,
+            entities: &mut self.entities,
+            player: &mut self.player,
+            spawn: &mut self.spawn_pending,
+        };
         let step = || {
-            if stream_error.is_some() {
-                return;
-            }
-            if let Some(state) = streaming.as_mut()
-                && let Err(err) = state.streamer.tick(world, &[camera])
+            if stream_error.is_none()
+                && let Err(err) = sim.tick(camera, player_input, &mut physics_ms)
             {
-                stream_error = Some(err.to_string());
-                return;
+                stream_error = Some(err);
             }
-            if !*initialized {
-                let ready = physics.bodies.iter().all(|body| {
-                    physics.world.bodies.get(body.handle).is_some_and(|rigid| {
-                        let position = rigid.translation() * CELLS_PER_METER;
-                        world
-                            .chunk(CellPos::new(position.x as i32, position.y as i32).chunk())
-                            .is_some()
-                    })
-                });
-                if !ready {
-                    // 保存状態の初回読み込み中も tick を進め、30 tick 後の挿入を待つ。
-                    // 剛体スタンプは対応チャンクが来るまで作らない。
-                    world.step();
-                    return;
-                }
-                physics.stamp_all(world);
-                *initialized = true;
-            }
-            if player.is_none()
-                && let Some(spawn) = *player_spawn
-            {
-                match try_spawn_player(entities, world, spawn) {
-                    Ok(Some(id)) => *player = Some(id),
-                    Ok(None) => {}
-                    Err(err) => {
-                        // 固体と重なる位置では、地形を消さずにプレイヤーなしで続ける。
-                        eprintln!("プレイヤーを生成できません: {err}");
-                        *player_spawn = None;
-                    }
-                }
-            }
-            let inputs: Vec<_> = player.iter().map(|&id| (id, player_input)).collect();
-            if let Err(err) = entities.step_players(&inputs, world) {
-                stream_error = Some(err.to_string());
-                return;
-            }
-            let physics_started = Instant::now();
-            if let Err(err) = physics.step(world) {
-                stream_error = Some(err.to_string());
-            }
-            physics_ms += physics_started.elapsed().as_secs_f32() * 1000.0;
         };
         advance_frame(&mut self.timer, elapsed, paused, step_once, step);
         if paused
@@ -929,7 +890,11 @@ impl ApplicationHandler for App {
         };
         let window = match event_loop.create_window(
             Window::default_attributes()
-                .with_title("Charon — live world")
+                .with_title(if self.options.demo {
+                    "Charon — demo"
+                } else {
+                    "Charon — live world"
+                })
                 .with_inner_size(initial_size),
         ) {
             Ok(window) => Arc::new(window),
