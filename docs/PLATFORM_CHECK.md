@@ -78,6 +78,10 @@ Windows 11 Pro 上で `CHARON_REQUIRED_GPU_ADAPTER=RTX 4060` を指定し、
 
 これは **実 GPU のオフスクリーン描画検証**であり、ウィンドウのサーフェスへの表示、実際の GUI 操作・最小化/復帰・ウィンドウのスクリーンショット、DX12 バックエンドや GPU フレーム時間を検証した結果ではない。CPU 側シミュレーションの 100 万セル / 8 ms 目標を GPU の存在だけで達成したことにもならない。
 
+## M10 の追加: 十字の剛体の回転 (T10.7)
+
+2026-11-12: デモの部屋の十字 (X 字) を、床から浮かせてその場で 3 ラジアン / 秒で回すようにした。RTX 4060 (Vulkan) のオフスクリーン描画で、150 tick 後の十字が傾いて連続した形で空中にあることを確認した ([`screenshots/M10-spinning-cross.png`](screenshots/M10-spinning-cross.png))。自動テスト (`demo_cross_spins`) で、150 tick から 149 tick のあいだに約 7.5 ラジアン回り、位置は動かないことを確認した。ウィンドウで回り続ける様子 (動画としての見え方) と、回る十字に他の剛体・粒子・プレイヤーが触れたときの挙動は未検証。保存済みの旧デモ世界 (`saves/demo`) の十字は、保存した位置のまま回り始める (床に重なって保存されていた場合は、新しい seed で確かめること)。
+
 ## M11 デモの杖と弾 (T11.6)
 
 2026-11-12: `charon-demo` に体力・杖・弾を組み込み、右ボタン (押している間) でカーソルの方向へ撃つようにした。`CHARON_REQUIRED_GPU_ADAPTER=RTX 4060` で `cargo test -p charon-app --lib demo_renders_wand_panel` を実行し、選択されたアダプターが **NVIDIA GeForce RTX 4060 / DiscreteGpu / Vulkan** であることを確認した。部屋の場面に体力 65/100 のプレイヤーと飛んでいる弾 3 つを置いて 1600×900 でオフスクリーンに描き、画面上端の `Wand` パネル (赤い体力バー、青い息・マナのバー、`Next: spark · Shots: 3`) と弾の点が画素に現れることを検査して通過した。画像は [`screenshots/M11-wand-panel.png`](screenshots/M11-wand-panel.png) で、目視でも確認した。

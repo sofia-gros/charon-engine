@@ -85,14 +85,35 @@ fn shape(
     cells
 }
 
-/// 部屋の床に置く X 字 (`ice`)、輪 (`wood`)、Z 字 (`stone`) の剛体 3 つ (仕様 09 §6)。
+/// 十字 (`X`) の回る速さ (ラジアン / 秒)。約 2 秒で 1 周する。
+pub(crate) const CROSS_SPIN: f32 = 3.0;
+
+/// 十字の剛体 (16×16、`ice` だけ) を、その場でくるくる回す (ゲーム側の指定、仕様 09 §6)。
+/// 保存・読み込みは回転の指定を持たないので、新しい世界でも読み込んだ世界でも呼ぶ。
+pub(crate) fn spin_cross(physics: &mut PhysicsEngine, ice: MaterialId) {
+    let cross = physics.bodies.iter().position(|body| {
+        body.width == 16
+            && body.height == 16
+            && body
+                .cells
+                .iter()
+                .all(|cell| cell.material == MaterialId::EMPTY || cell.material == ice)
+            && body.cells.iter().any(|cell| cell.material == ice)
+    });
+    if let Some(index) = cross {
+        physics.set_spin(index, Some(CROSS_SPIN));
+    }
+}
+
+/// 部屋に置く X 字 (`ice`、空中でくるくる回る)、床に置く輪 (`wood`)、Z 字 (`stone`) の剛体 3 つ (仕様 09 §6)。
 pub fn demo_bodies(world: &World) -> Result<PhysicsEngine, Box<dyn Error>> {
     let materials = world.materials();
     let id = |name: &str| materials.id(name).ok_or_else(|| format!("材質 {name} がありません"));
     let (ice, wood, stone) = (id("ice")?, id("wood")?, id("stone")?);
     let mut physics = PhysicsEngine::new();
-    let x_cells = shape(16, 16, ice, |x, y| (x - y).abs() <= 1 || (x + y - 15).abs() <= 1);
-    physics.create_body(16, 16, x_cells, materials, [80.0, 246.0])?;
+    let x_cells = shape(16, 16, ice, |x, y| (x - y).abs() <= 2 || (x + y - 15).abs() <= 2);
+    // 回転の半径 (対角線の半分、約 11.3 セル) が床 (y = 264) に当たらない高さに浮かせる。
+    physics.create_body(16, 16, x_cells, materials, [80.0, 250.0])?;
     let ring = shape(19, 19, wood, |x, y| {
         let distance = (x - 9) * (x - 9) + (y - 9) * (y - 9);
         (36..=81).contains(&distance)
@@ -100,6 +121,7 @@ pub fn demo_bodies(world: &World) -> Result<PhysicsEngine, Box<dyn Error>> {
     physics.create_body(19, 19, ring, materials, [112.0, 244.0])?;
     let z_cells = shape(16, 16, stone, |x, y| y <= 2 || y >= 13 || (x + y - 15).abs() <= 1);
     physics.create_body(16, 16, z_cells, materials, [144.0, 246.0])?;
+    spin_cross(&mut physics, ice);
     Ok(physics)
 }
 
@@ -120,7 +142,13 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
     let mut world = pack.new_world(metadata.seed);
     world.restore_tick(metadata.tick);
     let physics = match PhysicsEngine::load_bodies(&root, &materials, &metadata.materials)? {
-        Some(physics) => physics,
+        Some(mut physics) => {
+            // 保存した十字は、読み込んだあとも回し続ける。
+            if let Some(ice) = materials.id("ice") {
+                spin_cross(&mut physics, ice);
+            }
+            physics
+        }
         None => demo_bodies(&world)?,
     };
     let streamer = Streamer::with_saved_names(
@@ -262,7 +290,8 @@ mod tests {
             hash =
                 hash.rotate_left(5) ^ u64::from(t.x.to_bits()) ^ (u64::from(t.y.to_bits()) << 32);
         }
-        let grounded = entities.iter().all(|entity| entity.grounded);
+        // 床に立っているのはプレイヤー。敵は徘徊・跳躍で、その tick に空中にいることがある。
+        let grounded = player.and_then(|id| entities.get(id)).is_some_and(|e| e.grounded);
         let stamped = physics.bodies.iter().map(|body| body.stamped.len()).sum();
         streaming.take().unwrap().streamer.finish().unwrap();
         (hash, entities.iter().count(), grounded, stamped)
@@ -281,6 +310,78 @@ mod tests {
         }
         // seed が違えば洞窟が違うので、世界のハッシュも違う。
         assert_ne!(run(1, 150).0, run(2, 150).0);
+    }
+
+    /// 部屋の十字 (`X`) は、その場でくるくる回り続ける。輪と Z 字は回らない (動的な剛体のまま)。
+    #[test]
+    fn demo_cross_spins() {
+        let wrap = |delta: f32| {
+            let tau = std::f32::consts::TAU;
+            let d = delta.rem_euclid(tau);
+            if d > std::f32::consts::PI { d - tau } else { d }
+        };
+        for seed in 1..=3 {
+            let dir = TestDir::new();
+            let OpenDemo { session, options, .. } = open_demo(&config(&dir), seed).unwrap();
+            let DemoSession { mut world, streamer, save_root, metadata, mut physics } = session;
+            // 十字だけが回る指定になっている。
+            let spinning: Vec<bool> = physics.bodies.iter().map(|b| b.spin.is_some()).collect();
+            assert_eq!(spinning, [true, false, false], "seed {seed}");
+            let mut streaming = Some(StreamingState { streamer, save_root, metadata });
+            let mut initialized = false;
+            let mut entities = EntityWorld::new();
+            let mut player = None;
+            let mut spawn = options.player_spawn;
+            let mut enemy_spawns = Vec::new();
+            let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
+            let mut physics_ms = 0.0;
+            let cross = |physics: &PhysicsEngine| {
+                let rigid = &physics.world.bodies[physics.bodies[0].handle];
+                let t = rigid.translation();
+                ([t.x, t.y], rigid.rotation().angle())
+            };
+            let (mut start, mut angle, mut turned) = (None, 0.0_f32, 0.0_f32);
+            for tick in 0..300 {
+                Sim {
+                    world: &mut world,
+                    streaming: &mut streaming,
+                    physics: &mut physics,
+                    initialized: &mut initialized,
+                    entities: &mut entities,
+                    player: &mut player,
+                    spawn: &mut spawn,
+                    game: &mut game,
+                    definitions: options.definitions.as_deref(),
+                    loadout: options.player.as_ref(),
+                    enemy_spawns: &mut enemy_spawns,
+                }
+                .tick(
+                    ChunkPos::new(0, 3),
+                    PlayerInput::default(),
+                    GameInput::default(),
+                    &mut physics_ms,
+                )
+                .unwrap();
+                let (position, now) = cross(&physics);
+                if tick == 150 {
+                    start = Some(position);
+                    angle = now;
+                }
+                if tick > 150 {
+                    turned += wrap(now - angle);
+                    angle = now;
+                    let start = start.unwrap();
+                    assert!(
+                        (position[0] - start[0]).abs() < 0.01
+                            && (position[1] - start[1]).abs() < 0.01,
+                        "seed {seed}: 回りながら位置は動かない"
+                    );
+                }
+            }
+            // 149 tick (約 2.5 秒) で、3 ラジアン / 秒 → 約 7.5 ラジアン (1 周以上) 回る。
+            assert!((turned - CROSS_SPIN * 149.0 / 60.0).abs() < 0.4, "seed {seed}: {turned}");
+            streaming.take().unwrap().streamer.finish().unwrap();
+        }
     }
 
     /// 仕様 10 §8.5: ゲーム側が指定した敵が生まれ、プレイヤーを狙い、決定的に動く (画面なし)。

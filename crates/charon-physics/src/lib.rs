@@ -23,7 +23,8 @@ use charon_core::cell::{Cell, MaterialId};
 use charon_core::coords::CellPos;
 use charon_core::material::MaterialTable;
 use rapier2d::prelude::{
-    ColliderBuilder, MassProperties, PhysicsWorld, RigidBodyBuilder, RigidBodyHandle, Vector,
+    ColliderBuilder, MassProperties, PhysicsWorld, RigidBodyBuilder, RigidBodyHandle,
+    RigidBodyType, Vector,
 };
 
 pub const CELLS_PER_METER: f32 = 16.0;
@@ -38,6 +39,8 @@ pub struct PixelBody {
     pub cells: Vec<Cell>,
     pub stamped: Vec<CellPos>,
     pub origin: [f32; 2],
+    /// その場で回し続ける角速度 (ラジアン / 秒)。`Some` の間、剛体は運動学的で、位置は動かない。
+    pub spin: Option<f32>,
     damaged: bool,
 }
 
@@ -162,9 +165,38 @@ impl PhysicsEngine {
             cells,
             stamped: Vec::new(),
             origin,
+            spin: None,
             damaged: false,
         });
         Ok(index)
+    }
+
+    /// 剛体 `index` を、その場で一定の角速度 (ラジアン / 秒、正は画面で時計回り) で回し続ける。
+    ///
+    /// 剛体は運動学的になり、重力では落ちず、位置は動かない。接する地形・剛体・粒子は押しのける。
+    /// `None` で動的な剛体に戻す (回転は止まり、重力で動く)。`index` がなければ `false`。
+    /// 保存・読み込みは回転の指定を持たないので、読み込んだあとにゲームが指定し直す。
+    pub fn set_spin(&mut self, index: usize, radians_per_second: Option<f32>) -> bool {
+        let Some(body) = self.bodies.get_mut(index) else { return false };
+        if let Some(w) = radians_per_second
+            && !w.is_finite()
+        {
+            return false;
+        }
+        let Some(rigid) = self.world.bodies.get_mut(body.handle) else { return false };
+        body.spin = radians_per_second;
+        match radians_per_second {
+            Some(w) => {
+                rigid.set_body_type(RigidBodyType::KinematicVelocityBased, true);
+                rigid.set_linvel(Vector::ZERO, true);
+                rigid.set_angvel(w, true);
+            }
+            None => {
+                rigid.set_body_type(RigidBodyType::Dynamic, true);
+                rigid.set_angvel(0.0, true);
+            }
+        }
+        true
     }
 
     /// 手でつかんだ剛体を固定し、重力と慣性を一時的に止める。
@@ -174,7 +206,8 @@ impl PhysicsEngine {
         {
             rigid.set_gravity_scale(0.0, true);
             rigid.set_linvel(Vector::ZERO, true);
-            rigid.set_angvel(0.0, true);
+            // 回し続ける剛体は、つかんでも回り続ける。
+            rigid.set_angvel(body.spin.unwrap_or(0.0), true);
         }
     }
 
@@ -200,7 +233,7 @@ impl PhysicsEngine {
                 rapier2d::prelude::Rotation::new(rigid.rotation().angle() + delta),
                 true,
             );
-            rigid.set_angvel(0.0, true);
+            rigid.set_angvel(body.spin.unwrap_or(0.0), true);
         }
     }
 

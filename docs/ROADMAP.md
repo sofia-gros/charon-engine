@@ -235,6 +235,8 @@ Android・Web・Windows GUI の延期中の実機項目は M9 の完了条件に
 | T10.5 | `charon-demo`、剛体 3 つ、プレイヤーの配置、`Tile Entity`。1 tick の更新を `Sim` に分離 | `demo_scene_is_deterministic`、`demo_bodies_are_valid_and_inside_the_room` |
 | T10.6 | 実 GPU のオフスクリーン描画、背景の文字、環境光の設定、参照フレームとの比較、記録 | `demo_renders_on_gpu`、`demo_background_is_populated_once`、`PLATFORM_CHECK.md` に結果と未検証項目 |
 
+T10.7 (2026-11-12 の依頼): 部屋の十字 (X 字) の剛体を、その場でくるくる回す。エンジンに `PhysicsEngine::set_spin` (運動学的な剛体として、位置を保ったまま一定の角速度で回す。`None` で動的に戻す) を足し、デモ (ゲーム側) が十字を床から浮かせて指定する。確認は `spinning_body_turns_in_place`、`spin_can_be_stopped_and_rejected`、`spinning_is_deterministic`、`demo_cross_spins` ([`M10-spinning-cross.png`](screenshots/M10-spinning-cross.png))。
+
 T10.6 では RTX 4060 (Vulkan) で 5 場面をオフスクリーンに描き、参照動画のフレームと見比べた。見え方は [`docs/screenshots/M10-*.png`](screenshots/) にある。参照のフレームはこのリポジトリに入れない。ウィンドウでの操作の目視、Web・Android・Linux の確認は未検証で、成功とは扱わない。
 
 ## M11 Noita 型ゲームの中核
