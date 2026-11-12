@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.99"
 repository = "https://github.com/sofia-gros/charon-engine"
 publish = false
+license = "MIT"
 
 [workspace.lints.rust]
 # unsafe は検証済みの小さなモジュールでのみ、理由を書いたうえで個別に許可する。
