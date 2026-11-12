@@ -10,6 +10,8 @@ use winit::window::Window;
 #[derive(Debug)]
 pub(super) struct Controls {
     pub(super) selected: MaterialId,
+    /// 真のとき、ブラシは材質の代わりに x 座標で色を変える虹色の砂を置く (仕様 09 §2)。
+    pub(super) rainbow: bool,
     pub(super) build_layer: Option<Layer>,
     pub(super) brush_radius: u32,
     pub(super) paused: bool,
@@ -32,6 +34,7 @@ impl Controls {
     pub(super) fn new(selected: MaterialId) -> Self {
         Self {
             selected,
+            rainbow: false,
             build_layer: None,
             brush_radius: 3,
             paused: false,
@@ -112,6 +115,7 @@ impl Gui {
                             .clicked()
                         {
                             controls.selected = material_id;
+                            controls.rainbow = false;
                         }
                     }
                 });
@@ -134,6 +138,7 @@ impl Gui {
                 ui.label("Drag a rigid body; scroll while holding to rotate it.");
                 if ui.button("Eraser").clicked() {
                     controls.selected = MaterialId::EMPTY;
+                    controls.rainbow = false;
                 }
                 ui.horizontal(|ui| {
                     if ui.button(if controls.paused { "Play" } else { "Pause" }).clicked() {

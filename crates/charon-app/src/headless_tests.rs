@@ -73,6 +73,7 @@ fn headless_windows_pointer_save_reload() {
         let operations = apply_pointer(
             &mut app.world,
             sand,
+            None,
             PointerEvent::Down { id: 0, pos: [48.0, 40.0] },
             4,
             [0.0, 0.0],
@@ -133,4 +134,36 @@ fn headless_windows_pointer_save_reload() {
         assert_eq!(restored.get(placed).material, sand, "seed={seed}");
         assert_eq!(count(&restored, 's'), count(&app.world, 's'), "seed={seed}");
     }
+}
+
+#[test]
+fn rainbow_brush_colors_by_x() {
+    use charon_game::mods::{ModDirectory, ModPack};
+    let pack = ModPack::load(&[ModDirectory {
+        path: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/mods/fse_demo"),
+        script: false,
+    }])
+    .unwrap();
+    let mut world = pack.new_world(1);
+    world.insert_chunk(ChunkPos::new(0, 0));
+    let first = pack.materials.id("fse_demo:rainbow_sand_0").unwrap();
+    let operations = apply_pointer(
+        &mut world,
+        MaterialId::EMPTY, // 虹色のときは選択中の材質を使わない。
+        Some(first),
+        PointerEvent::Down { id: 0, pos: [32.0, 32.0] },
+        1,
+        [0.0, 0.0],
+        12,
+    );
+    assert!(!operations.is_empty());
+    let mut hues = std::collections::BTreeSet::new();
+    for op in &operations {
+        let expected = rainbow_material(first, op.x);
+        assert_eq!(MaterialId(op.material), expected, "x={}", op.x);
+        assert_eq!(world.get(CellPos::new(op.x, op.y)).material, expected);
+        hues.insert(op.material);
+    }
+    // 直径 25 セルに 4 セルごとの色がかかるので、6 色以上になる。
+    assert!(hues.len() >= 6, "{hues:?}");
 }

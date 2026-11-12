@@ -5,11 +5,13 @@ mod browser_storage;
 mod gesture;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod headless_tests;
+mod player;
 mod pointer;
 mod replay;
 mod timestep;
 mod ui;
 
+pub use player::{KeyState, follow_origin, try_spawn_player};
 pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
 pub use timestep::FixedTimestep;
@@ -28,7 +30,7 @@ use std::time::Instant;
 use charon_core::cell::MaterialId;
 use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::world::World;
-use charon_game::EntityWorld;
+use charon_game::{EntityId, EntityWorld};
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::{
     BackgroundLayerPass, BackgroundPass, BackgroundSource, CellPass, CompositePass, EntityPass,
@@ -36,6 +38,7 @@ use charon_render::{
 };
 use charon_world::background::BackgroundWorld;
 use charon_world::building::{BuildOp, Layer, apply_build};
+use charon_world::demo::rainbow_material;
 #[cfg(target_arch = "wasm32")]
 use charon_world::generator::ChunkGenerator;
 use charon_world::save::WorldMeta;
@@ -128,6 +131,19 @@ pub fn run_web(
     Ok(())
 }
 
+/// 参照デモ向けの設定 (仕様 09)。既定値は従来のサンドボックスと同じ挙動。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AppOptions {
+    /// カメラがプレイヤーを追い、キー入力でプレイヤーを動かす。`F` で自由カメラに切り替える。
+    pub follow_player: bool,
+    /// プレイヤーの初期位置 (左上のセル)。周囲のチャンクが読み込まれたら生成する。
+    pub player_spawn: Option<[i32; 2]>,
+    /// `rainbow_sand_0` の ID。あるとき、ブラシは x 座標で色を変える虹色が既定になる。
+    pub rainbow_sand: Option<MaterialId>,
+    /// 参照画面の UI を使う。
+    pub demo: bool,
+}
+
 /// 無限ワールドと保存を接続してウィンドウを起動する。
 /// 起動に必要なワールド・保存先・物理状態をそれぞれ明示的に渡す。
 #[cfg(not(target_arch = "wasm32"))]
@@ -142,8 +158,36 @@ pub fn run_with_streaming(
     metadata: WorldMeta,
     physics: PhysicsEngine,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_streaming_options(
+        event_loop,
+        world,
+        brush_material,
+        make_world,
+        streamer,
+        save_root,
+        metadata,
+        physics,
+        AppOptions::default(),
+    )
+}
+
+/// [`run_with_streaming`] に、プレイヤーと参照デモの設定を足したもの。
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+pub fn run_with_streaming_options(
+    event_loop: EventLoop<()>,
+    world: World,
+    brush_material: MaterialId,
+    make_world: fn(u64) -> World,
+    streamer: Streamer,
+    save_root: PathBuf,
+    metadata: WorldMeta,
+    physics: PhysicsEngine,
+    options: AppOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
     let background = BackgroundWorld::load(&save_root, world.materials(), &metadata.materials)?;
     let mut app = App::new(world, brush_material, make_world);
+    app.options = options;
     app.background = background;
     app.streaming = Some(StreamingState { streamer, save_root, metadata });
     app.physics = physics;
@@ -198,6 +242,10 @@ struct App {
     world: World,
     background: BackgroundWorld,
     entities: EntityWorld,
+    options: AppOptions,
+    keys: KeyState,
+    player: Option<EntityId>,
+    free_camera: bool,
     physics: PhysicsEngine,
     physics_initialized: bool,
     grab: Option<Grab>,
@@ -231,6 +279,10 @@ impl App {
             world,
             background: BackgroundWorld::new(),
             entities: EntityWorld::new(),
+            options: AppOptions::default(),
+            keys: KeyState::default(),
+            player: None,
+            free_camera: false,
             physics: PhysicsEngine::new(),
             physics_initialized: true,
             grab: None,
@@ -455,7 +507,7 @@ impl App {
         }
         let now = Instant::now();
         let elapsed = self.previous.replace(now).map_or_default(|previous| now - previous);
-        let (zoom, origin, paused, step_once, light_quality) = self.gui.as_ref().map_or(
+        let (zoom, mut origin, paused, step_once, light_quality) = self.gui.as_ref().map_or(
             (4, [0.0, 0.0], false, false, charon_render::LightQuality::High),
             |gui| {
                 let controls = &gui.controls;
@@ -468,7 +520,25 @@ impl App {
                 )
             },
         );
-        let (camera, radius) = camera_range(window.inner_size(), zoom, origin);
+        // 仕様 09 §4: 追従カメラ。自由カメラでは WASD / 矢印で動かし、プレイヤーは中立入力にする。
+        let size = window.inner_size();
+        if self.options.follow_player {
+            if self.free_camera {
+                let delta = self.keys.camera_delta();
+                origin = [origin[0] + delta[0] as f32, origin[1] + delta[1] as f32];
+            } else if let Some(player) = self.player.and_then(|id| self.entities.get(id)) {
+                origin = follow_origin(player, [size.width, size.height], zoom);
+            }
+            if let Some(gui) = self.gui.as_mut() {
+                gui.controls.origin = origin;
+            }
+        }
+        let player_input = if self.free_camera {
+            charon_game::PlayerInput::default()
+        } else {
+            self.keys.player_input()
+        };
+        let (camera, radius) = camera_range(size, zoom, origin);
         if let Some(state) = self.streaming.as_mut() {
             state.streamer.set_load_radius(radius);
         }
@@ -476,6 +546,8 @@ impl App {
         let streaming = &mut self.streaming;
         let physics = &mut self.physics;
         let entities = &mut self.entities;
+        let player = &mut self.player;
+        let player_spawn = &mut self.options.player_spawn;
         let initialized = &mut self.physics_initialized;
         let mut stream_error: Option<String> = None;
         let step = || {
@@ -506,7 +578,21 @@ impl App {
                 physics.stamp_all(world);
                 *initialized = true;
             }
-            if let Err(err) = entities.step_players(&[], world) {
+            if player.is_none()
+                && let Some(spawn) = *player_spawn
+            {
+                match try_spawn_player(entities, world, spawn) {
+                    Ok(Some(id)) => *player = Some(id),
+                    Ok(None) => {}
+                    Err(err) => {
+                        // 固体と重なる位置では、地形を消さずにプレイヤーなしで続ける。
+                        eprintln!("プレイヤーを生成できません: {err}");
+                        *player_spawn = None;
+                    }
+                }
+            }
+            let inputs: Vec<_> = player.iter().map(|&id| (id, player_input)).collect();
+            if let Err(err) = entities.step_players(&inputs, world) {
                 stream_error = Some(err.to_string());
                 return;
             }
@@ -626,9 +712,11 @@ fn camera_range(
 }
 
 /// ポインターをセル座標に変換し、指定した材質をブラシで置く。
+/// `rainbow` が `Some(先頭の ID)` のときは、材質を各セルの x 座標で選ぶ虹色にする (仕様 09 §2)。
 fn apply_pointer(
     world: &mut World,
     material: MaterialId,
+    rainbow: Option<MaterialId>,
     event: PointerEvent,
     zoom: u32,
     origin: [f32; 2],
@@ -654,6 +742,7 @@ fn apply_pointer(
                 continue;
             }
             let cell = CellPos::new(center.x.saturating_add(dx), center.y.saturating_add(dy));
+            let material = rainbow.map_or(material, |first| rainbow_material(first, cell.x));
             if world.get(cell).material == material || world.chunk(cell.chunk()).is_none() {
                 continue;
             }
@@ -811,6 +900,7 @@ impl ApplicationHandler for App {
             if let Some(controls) = previous {
                 gui.controls = controls;
             } else {
+                gui.controls.rainbow = self.options.rainbow_sand.is_some();
                 #[cfg(target_arch = "wasm32")]
                 {
                     gui.controls.web_status = self.web_status.clone();
@@ -882,6 +972,15 @@ impl ApplicationHandler for App {
             }
         }
         let consumed = self.gui.as_mut().is_some_and(|gui| gui.on_event(&window, &event));
+        if self.options.follow_player {
+            // UI が文字入力などでキーを使うときは押下を無視する。離したキーは常に反映する。
+            if self.keys.event(&event, !consumed) {
+                self.free_camera = !self.free_camera;
+            }
+            if matches!(event, WindowEvent::Focused(false)) {
+                self.keys.release_all();
+            }
+        }
         let gesture = if let (WindowEvent::Touch(touch), Some(gui)) = (&event, self.gui.as_mut()) {
             self.gestures.update(
                 touch.id,
@@ -924,9 +1023,15 @@ impl ApplicationHandler for App {
                         eprintln!("建築に失敗: {err}");
                     }
                 } else {
+                    let rainbow = self
+                        .gui
+                        .as_ref()
+                        .filter(|gui| gui.controls.rainbow)
+                        .and(self.options.rainbow_sand);
                     self.operations.extend(apply_pointer(
                         &mut self.world,
                         selected,
+                        rainbow,
                         pointer,
                         zoom,
                         origin,
@@ -1050,6 +1155,7 @@ mod tests {
         apply_pointer(
             &mut world,
             selected,
+            None,
             PointerEvent::Down { id: 0, pos: [40.0, 48.0] },
             4,
             [0.0, 0.0],
@@ -1060,6 +1166,7 @@ mod tests {
         apply_pointer(
             &mut world,
             selected,
+            None,
             PointerEvent::Move { id: 0, pos: [40.0, 48.0] },
             4,
             [0.0, 0.0],
@@ -1069,6 +1176,7 @@ mod tests {
         apply_pointer(
             &mut world,
             selected,
+            None,
             PointerEvent::Up { id: 0, pos: [60.0, 60.0] },
             4,
             [0.0, 0.0],

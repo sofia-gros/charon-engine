@@ -1,0 +1,193 @@
+//! 仕様 09 §4: キーボードからプレイヤー入力と自由カメラへ。追従カメラの位置とプレイヤーの生成。
+
+use charon_core::coords::CellPos;
+use charon_core::world::World;
+use charon_game::{Entity, EntityError, EntityId, EntityWorld, PlayerInput};
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{KeyCode, PhysicalKey};
+
+/// 押されているキー。`A`/`D`/`←`/`→` が左右、`W`/`↑`/`Space`/`C` がジャンプ。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyState {
+    left: bool,
+    right: bool,
+    up: bool,
+    down: bool,
+    space: bool,
+    shift: bool,
+}
+
+impl KeyState {
+    /// 対応するキーなら状態を更新して true。対応しないキーは何もしない。
+    pub fn set(&mut self, code: KeyCode, pressed: bool) -> bool {
+        match code {
+            KeyCode::KeyA | KeyCode::ArrowLeft => self.left = pressed,
+            KeyCode::KeyD | KeyCode::ArrowRight => self.right = pressed,
+            KeyCode::KeyW | KeyCode::ArrowUp => self.up = pressed,
+            KeyCode::KeyS | KeyCode::ArrowDown => self.down = pressed,
+            KeyCode::Space | KeyCode::KeyC => self.space = pressed,
+            KeyCode::ShiftLeft | KeyCode::ShiftRight => self.shift = pressed,
+            _ => return false,
+        }
+        true
+    }
+
+    /// 全部のキーを離した状態に戻す (ウィンドウがフォーカスを失ったとき)。
+    pub fn release_all(&mut self) {
+        *self = Self::default();
+    }
+
+    /// ウィンドウのイベントを反映する。`allow_press` が偽のときは押下を無視する (UI の文字入力中)。
+    /// `F` が押された (繰り返しでない) とき true を返す。
+    pub fn event(&mut self, event: &WindowEvent, allow_press: bool) -> bool {
+        let WindowEvent::KeyboardInput { event, .. } = event else { return false };
+        let PhysicalKey::Code(code) = event.physical_key else { return false };
+        let pressed = event.state == ElementState::Pressed;
+        if pressed && !allow_press {
+            return false;
+        }
+        if code == KeyCode::KeyF {
+            return pressed && !event.repeat;
+        }
+        self.set(code, pressed);
+        false
+    }
+
+    /// 1 tick の入力。左右が同時なら中立。
+    pub fn player_input(&self) -> PlayerInput {
+        PlayerInput {
+            horizontal: i8::from(self.right) - i8::from(self.left),
+            jump: self.up || self.space,
+        }
+    }
+
+    /// 自由カメラの 1 フレームの移動量 (セル)。`Shift` で 12、通常は 4。
+    pub fn camera_delta(&self) -> [i32; 2] {
+        let speed = if self.shift { 12 } else { 4 };
+        [
+            (i32::from(self.right) - i32::from(self.left)) * speed,
+            (i32::from(self.down) - i32::from(self.up)) * speed,
+        ]
+    }
+}
+
+/// プレイヤーの中心がシーンの中央になるカメラの原点 (セル、整数に切り捨て)。
+pub fn follow_origin(entity: &Entity, viewport: [u32; 2], zoom: u32) -> [f32; 2] {
+    let zoom = zoom.max(1);
+    let scene = [i64::from(viewport[0].div_ceil(zoom)), i64::from(viewport[1].div_ceil(zoom))];
+    let center_x = entity.x16.div_euclid(16) + i64::from(entity.width) / 2;
+    let center_y = entity.y16.div_euclid(16) + i64::from(entity.height) / 2;
+    [(center_x - scene[0] / 2) as f32, (center_y - scene[1] / 2) as f32]
+}
+
+/// 8×16 のプレイヤーとその足元 1 行を含む 4 隅のチャンクが全部読み込まれていれば生成する。
+/// 読み込み前なら `Ok(None)`。固体と重なるなら `Err` (地形は消さない)。
+pub fn try_spawn_player(
+    entities: &mut EntityWorld,
+    world: &World,
+    spawn: [i32; 2],
+) -> Result<Option<EntityId>, EntityError> {
+    let corners = [(0, 0), (7, 0), (0, 16), (7, 16)];
+    let loaded = corners
+        .iter()
+        .all(|&(dx, dy)| world.chunk(CellPos::new(spawn[0] + dx, spawn[1] + dy).chunk()).is_some());
+    if !loaded {
+        return Ok(None);
+    }
+    entities.spawn_player(i64::from(spawn[0]) * 16, i64::from(spawn[1]) * 16, world).map(Some)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // テストの前提が崩れた場合はその場で失敗させる。
+mod tests {
+    use super::*;
+    use charon_core::coords::ChunkPos;
+    use charon_core::testkit::{box_art, world_from_ascii};
+
+    #[test]
+    fn keyboard_maps_to_input() {
+        let mut keys = KeyState::default();
+        assert_eq!(keys.player_input(), PlayerInput::default());
+        assert!(keys.set(KeyCode::KeyD, true));
+        assert_eq!(keys.player_input(), PlayerInput { horizontal: 1, jump: false });
+        // 左右が同時なら中立。離すと残った方向。
+        assert!(keys.set(KeyCode::ArrowLeft, true));
+        assert_eq!(keys.player_input().horizontal, 0);
+        keys.set(KeyCode::KeyD, false);
+        assert_eq!(keys.player_input().horizontal, -1);
+        // ジャンプは W / ↑ / Space / C のどれでも。
+        for code in [KeyCode::KeyW, KeyCode::ArrowUp, KeyCode::Space, KeyCode::KeyC] {
+            let mut keys = KeyState::default();
+            keys.set(code, true);
+            assert!(keys.player_input().jump, "{code:?}");
+            keys.set(code, false);
+            assert!(!keys.player_input().jump, "{code:?}");
+        }
+        // 対応しないキーは無視する。
+        assert!(!keys.set(KeyCode::KeyQ, true));
+        // 自由カメラ: 4 セル、Shift で 12 セル。上は y が負。
+        let mut keys = KeyState::default();
+        keys.set(KeyCode::KeyW, true);
+        keys.set(KeyCode::KeyD, true);
+        assert_eq!(keys.camera_delta(), [4, -4]);
+        keys.set(KeyCode::ShiftLeft, true);
+        assert_eq!(keys.camera_delta(), [12, -12]);
+        keys.release_all();
+        assert_eq!(keys, KeyState::default());
+        // どのキーの組み合わせでも入力は有効な値 (`step_players` が受け付ける)。
+        let all = [
+            KeyCode::KeyA,
+            KeyCode::KeyD,
+            KeyCode::KeyW,
+            KeyCode::KeyS,
+            KeyCode::Space,
+            KeyCode::ShiftLeft,
+        ];
+        for bits in 0..64u8 {
+            let mut keys = KeyState::default();
+            for (i, code) in all.into_iter().enumerate() {
+                keys.set(code, (bits >> i) & 1 == 1);
+            }
+            assert!((-1..=1).contains(&keys.player_input().horizontal), "bits {bits}");
+        }
+    }
+
+    #[test]
+    fn player_follows_camera() {
+        let mut entities = EntityWorld::new();
+        let id = entities.spawn(640, 3968, 8, 16).unwrap();
+        let player = entities.get(id).unwrap().clone();
+        for (viewport, zoom) in
+            [([1024, 768], 4), ([1920, 1016], 4), ([800, 600], 1), ([333, 111], 3)]
+        {
+            let origin = follow_origin(&player, viewport, zoom);
+            let scene = [viewport[0].div_ceil(zoom) / 2, viewport[1].div_ceil(zoom) / 2];
+            // プレイヤーの中心 (44, 256) がシーンの中央に来る。
+            assert_eq!(
+                [origin[0] + scene[0] as f32, origin[1] + scene[1] as f32],
+                [44.0, 256.0],
+                "viewport {viewport:?}, zoom {zoom}"
+            );
+        }
+        // 負座標でも切り捨てが一貫する: x = -2、y = -3 のセル、中心は (2, 5)。
+        let id = entities.spawn(-24, -40, 8, 16).unwrap();
+        let negative = entities.get(id).unwrap().clone();
+        assert_eq!(follow_origin(&negative, [64, 64], 1), [2.0 - 32.0, 5.0 - 32.0]);
+    }
+
+    #[test]
+    fn player_spawns_when_chunks_load() {
+        let mut world = world_from_ascii(&box_art(60, 60), 1);
+        let mut entities = EntityWorld::new();
+        // 足元 (y + 16) が別のチャンクにあり、それが未読み込みなら生成しない。
+        assert_eq!(try_spawn_player(&mut entities, &world, [20, 50]), Ok(None));
+        world.insert_chunk(ChunkPos::new(0, 1));
+        let id = try_spawn_player(&mut entities, &world, [20, 40]).unwrap();
+        assert!(id.is_some());
+        assert!(entities.get(id.unwrap()).is_some());
+        // 固体に重なる位置はエラーで、エンティティも ID も変えない。
+        let before = entities.state_hash();
+        assert_eq!(try_spawn_player(&mut entities, &world, [0, 0]), Err(EntityError::Occupied));
+        assert_eq!(entities.state_hash(), before);
+    }
+}
