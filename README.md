@@ -130,6 +130,12 @@ cargo run -p charon-sandbox --bin charon-demo
 | `F` | 自由カメラ (`WASD` で移動、`Shift` で速く) |
 | `Debug` パネルの `Light` | `Off` / `Low` / `High` / `xHigh` |
 | `Ctrl` + ドラッグ → `Clipboard` | 矩形のコピーと貼り付け |
+| **タッチ** (Android・タッチ画面) | 左下の仮想スティックで歩く (**上へスワイプ**でジャンプ)、右下のスティックで狙って撃つ、`HOOK`・`JUMP`・`PAINT` ボタン。2 本指でカメラ、1 本指でブラシ |
+| **ゲームパッド** (Android) | `A` ジャンプ、`X`・`R1`・`R2` 武器、`B`・`L1`・`L2` ワイヤーフック、`Y` 武器 / ブラシ、十字キーで移動 |
+
+### ダウンロード
+
+[Releases](https://github.com/sofia-gros/charon-engine/releases) に、タグ (`v*`) ごとの **Windows 版** (zip を展開して `charon-demo.exe`) と **Android 版** (apk、arm64) があります。ビルドは `.github/workflows/release.yml` です ([Android の手順](docs/BUILD_ANDROID.md))。
 
 ```bash
 cargo run -p charon-sandbox --bin charon-sandbox

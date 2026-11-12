@@ -32,8 +32,14 @@ impl DemoConfig {
     /// 保存先は起動した場所の `saves/demo`。
     pub fn discover() -> Self {
         let local = PathBuf::from("assets/mods/fse_demo");
+        // 配布物: 実行ファイルと同じ場所の `assets` (どこから起動しても見つかるように)。
+        let beside_exe = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("assets/mods/fse_demo")));
         let mod_dir = if local.join("manifest.ron").exists() {
             local
+        } else if let Some(dir) = beside_exe.filter(|dir| dir.join("manifest.ron").exists()) {
+            dir
         } else {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/mods/fse_demo")
         };
@@ -218,13 +224,18 @@ fn make_world(seed: u64) -> World {
 
 /// ウィンドウを開いてデモを動かす。`Main Menu` から別の seed に作り直せる。
 pub fn run_demo(config: DemoConfig) -> Result<(), Box<dyn Error>> {
+    run_demo_with(EventLoop::new()?, config)
+}
+
+/// [`run_demo`] に、呼び出し側が作ったイベントループを渡す (Android は専用のループが要る)。
+pub fn run_demo_with(event_loop: EventLoop<()>, config: DemoConfig) -> Result<(), Box<dyn Error>> {
     let OpenDemo { session, options, brush } = open_demo(&config, 1)?;
     let DemoSession { world, streamer, save_root, metadata, physics } = session;
     let restart_config = config.clone();
     let restart: RestartFn =
         Box::new(move |seed| open_demo(&restart_config, seed).map(|open| open.session));
     run_with_streaming_options(
-        EventLoop::new()?,
+        event_loop,
         world,
         brush,
         make_world,

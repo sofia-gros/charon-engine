@@ -32,7 +32,13 @@ build_targets = ["aarch64-linux-android"]
 min_sdk_version = 26
 
 [package.metadata.android.application]
-label = "Charon Sandbox"
+label = "Charon Demo"
+
+# リリースビルド (`cargo apk build --release`) の署名。配布用の本番の鍵ではなく、デバッグ用の鍵で署名する
+# (GitHub Actions が `~/.android/debug.keystore` を作る)。
+[package.metadata.android.signing.release]
+path = "$HOME/.android/debug.keystore"
+keystore_password = "android"
 
 [dependencies]
 charon-app = { version = "0.1.0", path = "../../crates/charon-app", default-features = false }

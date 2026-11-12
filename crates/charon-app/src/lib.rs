@@ -15,6 +15,7 @@ mod pointer;
 mod replay;
 mod sim;
 mod timestep;
+mod touch_pad;
 mod ui;
 
 pub use player::{KeyCommand, KeyState, follow_origin, try_spawn_player};
@@ -23,6 +24,7 @@ pub use replay::{BrushOp, Replay};
 use sim::{Sim, sprites};
 pub use timestep::FixedTimestep;
 use timestep::advance_frame;
+use touch_pad::{PadOutput, TouchPad};
 
 #[cfg(target_arch = "wasm32")]
 use std::cell::{Cell, RefCell};
@@ -386,6 +388,10 @@ struct App {
     brush_material: MaterialId,
     pointer: PointerInput,
     gestures: TouchGestures,
+    /// 画面の仮想スティックとボタン (仕様 10 §10)。
+    touch_pad: TouchPad,
+    /// 最後に歩いた向き (-1 か 1)。ゲームパッドのボタンで撃つ向きに使う。
+    facing: i8,
     timer: FixedTimestep,
     previous: Option<Instant>,
     occluded: bool,
@@ -437,6 +443,15 @@ impl App {
             brush_material,
             pointer: PointerInput::default(),
             gestures: TouchGestures::default(),
+            touch_pad: {
+                let mut pad = TouchPad::default();
+                // Android はタッチが主な操作なので、最初から出す。
+                if cfg!(target_os = "android") {
+                    pad.show();
+                }
+                pad
+            },
+            facing: 1,
             timer: FixedTimestep::default(),
             previous: None,
             occluded: false,
@@ -765,14 +780,34 @@ impl App {
                 gui.controls.origin = origin;
             }
         }
-        let player_input = if self.free_camera {
+        // 画面のスティック・ボタン (仕様 10 §10)。キーボード・マウスの操作と、使っている方が優先される形で重ねる。
+        self.touch_pad.set_viewport([size.width as f32, size.height as f32]);
+        let pad = if self.options.follow_player && !self.free_camera {
+            self.touch_pad.output()
+        } else {
+            PadOutput::default()
+        };
+        if pad.toggle_paint {
+            if let Some(gui) = self.gui.as_mut() {
+                gui.controls.paint = !gui.controls.paint;
+            }
+            self.weapon_down = false;
+        }
+        let mut player_input = if self.free_camera {
             charon_game::PlayerInput::default()
         } else {
             self.keys.player_input()
         };
+        if pad.horizontal != 0 {
+            player_input.horizontal = pad.horizontal;
+        }
+        player_input.jump |= pad.jump;
+        if player_input.horizontal != 0 {
+            self.facing = player_input.horizontal;
+        }
         // 仕様 10 §9.5: 左ボタン = 武器、右ボタン = 道具。どちらもカーソルの方向へ使う。
         let paint = self.gui.as_ref().is_some_and(|gui| gui.controls.paint);
-        let action = if self.options.follow_player {
+        let mut action = if self.options.follow_player {
             let aim = self
                 .player
                 .and_then(|id| self.entities.get(id))
@@ -782,6 +817,16 @@ impl App {
         } else {
             GameInput::default()
         };
+        if self.options.follow_player && !self.free_camera {
+            // ゲームパッドのボタン: 向きは、狙いのスティックがあればそれ、なければ歩いている向きの少し上。
+            let (button_fire, button_tool) = self.keys.pad_buttons();
+            let (fire, tool) = (pad.fire || button_fire, pad.tool || button_tool);
+            action.fire |= fire && !paint;
+            action.tool |= tool;
+            if fire || tool {
+                action.aim = pad.aim.unwrap_or((i32::from(self.facing) * 1000, -300));
+            }
+        }
         let (camera, radius) = camera_range(size, zoom, origin);
         if let Some(state) = self.streaming.as_mut() {
             state.streamer.set_load_radius(radius);
@@ -890,6 +935,8 @@ impl App {
                 entities: &self.entities,
                 game: &self.game,
                 player: self.player,
+                pad: (self.options.follow_player && self.touch_pad.visible())
+                    .then_some(&self.touch_pad),
             };
             let action = gui.render(gpu, window, &scene, &view, stats);
             if action.is_some() {
@@ -1285,6 +1332,14 @@ impl ApplicationHandler for App {
             }
         }
         let consumed = self.gui.as_mut().is_some_and(|gui| gui.on_event(&window, &event));
+        // 画面のスティック・ボタンのタッチは、カメラ操作やブラシに渡さない (仕様 10 §10)。
+        let pad_owned = match &event {
+            WindowEvent::Touch(touch) if self.options.follow_player && !consumed => self
+                .touch_pad
+                .update(touch.id, touch.phase, [touch.location.x as f32, touch.location.y as f32]),
+            _ => false,
+        };
+        let consumed = consumed || pad_owned;
         if self.options.follow_player {
             // UI が文字入力などでキーを使うときは押下を無視する。離したキーは常に反映する。
             match self.keys.event(&event, !consumed) {
@@ -1303,11 +1358,14 @@ impl ApplicationHandler for App {
             }
             if matches!(event, WindowEvent::Focused(false)) {
                 self.keys.release_all();
+                self.touch_pad.release_all();
                 self.weapon_down = false;
                 self.tool_down = false;
             }
         }
-        let gesture = if let (WindowEvent::Touch(touch), Some(gui)) = (&event, self.gui.as_mut()) {
+        let gesture = if pad_owned {
+            false
+        } else if let (WindowEvent::Touch(touch), Some(gui)) = (&event, self.gui.as_mut()) {
             self.gestures.update(
                 touch.id,
                 touch.phase,

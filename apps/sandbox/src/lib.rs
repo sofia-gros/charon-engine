@@ -1,6 +1,6 @@
-//! Android NativeActivity 用のサンドボックス入口。
+//! Android NativeActivity 用の入口 (参照デモ) と、Web の入口 (サンドボックス)。
 
-#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 mod world;
 
 #[cfg(target_os = "android")]
@@ -28,15 +28,40 @@ pub fn web_main() -> Result<(), wasm_bindgen::JsValue> {
         .map_err(|err| wasm_bindgen::JsValue::from_str(&err))
 }
 
-/// Android の復帰時も `charon-app` 共通のイベントループを使う。
+/// APK に入れるデモの MOD (`assets/mods/fse_demo`)。起動時に内部ストレージへ書き出して読む。
+#[cfg(target_os = "android")]
+const DEMO_MOD_FILES: [(&str, &str); 5] = [
+    ("manifest.ron", include_str!("../../../assets/mods/fse_demo/manifest.ron")),
+    ("materials.ron", include_str!("../../../assets/mods/fse_demo/materials.ron")),
+    ("reactions.ron", include_str!("../../../assets/mods/fse_demo/reactions.ron")),
+    ("spells.ron", include_str!("../../../assets/mods/fse_demo/spells.ron")),
+    ("wands.ron", include_str!("../../../assets/mods/fse_demo/wands.ron")),
+];
+
+/// デモの MOD を `dir` に書き出す (毎回上書きするので、アプリを更新すれば内容も更新される)。
+#[cfg(target_os = "android")]
+fn extract_demo_mod(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for (name, text) in DEMO_MOD_FILES {
+        std::fs::write(dir.join(name), text)?;
+    }
+    Ok(())
+}
+
+/// Android の入口。参照デモ (`charon-demo`) を、タッチ・ゲームパッド操作で動かす (仕様 10 §10)。
 #[cfg(target_os = "android")]
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub fn android_main(app: AndroidApp) {
-    let Some(save_root) = app.internal_data_path().map(|path| path.join("saves/default")) else {
+    let Some(data) = app.internal_data_path() else {
         eprintln!("Android の保存先を取得できません");
         return;
     };
+    let mod_dir = data.join("mods/fse_demo");
+    if let Err(err) = extract_demo_mod(&mod_dir) {
+        eprintln!("デモのデータを書き出せません: {err}");
+        return;
+    }
     let event_loop = match winit::event_loop::EventLoop::builder().with_android_app(app).build() {
         Ok(event_loop) => event_loop,
         Err(err) => {
@@ -44,24 +69,8 @@ pub fn android_main(app: AndroidApp) {
             return;
         }
     };
-    let (world, streamer, metadata, physics) = match world::open(&save_root) {
-        Ok(session) => session,
-        Err(err) => {
-            eprintln!("Android ワールドを読み込めません: {err}");
-            return;
-        }
-    };
-    let selected = world::initial_material(&world);
-    if let Err(err) = charon_app::run_with_streaming(
-        event_loop,
-        world,
-        selected,
-        world::make_world,
-        streamer,
-        save_root,
-        metadata,
-        physics,
-    ) {
-        eprintln!("Android サンドボックスの実行に失敗: {err}");
+    let config = charon_app::demo::DemoConfig { mod_dir, save_base: data.join("saves/demo") };
+    if let Err(err) = charon_app::demo::run_demo_with(event_loop, config) {
+        eprintln!("Android デモの実行に失敗: {err}");
     }
 }

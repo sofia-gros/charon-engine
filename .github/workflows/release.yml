@@ -1,0 +1,82 @@
+name: Release
+
+# `v*` のタグを push すると、参照デモ (charon-demo) の Windows 版 (zip) と Android 版 (apk) をビルドし、
+# GitHub Releases に載せる。例: git tag v0.0.1 && git push origin v0.0.1
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p charon-sandbox --bin charon-demo
+      - name: 配布物を作る (exe と assets を同じ場所に置く)
+        shell: pwsh
+        run: |
+          $name = "charon-demo-${{ github.ref_name }}-windows-x64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item target/release/charon-demo.exe $name/
+          Copy-Item -Recurse assets "$name/assets"
+          Copy-Item LICENSE, README.md $name/
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: charon-demo-*.zip
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - run: cargo install --git https://github.com/rust-mobile/cargo-apk --package cargo-apk --locked
+      # リリースビルドの署名に使うデバッグ用の鍵 (本番の配布用の鍵ではない)。
+      - name: デバッグ用の鍵を作る
+        run: |
+          mkdir -p "$HOME/.android"
+          keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android \
+            -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+      - run: cargo apk build --release -p charon-sandbox
+      - name: apk の名前をそろえる
+        run: |
+          apk=$(find target -name '*.apk' | head -n 1)
+          test -n "$apk"
+          cp "$apk" "charon-demo-${{ github.ref_name }}-android-arm64.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: charon-demo-*.apk
+          if-no-files-found: error
+
+  release:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}

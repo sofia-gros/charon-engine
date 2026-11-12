@@ -53,6 +53,8 @@ struct Scene {
     skip_smooth: bool,
     /// 光の品質。
     light: LightQuality,
+    /// 画面の仮想スティックとボタン。`Some` なら UI の重ね描きに出す。
+    pad: Option<crate::touch_pad::TouchPad>,
 }
 
 impl Scene {
@@ -72,6 +74,7 @@ impl Scene {
             tick: 0,
             skip_smooth: false,
             light: LightQuality::High,
+            pad: None,
         }
     }
 
@@ -320,6 +323,7 @@ fn render_ui(
         entities: &scene.entities,
         game: &scene.game,
         player: scene.player,
+        pad: scene.pad.as_ref(),
     };
     let view = texture.create_view(&Default::default());
     for frame in 0..130u32 {
@@ -590,6 +594,36 @@ fn demo_renders_xhigh_light() {
     assert!(sx > sh, "xHigh のほうが発色が濃い ({sh:.3} → {sx:.3})");
     capture("light_high", "world", &high);
     capture("light_xhigh", "world", &xhigh);
+}
+
+/// 仮想スティックとボタン (仕様 10 §10) が UI の重ね描きに出て、ボタンの位置の画素が変わる。
+#[test]
+fn demo_renders_touch_pad() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = room_scene(&pack);
+    let (texture, world_pixels) = render_world(&gpu, &mut scene, center);
+    let without = render_ui(&gpu, &scene, center, &texture, false);
+    let mut pad = crate::touch_pad::TouchPad::default();
+    pad.set_viewport([WIDTH as f32, HEIGHT as f32]);
+    pad.show();
+    let layout = pad.layout();
+    scene.pad = Some(pad);
+    let (texture, _) = render_world(&gpu, &mut scene, center);
+    let with = render_ui(&gpu, &scene, center, &texture, false);
+    assert_ne!(with, without, "仮想パッドが描かれる");
+    // 各ボタンの中心の近くは、パッドがあると明るくなる (半透明の白)。
+    let luma = |pixels: &[u8], p: [f32; 2]| -> u32 {
+        let (x, y) = (p[0] as usize, p[1] as usize);
+        let i = (y * WIDTH as usize + x) * 4;
+        u32::from(pixels[i]) + u32::from(pixels[i + 1]) + u32::from(pixels[i + 2])
+    };
+    for (name, p) in [("jump", layout.jump), ("hook", layout.hook), ("paint", layout.paint)] {
+        let ring = [p[0] + layout.unit * 0.8, p[1]];
+        assert!(luma(&with, ring) > luma(&without, ring), "{name} のボタンが描かれる");
+    }
+    capture("touch_pad", "ui", &with);
+    let _ = world_pixels;
 }
 
 fn empty_scene(pack: &ModPack) -> (Scene, CellPos) {

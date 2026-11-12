@@ -5,7 +5,7 @@ use charon_core::world::World;
 use charon_game::game::GameInput;
 use charon_game::{Entity, EntityError, EntityId, EntityWorld, PlayerInput};
 use winit::event::{ElementState, WindowEvent};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::{KeyCode, NativeKeyCode, PhysicalKey};
 
 /// キーが押されて起きる操作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,9 +25,41 @@ pub struct KeyState {
     down: bool,
     space: bool,
     shift: bool,
+    /// ゲームパッドのボタン (Android では、ボタンはキーとして届く)。
+    pad_jump: bool,
+    pad_fire: bool,
+    pad_tool: bool,
 }
 
+/// Android のゲームパッドのボタンのキーコード (`KeyEvent.KEYCODE_BUTTON_*`)。
+const ANDROID_BUTTON_A: u32 = 96;
+const ANDROID_BUTTON_B: u32 = 97;
+const ANDROID_BUTTON_X: u32 = 99;
+const ANDROID_BUTTON_Y: u32 = 100;
+const ANDROID_BUTTON_L1: u32 = 102;
+const ANDROID_BUTTON_R1: u32 = 103;
+const ANDROID_BUTTON_L2: u32 = 104;
+const ANDROID_BUTTON_R2: u32 = 105;
+
 impl KeyState {
+    /// ゲームパッドのボタン (仕様 10 §10): `A` = ジャンプ、`X`・`R1`・`R2` = 武器、`B`・`L1`・`L2` = 道具、
+    /// `Y` = 武器 / ブラシの切り替え。十字キーは矢印キーと同じ。対応するボタンなら true。
+    pub(crate) fn set_android_button(&mut self, code: u32, pressed: bool) -> bool {
+        match code {
+            ANDROID_BUTTON_A => self.pad_jump = pressed,
+            ANDROID_BUTTON_X | ANDROID_BUTTON_R1 | ANDROID_BUTTON_R2 => self.pad_fire = pressed,
+            ANDROID_BUTTON_B | ANDROID_BUTTON_L1 | ANDROID_BUTTON_L2 => self.pad_tool = pressed,
+            ANDROID_BUTTON_Y => {}
+            _ => return false,
+        }
+        true
+    }
+
+    /// ゲームパッドのボタンが作る操作 (歩く向きとジャンプは `player_input` に含まれる)。
+    pub(crate) fn pad_buttons(&self) -> (bool, bool) {
+        (self.pad_fire, self.pad_tool)
+    }
+
     /// 対応するキーなら状態を更新して true。対応しないキーは何もしない。
     pub fn set(&mut self, code: KeyCode, pressed: bool) -> bool {
         match code {
@@ -51,8 +83,16 @@ impl KeyState {
     /// `F` / `B` が押された (繰り返しでない) とき、対応する操作を返す。
     pub fn event(&mut self, event: &WindowEvent, allow_press: bool) -> Option<KeyCommand> {
         let WindowEvent::KeyboardInput { event, .. } = event else { return None };
-        let PhysicalKey::Code(code) = event.physical_key else { return None };
         let pressed = event.state == ElementState::Pressed;
+        if let PhysicalKey::Unidentified(NativeKeyCode::Android(code)) = event.physical_key {
+            if pressed && !allow_press {
+                return None;
+            }
+            self.set_android_button(code, pressed);
+            return (code == ANDROID_BUTTON_Y && pressed && !event.repeat)
+                .then_some(KeyCommand::TogglePaint);
+        }
+        let PhysicalKey::Code(code) = event.physical_key else { return None };
         if pressed && !allow_press {
             return None;
         }
@@ -219,6 +259,24 @@ mod tests {
         let id = entities.spawn(-24, -40, 8, 16).unwrap();
         let negative = entities.get(id).unwrap().clone();
         assert_eq!(follow_origin(&negative, [64, 64], 1), [2.0 - 32.0, 5.0 - 32.0]);
+    }
+
+    /// Android のゲームパッド: ボタンは武器・道具・ジャンプ・切り替えになり、離すと止まる。知らないボタンは無視する。
+    #[test]
+    fn android_gamepad_buttons_map_to_actions() {
+        let mut keys = KeyState::default();
+        assert_eq!(keys.pad_buttons(), (false, false));
+        assert!(keys.set_android_button(ANDROID_BUTTON_R1, true));
+        assert_eq!(keys.pad_buttons(), (true, false));
+        assert!(keys.set_android_button(ANDROID_BUTTON_B, true));
+        assert_eq!(keys.pad_buttons(), (true, true));
+        assert!(keys.set_android_button(ANDROID_BUTTON_X, false));
+        assert!(keys.set_android_button(ANDROID_BUTTON_R1, false));
+        assert_eq!(keys.pad_buttons(), (false, true));
+        assert!(keys.set_android_button(ANDROID_BUTTON_Y, true), "切り替えのボタンも対応する");
+        assert!(!keys.set_android_button(1, true), "知らないボタンは無視する");
+        keys.release_all();
+        assert_eq!(keys.pad_buttons(), (false, false));
     }
 
     #[test]

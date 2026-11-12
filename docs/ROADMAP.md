@@ -273,6 +273,18 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 
 プレイ動画の自動撮影は、2026-11-13 の指示で中止した (コードは残していない)。更新範囲の限定 (T9.7) と xHigh・洞窟・プレイヤーの変更は、実際のウィンドウでの操作は未検証 (自動テストと RTX 4060 のオフスクリーン描画で確認)。
 
+## M13 配布とタッチ・ゲームパッド操作
+
+2026-11-13 の依頼。読む仕様: [10 §11](spec/10-noita-like-game.md)。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T13.1 | 仮想スティック (移動・上へスワイプでジャンプ・狙って撃つ) とボタン (`JUMP`・`HOOK`・`PAINT`)、Android のゲームパッドのボタン | `stick_walks_and_swipe_up_jumps`、`aim_stick_fires_toward_the_drag`、`buttons_hold_and_paint_toggles_once`、`touches_outside_the_pad_are_left_to_the_camera_and_brush`、`android_gamepad_buttons_map_to_actions`、`demo_renders_touch_pad` |
+| T13.2 | Android の入口を参照デモにする (MOD を埋め込み、内部ストレージへ書き出す)、`run_demo_with` | `cargo check --target aarch64-linux-android` |
+| T13.3 | `v*` のタグで Windows (zip)・Android (apk) をビルドして Releases に載せる GitHub Actions (`release.yml`)。最初のタグ `v0.0.1` | タグの push で Release に 2 つの成果物が付く |
+
+デスクトップのゲームパッド (XInput など) は、依存クレート (`gilrs`) の追加が必要で、見送った。Android 実機での確認は未実施。
+
 ---
 
 ## 仕様の確かさについて

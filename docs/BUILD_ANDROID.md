@@ -45,6 +45,24 @@ cargo apk run -p charon-sandbox
 `apps/sandbox/Cargo.toml` は `aarch64-linux-android`、minSdk 26 と NativeActivity 用 `cdylib` を指定する。
 デスクトップの `main.rs` は Android の APK に含めない。
 
+## 参照デモの APK とリリース (M13)
+
+APK は参照デモ (`charon-demo`) を動かす。`android_main` がデモの MOD (`assets/mods/fse_demo`、APK に埋め込み) を内部ストレージへ書き出して `charon_app::demo::run_demo_with` を呼ぶ。操作はタッチの仮想スティックとゲームパッドのボタン ([仕様 10 §11](spec/10-noita-like-game.md))。
+
+リリースビルドの署名は、`apps/sandbox/Cargo.toml` の `[package.metadata.android.signing.release]` が `~/.android/debug.keystore` (パスワード `android`) を指す。手元で `cargo apk build --release` するには、先に鍵を作る (配布用の本番の鍵ではない):
+
+```bash
+mkdir -p ~/.android
+keytool -genkeypair -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+```
+
+`v*` のタグを push すると、`.github/workflows/release.yml` が Windows 版 (`charon-demo-<タグ>-windows-x64.zip`、exe と `assets`) と Android 版 (`charon-demo-<タグ>-android-arm64.apk`) をビルドして GitHub Releases に載せる。
+
+```bash
+git tag v0.0.1
+git push origin v0.0.1
+```
+
 ## 実機またはエミュレーターの確認
 
 1. 画面に砂・水と材質一覧が出ることを確認する。

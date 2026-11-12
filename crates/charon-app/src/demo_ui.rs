@@ -231,6 +231,61 @@ pub(super) struct Overlay<'a> {
     /// 体力・杖・弾 (仕様 10 §6)。`Wand` パネルに使う。
     pub(super) game: &'a charon_game::game::GameState,
     pub(super) player: Option<charon_game::EntityId>,
+    /// 画面の仮想スティックとボタン (仕様 10 §10)。出さないときは `None`。
+    pub(super) pad: Option<&'a crate::touch_pad::TouchPad>,
+}
+
+/// 仮想スティックとボタンを、半透明で描く (ピクセル → egui の点へ直す)。
+fn draw_touch_pad(context: &egui::Context, pad: &crate::touch_pad::TouchPad) {
+    let painter = context.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::unique("charon touch pad"),
+    ));
+    let scale = 1.0 / context.pixels_per_point();
+    let at = |p: [f32; 2]| egui::pos2(p[0] * scale, p[1] * scale);
+    let layout = pad.layout();
+    let (unit, radius) = (layout.unit * scale, layout.radius() * scale);
+    let line = egui::Stroke::new(2.0, egui::Color32::from_white_alpha(110));
+    let fill = egui::Color32::from_white_alpha(28);
+    let knob = egui::Color32::from_white_alpha(120);
+    // スティック: 触れているときは、触れた場所を中心にして、指の位置に丸を描く。
+    for (touch, home, label) in
+        [(pad.stick_touch(), layout.stick_home, "MOVE"), (pad.aim_touch(), layout.aim_home, "AIM")]
+    {
+        let center = touch.map_or(home, |(start, _)| start);
+        painter.circle(at(center), radius, fill, line);
+        if touch.is_none() {
+            painter.text(
+                at(center),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(unit * 0.6),
+                egui::Color32::from_white_alpha(150),
+            );
+        }
+        if let Some((start, now)) = touch {
+            let (dx, dy) = (now[0] - start[0], now[1] - start[1]);
+            let length = dx.hypot(dy).max(1.0);
+            let reach = length.min(layout.radius());
+            let tip = [start[0] + dx / length * reach, start[1] + dy / length * reach];
+            painter.circle_filled(at(tip), unit * 0.9, knob);
+        }
+    }
+    for (center, label, held) in [
+        (layout.jump, "JUMP", pad.held("jump")),
+        (layout.hook, "HOOK", pad.held("hook")),
+        (layout.paint, "PAINT", pad.held("paint")),
+    ] {
+        let color = if held { knob } else { fill };
+        painter.circle(at(center), unit, color, line);
+        painter.text(
+            at(center),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(unit * 0.5),
+            egui::Color32::from_white_alpha(200),
+        );
+    }
 }
 
 /// 参照画面の UI の状態。
@@ -277,6 +332,9 @@ impl DemoUi {
         self.history.push(stats);
         let mut action = None;
         draw_wand_panel(context, overlay);
+        if let Some(pad) = overlay.pad {
+            draw_touch_pad(context, pad);
+        }
 
         egui::Area::new(egui::Id::unique("charon fps")).fixed_pos(egui::pos2(2.0, 1.0)).show(
             context,
@@ -902,6 +960,7 @@ mod tests {
             entities: &entities,
             game: &game,
             player: None,
+            pad: None,
         };
         let mut demo = DemoUi::new(world.materials());
         demo.show_collision = true;
