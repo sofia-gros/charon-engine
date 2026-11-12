@@ -76,6 +76,17 @@ pub fn box_art(width: usize, height: usize) -> String {
     art
 }
 
+/// M9 の性能場面: 砂 1,048,576 個を空行と交互に並べ、更新される tick 1 へ進める。
+pub fn falling_million() -> World {
+    let mut world = world_from_ascii(&box_art(1024, 2048), 1);
+    for y in (0..2048).step_by(2) {
+        fill(&mut world, 1, y, 1024, y, 's');
+    }
+    // tick 0 は初期 parity と一致し、砂の移動を測れない。
+    world.step();
+    world
+}
+
 /// 世界の矩形 (`x0..x1`、`y0..y1`。終端は含まない) を文字の絵に戻す。行は改行で区切る。
 pub fn to_ascii(world: &World, x0: i32, y0: i32, x1: i32, y1: i32) -> String {
     let materials = world.materials();

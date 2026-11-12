@@ -23,17 +23,6 @@ fn falling(ch: char) -> World {
     world
 }
 
-/// 砂 1,048,576 個を空行と交互に並べ、各セルが落下できるようにする。
-fn falling_million() -> World {
-    let mut world = world_from_ascii(&box_art(1024, 2048), 1);
-    for y in (0..2048).step_by(2) {
-        fill(&mut world, 1, y, 1024, y, 's');
-    }
-    // tick 0 では初期 parity と一致して更新を見送るため、tick 1 を計測する。
-    world.step();
-    world
-}
-
 /// 水と溶岩が接する約 6,000 セル。熱・反応・相変化の重なりを測る。
 fn reacting() -> World {
     let mut world = world_from_ascii(&box_art(100, 100), 1);

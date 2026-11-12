@@ -23,6 +23,7 @@ Charon Engine は、仕様の「必須テスト」が通ることを完了条件
 | `tests/reactions.rs` | 03 §1、§4、§5 | T2.2〜T2.6 |
 | `tests/heat.rs` | 03 §2、§3 | T2.3、T2.4 |
 | `tests/parallel.rs` | 02 §2 (`parallel_matches_serial`) | T3.1、T3.2 |
+| `tests/benchmark_fixture.rs` | 08 §2 (`benchmark_fixture_updates_cells`) | T9.1 |
 
 テスト関数の名前は、仕様の表にある名前と同じにする (検索できるようにするため)。
 
@@ -45,6 +46,9 @@ pub fn to_ascii(world: &World, x0: i32, y0: i32, x1: i32, y1: i32) -> String;
 /// 上が開いた箱の絵を作る。内側は幅 width、高さ height の空間で、左右と下が石の壁。
 /// 内側の左上は (1, 0)、床の上の行は y = height - 1。
 pub fn box_art(width: usize, height: usize) -> String;
+
+/// 仕様 08 §2 の 100 万セル場面。生成後、計測する tick 1 に進める。
+pub fn falling_million() -> World;
 
 /// 文字から材質へ。`world_from_ascii` と `place` が使う。
 pub fn material_of(world: &World, ch: char) -> MaterialId;

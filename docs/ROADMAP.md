@@ -16,6 +16,7 @@
 | [05-rigid-bodies](spec/05-rigid-bodies.md) | 剛体とセルの相互作用、浮力、パーティクル |
 | [06-rendering-platform](spec/06-rendering-platform.md) | wgpu、シェーダー、Android、メインループ |
 | [07-game-layer](spec/07-game-layer.md) | エンティティ、生成、建築、剛体熱、MOD、同期、Web |
+| [08-performance](spec/08-performance.md) | デスクトップ性能の再測定・分析・決定性を保つ最適化 |
 
 テストの書き方は [`docs/TESTING.md`](TESTING.md) にある。
 
@@ -52,6 +53,7 @@ FallingSandEngine の調査で見つかった問題に、それぞれ対応さ�
 | M6 | 剛体とパーティクル | 完了（Windows の T6.8 実機操作・撮影は依頼者の指示で免除、未検証。Android 実機も免除、未検証） |
 | M7 | ライティングと後処理 | 実装・自動テスト完了（T7.4 の Android 60 fps 実測は依頼者の指示で免除、未検証。Windows GUI 目視・撮影も未実施） |
 | M8 | ゲーム層 | T8.1〜T8.8 の実装と自動テストを完了。T8.8 の実ブラウザー動作・保存は依頼者の指示で後日検証（未検証）。Windows GUI の操作・撮影も未検証 |
+| M9 | デスクトップ性能の計測と改善 | 進行中。T9.1 から順に実施。100 万セル / 8 ms は未達 |
 
 ---
 
@@ -198,6 +200,19 @@ Web の実機結果と異種 OS の入力同期は、自動テストだけから
 2026-11-12 の依頼者指示で、T8.8 の Web 実機確認は後日実施に変更。Windows 版の起動を当面の確認範囲とし、
 Web の `web_save_roundtrip`（ブラウザー）と `web_input_and_resume` は未検証のままにする。
 これらの完了を主張せず、未検証項目は [`PLATFORM_CHECK.md`](PLATFORM_CHECK.md) に残す。
+
+## M9 デスクトップのシミュレーション性能
+
+読む仕様: [08 の全部](spec/08-performance.md)、02 §1〜§4・§9〜§11、01 §5〜§6、03 §1〜§5。実装で変更する規則は先行仕様の本文を再確認する。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T9.1 | 100 万セル場面の生成を `testkit::falling_million` に一本化し、更新 tick の測定条件と変更前の基準値を固定する (08 §2) | `benchmark_fixture_updates_cells`。同一環境の Criterion 中央値と条件を `BENCHMARKS.md` に追記 |
+| T9.2 | CPU の処理内訳を測り、最大の実測ボトルネックと T9.3 の変更範囲を仕様 08 §3 に確定する | 計測方法・内訳・再現条件を `BENCHMARKS.md` に追記。推測を測定結果と扱わない |
+| T9.3 | 08 §3 で確定した箇所だけ最適化し、同一環境で変更前後を比較する | `optimization_matches_baseline`、`parallel_matches_serial`、`golden_hashes`、`mass_is_conserved`、休眠テストが通過。性能が改善しなければ採用しない |
+| T9.4 | 100 万・10 万セル、反応・熱、休眠 10,000 チャンクを再計測し、達否を記録する (08 §5) | `BENCHMARKS.md` に履歴を追記し `scripts/check.sh` が通過。ロードマップと README の状態を実測と一致させる |
+
+Android・Web・Windows GUI の延期中の実機項目は M9 の完了条件に含めず、未検証として残す。
 
 ---
 

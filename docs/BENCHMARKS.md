@@ -86,3 +86,17 @@ Android の実測は対象デバイスがないため未実施であり、25 万
 Android 上のフレーム時間や毎秒 60 フレームの維持は**未計測・未検証**であり、達成を主張しない。
 光の伝播回数は仕様 06 §5 の初期値どおり Android 8 回 (High)、Low は 4 回、Off は 0 回。
 端末での測定に基づく既定値の調整は行っていない。
+
+## 2026-11-12 — M9 T9.1 計測条件の固定 (最適化前)
+
+環境: AMD Ryzen 7 2700 (8 コア / 16 スレッド)、Windows 11、Rust 1.99.1、`bench` プロファイル、`parallel` feature 有効。
+コマンド: `cargo bench -p charon-core --bench sim falling_sand_1m -- --warm-up-time 1 --measurement-time 2 --sample-size 20`。
+Criterion の中央値 (括弧は推定区間)、各 20 サンプル。指定した 2 秒ではサンプルを取りきれず、実際の推定所要時間は並列 32.2 秒、逐次 39.6 秒。並列に 4 件、逐次に 1 件の外れ値が報告された。
+
+| ベンチマーク | 条件 | 中央値 (推定区間) |
+|---|---|---|
+| `step/falling_sand_1m` | tick 1 から 1 tick、並列 | 82.554 ms (80.529〜84.966 ms) |
+| `step/falling_sand_1m_serial` | 同じ場面、逐次 | 591.74 ms (574.96〜613.66 ms) |
+
+`benchmark_fixture_updates_cells` により tick 1 から砂が実際に空行へ移動し、1,048,576 個の砂が保存されることを確認した。
+T3.3 と同じ CPU と場面だが、実行時の負荷などは揃えていない。Criterion が過去の基準との速度差を表示しても、最適化の効果と解釈しない。デスクトップ 8 ms 目標は今回の並列計測でも未達。
