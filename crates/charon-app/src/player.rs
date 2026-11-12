@@ -137,7 +137,7 @@ pub fn try_spawn_player(
     world: &World,
     spawn: [i32; 2],
 ) -> Result<Option<EntityId>, EntityError> {
-    if !area_loaded(world, spawn, 8, 16) {
+    if !area_loaded(world, spawn, charon_game::PLAYER_WIDTH, charon_game::PLAYER_HEIGHT) {
         return Ok(None);
     }
     entities.spawn_player(i64::from(spawn[0]) * 16, i64::from(spawn[1]) * 16, world).map(Some)
@@ -266,8 +266,8 @@ mod tests {
     fn player_spawns_when_chunks_load() {
         let mut world = world_from_ascii(&box_art(60, 60), 1);
         let mut entities = EntityWorld::new();
-        // 足元 (y + 16) が別のチャンクにあり、それが未読み込みなら生成しない。
-        assert_eq!(try_spawn_player(&mut entities, &world, [20, 50]), Ok(None));
+        // 足元 (y + 高さ) が別のチャンクにあり、それが未読み込みなら生成しない。
+        assert_eq!(try_spawn_player(&mut entities, &world, [20, 56]), Ok(None));
         world.insert_chunk(ChunkPos::new(0, 1));
         let id = try_spawn_player(&mut entities, &world, [20, 40]).unwrap();
         assert!(id.is_some());

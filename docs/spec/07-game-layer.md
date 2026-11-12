@@ -43,14 +43,16 @@ pub struct PlayerInput { pub horizontal: i8, pub jump: bool } // horizontal は 
 pub fn step_player(entity: &mut Entity, input: PlayerInput, world: &World);
 ```
 
-プレイヤーは `width = 8`、`height = 16`。入力は tick ごとに 1 回、ID 昇順に適用する。速度・移動は整数のみ:
+プレイヤーは `width = PLAYER_WIDTH = 5`、`height = PLAYER_HEIGHT = 10` (M12 で 8×16 から小さくした)。入力は tick ごとに 1 回、ID 昇順に適用する。速度・移動は整数のみ:
 
 1. `vx = horizontal * 32`。`grounded && jump` なら `vy = -96`、`grounded = false`。
 2. `vy = min(vy + 4, 96)`。上向きの速度はこの更新で減速する。
 3. x、その後 y の順に、現在位置から目標位置へ 1/16 セルずつ進める。各段階で、当たり判定にかかるセル全てを検査する。衝突する直前の位置で止め、その軸の速度を 0 にする。y 正方向の衝突なら `grounded = true`、そうでなければ `grounded = false`。入力がない場合も足元の 1/16 セル下を検査して接地を更新する。座標の加算が `i32` セル範囲を超える移動は境界で止める。
 4. `world.get(CellPos)` の材質が `BOUNDARY`、あるいは `FLAG_BODY` が立つ、あるいは材質の `phase == Solid` のときだけ衝突する。粉体・液体・気体・空は通り抜ける。エンティティ同士はこの段階では衝突しない。エンティティはワールドのセルを変更しない。
 
-衝突範囲は半開区間 `[x16, x16 + width*16) × [y16, y16 + height*16)` が覆う整数セル。負座標も `div_euclid(16)` を使う。プレイヤーの初期配置に固体が重なる場合は `spawn_player` がエラーを返し、勝手に地形を消さない。`EntityWorld::step_players(inputs, world)` は入力のない ID に中立入力を適用し、存在しない ID、同一 ID の重複、`horizontal` が -1..=1 の範囲外の入力はエラーにする (部分的に更新してはならない)。エンティティはセルと別のレイヤーに描き、色はプレイヤー用の UI 定数とする (材質 ID で判定しない)。
+衝突範囲は、箱 `[x16, x16 + width*16) × [y16, y16 + height*16)` **に内接する楕円** (中心は箱の中心、半径は幅・高さの半分) と重なる整数セル。セルの正方形の内側に楕円の点が入るときだけ重なりとし、縁がちょうど触れるだけなら重ならない (床や壁にぴったり立てる)。判定は整数だけで行う (`in_ellipse`)。箱の角のセルは、固体があっても当たらない。負座標も `div_euclid(16)` を使う。
+
+**エンティティは砂に勝つ**: `EntityWorld::push_out_powder(world: &mut World) -> usize` は、全エンティティ (ID 昇順) の楕円に重なる `Phase::Powder` のセル (`FLAG_BODY` を除く) を、10 セル以内の近い空きセル (同じ距離なら上、次に左。どのエンティティの楕円の外でもあるもの) と `World::swap` で入れ替え、動かした数を返す。セルは増減せず、空きがなければ動かさない。アプリは `step_players` のあとに毎 tick 呼ぶ。液体は押し出さない (溺れるのは仕様 10 §6 のとおり)。プレイヤーの初期配置に固体が重なる場合は `spawn_player` がエラーを返し、勝手に地形を消さない。`EntityWorld::step_players(inputs, world)` は入力のない ID に中立入力を適用し、存在しない ID、同一 ID の重複、`horizontal` が -1..=1 の範囲外の入力はエラーにする (部分的に更新してはならない)。エンティティはセルと別のレイヤーに描き、色はプレイヤー用の UI 定数とする (材質 ID で判定しない)。
 
 ### 2.3 必須テスト
 
@@ -61,6 +63,8 @@ pub fn step_player(entity: &mut Entity, input: PlayerInput, world: &World);
 | `player_lands_on_solid` | 落下して固体の床に乗り、何 tick 進めても床を抜けず接地する |
 | `player_hits_body_stamp` | `FLAG_BODY` の壁を貫通せず、スタンプを外せば進める |
 | `player_jump_and_negative_coords` | ジャンプ後に着地し、負座標の壁もすり抜けない |
+| `player_collision_is_elliptical` | 箱の左上の角のセルの固体では生成できるが、中心のセルの固体では `Occupied` になる |
+| `player_pushes_sand_out` | 楕円に重なった砂が全部押し出され、セルの数が変わらず、2 回目は何も動かない |
 | `invalid_input_is_atomic` | 存在しない ID の入力を含むと全エンティティが変わらない |
 
 ## 3. バイオームと構造物 (`charon-world`)

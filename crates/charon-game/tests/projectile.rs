@@ -175,7 +175,8 @@ fn explosion_damage_falls_off() {
     let mut stage = Stage::new(1);
     // 壁の向こうにいても、爆発の中心との距離だけで決まる。
     testkit::fill(&mut stage.world, 30, 0, 40, 39, '#');
-    let near = stage.add_target(22);
+    // 箱の右端のセルが x = 29 になる位置 (プレイヤーの幅に合わせる)。
+    let near = stage.add_target(30 - i64::from(charon_game::PLAYER_WIDTH));
     let far = stage.add_target(0);
     stage.shoot(20, 20, 100, 0, 0, 100, 50, Payload::Explode { radius: 8 }).unwrap();
     for _ in 0..5 {

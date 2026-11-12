@@ -95,7 +95,10 @@ impl Arena {
 
     fn hand(&self, id: EntityId) -> [f32; 2] {
         let e = self.entity(id);
-        [(e.x16 + 64) as f32 / 16.0, (e.y16 + 128) as f32 / 16.0]
+        [
+            (e.x16 + i64::from(e.width) * 8) as f32 / 16.0,
+            (e.y16 + i64::from(e.height) * 8) as f32 / 16.0,
+        ]
     }
 }
 
@@ -161,7 +164,11 @@ fn hook_pulls_player_toward_anchor() {
             closest = closest.min(distance(arena.hand(player), anchor));
             // 天井や床を抜けない。
             let e = arena.entity(player);
-            assert!(e.y16 >= 6 * 16 && e.y16 + 16 * 16 <= 60 * 16, "seed={seed}: y16={}", e.y16);
+            assert!(
+                e.y16 >= 6 * 16 && e.y16 + i64::from(e.height) * 16 <= 60 * 16,
+                "seed={seed}: y16={}",
+                e.y16
+            );
         }
         let end = distance(arena.hand(player), anchor);
         assert!(first > 30.0 && end < first - 20.0, "seed={seed}: {first} → {end}");
@@ -198,7 +205,7 @@ fn hook_swings_without_stretching() {
         assert!(max - min > 10.0, "seed={seed}: 振り子のように揺れる {min}..{max}");
         assert!(min < 30.0 + 2.0 && max > 30.0, "アンカーの両側へ");
         let e = arena.entity(player);
-        assert!(e.y16 + 16 * 16 <= 60 * 16, "床を抜けない");
+        assert!(e.y16 + i64::from(e.height) * 16 <= 60 * 16, "床を抜けない");
     }
 }
 
@@ -320,7 +327,7 @@ fn entity_external_velocity_decays() {
 
     // 接地中は 3/4 ずつ減る。
     let mut entities = EntityWorld::new();
-    let id = entities.spawn_player(10 * 16, 44 * 16, &world).unwrap();
+    let id = entities.spawn_player(10 * 16, 50 * 16, &world).unwrap();
     for _ in 0..3 {
         step_entity(entities.get_mut(id).unwrap(), neutral, 32, 96, &world);
     }
@@ -348,13 +355,14 @@ fn entity_external_velocity_decays() {
     // 壁に当たると 0 になる。
     let mut entities = EntityWorld::new();
     testkit::fill(&mut world, 20, 0, 20, 59, '#');
-    let id = entities.spawn_player(10 * 16, 44 * 16, &world).unwrap();
+    let id = entities.spawn_player(10 * 16, 50 * 16, &world).unwrap();
     entities.get_mut(id).unwrap().ext_vx = 400;
     for _ in 0..30 {
         step_entity(entities.get_mut(id).unwrap(), neutral, 32, 96, &world);
     }
     assert_eq!(entities.get(id).unwrap().ext_vx, 0);
-    assert!(entities.get(id).unwrap().x16 + 8 * 16 <= 20 * 16, "壁を抜けない");
+    let width = i64::from(entities.get(id).unwrap().width);
+    assert!(entities.get(id).unwrap().x16 + width * 16 <= 20 * 16, "壁を抜けない");
 
     // ext_vx が違うと状態ハッシュも違う。
     let mut a = EntityWorld::new();

@@ -161,14 +161,14 @@ impl EntityWorld {
         Ok(id)
     }
 
-    /// 8×16 セルのプレイヤーを、固体のない位置に作る。
+    /// `PLAYER_WIDTH`×`PLAYER_HEIGHT` セルのプレイヤーを、固体のない位置に作る。
     pub fn spawn_player(
         &mut self,
         x16: i64,
         y16: i64,
         world: &World,
     ) -> Result<EntityId, EntityError> {
-        self.spawn_checked(x16, y16, 8, 16, world)
+        self.spawn_checked(x16, y16, PLAYER_WIDTH, PLAYER_HEIGHT, world)
     }
 
     /// 全入力を検証してから ID 順に更新する。入力のない ID は中立入力。
@@ -199,6 +199,10 @@ pub struct PlayerInput {
     pub horizontal: i8,
     pub jump: bool,
 }
+
+/// プレイヤーの大きさ (セル)。当たり判定は、この箱に内接する楕円。
+pub const PLAYER_WIDTH: u8 = 5;
+pub const PLAYER_HEIGHT: u8 = 10;
 
 /// プレイヤーの速さ: 歩く速さ (1/16 セル / tick) とジャンプの初速。
 pub const PLAYER_WALK_SPEED: i16 = 32;
@@ -255,7 +259,84 @@ pub fn step_entity(
     entity.ext_vx = if entity.grounded { entity.ext_vx * 3 / 4 } else { entity.ext_vx * 15 / 16 };
 }
 
-/// 半開区間の端を含むセルだけを検査し、未読み込み/範囲外も壁とする。
+/// セル `(x, y)` の正方形が、`x16`・`y16`・`width`・`height` の箱に内接する楕円と重なるか (整数だけで判定する)。
+/// 楕円の中心は箱の中心、半径は幅・高さの半分。縁がちょうど触れるだけなら重ならない
+/// (床や壁にぴったり立てる)。セルの中心だけで判定すると、床に少し沈んでぎくしゃくするため。
+pub(crate) fn in_ellipse(x16: i64, y16: i64, width: u8, height: u8, x: i64, y: i64) -> bool {
+    let (w, h) = (i64::from(width) * 16, i64::from(height) * 16);
+    // 1/32 セル単位。楕円の中心 (x16 * 2 + w, y16 * 2 + h)、半径 (w, h)。
+    let (cx, cy) = (x16 * 2 + w, y16 * 2 + h);
+    let nearest_x = cx.clamp(x * 32, x * 32 + 32);
+    let nearest_y = cy.clamp(y * 32, y * 32 + 32);
+    let (a, b) = ((nearest_x - cx) * h, (nearest_y - cy) * w);
+    a * a + b * b < (w * h) * (w * h)
+}
+
+/// 楕円の内側のセルが `Phase::Powder` なら、近くの空きセルへ押し出す (仕様 07 §2.3)。
+/// エンティティが砂に勝つ: 砂に埋まらず、砂のほうがよける。セルの数は変えず、`World::swap` だけで動かす。
+impl EntityWorld {
+    /// 全エンティティの楕円に重なる粉体を、ID 順に押し出す。動かしたセルの数を返す。
+    pub fn push_out_powder(&self, world: &mut World) -> usize {
+        const REACH: i32 = 10;
+        let mut moved = 0;
+        for entity in self.entities.values() {
+            let left = entity.x16.div_euclid(16);
+            let top = entity.y16.div_euclid(16);
+            let right = (entity.x16 + i64::from(entity.width) * 16 - 1).div_euclid(16);
+            let bottom = (entity.y16 + i64::from(entity.height) * 16 - 1).div_euclid(16);
+            for y in top..=bottom {
+                for x in left..=right {
+                    let (Ok(cx), Ok(cy)) = (i32::try_from(x), i32::try_from(y)) else { continue };
+                    if !in_ellipse(entity.x16, entity.y16, entity.width, entity.height, x, y) {
+                        continue;
+                    }
+                    let from = CellPos::new(cx, cy);
+                    let cell = world.get(from);
+                    if cell.has(FLAG_BODY)
+                        || world.materials().get(cell.material).phase != Phase::Powder
+                    {
+                        continue;
+                    }
+                    // 近い順 (同じ距離なら上、次に左) の、どのエンティティの楕円の外でもある空きセル。
+                    let mut best: Option<((i32, i32, i32), CellPos)> = None;
+                    for dy in -REACH..=REACH {
+                        for dx in -REACH..=REACH {
+                            let to = CellPos::new(cx.saturating_add(dx), cy.saturating_add(dy));
+                            let target = world.get(to);
+                            if target.material != MaterialId::EMPTY || target.has(FLAG_BODY) {
+                                continue;
+                            }
+                            let key = (dx * dx + dy * dy, dy, dx);
+                            if best.is_some_and(|(k, _)| k <= key) {
+                                continue;
+                            }
+                            let inside = self.entities.values().any(|e| {
+                                in_ellipse(
+                                    e.x16,
+                                    e.y16,
+                                    e.width,
+                                    e.height,
+                                    i64::from(to.x),
+                                    i64::from(to.y),
+                                )
+                            });
+                            if !inside {
+                                best = Some((key, to));
+                            }
+                        }
+                    }
+                    if let Some((_, to)) = best {
+                        world.swap(from, to);
+                        moved += 1;
+                    }
+                }
+            }
+        }
+        moved
+    }
+}
+
+/// 楕円の内側のセルだけを検査し、未読み込み/範囲外も壁とする。
 pub(crate) fn collides(x16: i64, y16: i64, width: u8, height: u8, world: &World) -> bool {
     let left = x16.div_euclid(16);
     let top = y16.div_euclid(16);
@@ -263,6 +344,9 @@ pub(crate) fn collides(x16: i64, y16: i64, width: u8, height: u8, world: &World)
     let bottom = (y16 + i64::from(height) * 16 - 1).div_euclid(16);
     for y in top..=bottom {
         for x in left..=right {
+            if !in_ellipse(x16, y16, width, height, x, y) {
+                continue;
+            }
             let (Ok(x), Ok(y)) = (i32::try_from(x), i32::try_from(y)) else {
                 return true;
             };

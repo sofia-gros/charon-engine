@@ -77,7 +77,11 @@ fn game_step_order_is_fixed() {
                 if tick == 0 {
                     // 発射した tick のうちに弾が 1 歩進む (発射 → 移動の順)。
                     let p = stage.game.projectiles.iter().next().unwrap();
-                    assert_eq!(p.x16, (8 * 16 + 8 * 8) + 128, "seed={seed}");
+                    assert_eq!(
+                        p.x16,
+                        (8 * 16 + i64::from(charon_game::PLAYER_WIDTH) * 8) + 128,
+                        "seed={seed}"
+                    );
                 }
                 hashes.push(stage.game.state_hash());
             }

@@ -144,6 +144,8 @@ impl Sim<'_> {
         let input = if alive { input } else { PlayerInput::default() };
         let inputs: Vec<_> = self.player.iter().map(|&id| (id, input)).collect();
         self.entities.step_players(&inputs, self.world).map_err(|err| err.to_string())?;
+        // エンティティは砂に勝つ: 楕円に重なった粉体は、近くの空きへ押し出される。
+        self.entities.push_out_powder(self.world);
         let actions: Vec<_> = self
             .player
             .iter()
