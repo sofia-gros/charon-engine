@@ -260,6 +260,19 @@ T10.6 では RTX 4060 (Vulkan) で 5 場面をオフスクリーンに描き、�
 
 T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の `vitals`・`projectile`・`wand`・`game` モジュールと `Lockstep`、`charon-app` のデモ)。デモの `Wand` パネルと弾は RTX 4060 (Vulkan) のオフスクリーン描画で確認した ([`M11-wand-panel.png`](screenshots/M11-wand-panel.png))。ウィンドウでの右ボタン操作は、画面操作の許可が得られておらず**未検証**。MOD ディレクトリから `spells.ron` を自動で読む処理は仕様 07 §6 の変更になるため行っておらず、呪文の表は呼び出し側が `SpellTable::parse` に渡す。サンドボックス本体 (`charon-sandbox`) には組み込んでおらず、`charon-demo` だけで撃てる。ワイヤーフックの物理 (`charon_physics::rope`) は浮動小数点で、同一ビルド・同一プラットフォームの決定性だけを確認している (他の環境の一致は主張しない)。ワイヤーは地形の角に巻き付かず、引く向きはアンカーの方向 (手から 3 セル以上離れた最初の点) で、壁にめり込む向きは衝突で止まる。T11.5 は未着手。敵は描画で自分と同じ色の箱に見える (エンティティごとの色はまだない)。完了したタスクだけを完了として扱う。
 
+## M12 遊びやすさと見た目の改善
+
+2026-11-12〜13 の依頼 (実機で試した所見と、見た目・操作の改善)。読む仕様: 07 §2、06 §5、09 §3。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T9.7 | 更新範囲 (`World::set_active_region`): カメラのまわりだけ砂や水を動かし、遠くは保留する (Terraria と同じ)。光源準備のチャンク引きを省き、光の CPU 時間を約半分に | `outside_active_region_is_frozen`、`light_pass_renders_offscreen` |
+| T12.1 | プレイヤーを 5×10 に小さくし、当たり判定を箱に内接する楕円にし、楕円に重なった砂を押し出す (`push_out_powder`) (07 §2.2) | `player_collision_is_elliptical`、`player_pushes_sand_out` ほか既存テスト |
+| T12.2 | 光の品質 `XHigh` (2 倍の解像度、滑らかな補間、濃い発色) (06 §5) | `demo_renders_xhigh_light` ([`M12-light-xhigh.png`](screenshots/M12-light-xhigh.png)) |
+| T12.3 | Noita のような洞窟 (歪めたノイズの大広間・坑道、窪みの水と溶岩) (09 §3) | `demo_caves_are_connected_and_roomy` ([`M12-caves.png`](screenshots/M12-caves.png)) |
+
+プレイ動画の自動撮影は、2026-11-13 の指示で中止した (コードは残していない)。更新範囲の限定 (T9.7) と xHigh・洞窟・プレイヤーの変更は、実際のウィンドウでの操作は未検証 (自動テストと RTX 4060 のオフスクリーン描画で確認)。
+
 ---
 
 ## 仕様の確かさについて
