@@ -32,6 +32,8 @@ pub struct FrameContext<'a, 'source> {
     pub entities: &'a [crate::EntitySprite],
     /// 滑らかな剛体 (仕様 05 §11)。`SmoothBodyPass` が描く。
     pub smooth: &'a [crate::SmoothBodySprite<'a>],
+    /// 画像のスプライト (仕様 06 §10)。`SpritePass` が描く。
+    pub sprites: &'a [crate::Sprite<'a>],
     pub visible: &'a [ChunkPos],
     pub scene: &'a wgpu::TextureView,
     /// ping-pong 光テクスチャ。偶数回の伝播後は 0 が最終結果。
@@ -193,6 +195,33 @@ impl PassList {
         output: &wgpu::TextureView,
         origin: [f32; 2],
     ) -> Result<(), CellPassError> {
+        self.render_with_sprites(
+            ctx,
+            world,
+            background,
+            entities,
+            smooth,
+            &[],
+            visible,
+            output,
+            origin,
+        )
+    }
+
+    /// `render_with_bodies` に、画像のスプライト (仕様 06 §10、拡大率つき) を足したもの。
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_sprites(
+        &mut self,
+        ctx: &GpuContext,
+        world: &mut World,
+        background: Option<&mut dyn BackgroundSource>,
+        entities: &[crate::EntitySprite],
+        smooth: &[crate::SmoothBodySprite<'_>],
+        sprites: &[crate::Sprite<'_>],
+        visible: &[ChunkPos],
+        output: &wgpu::TextureView,
+        origin: [f32; 2],
+    ) -> Result<(), CellPassError> {
         // 品質が変わって光の解像度が変わるときは、光のテクスチャを作り直す。
         if self.light_divisor != self.quality.divisor() {
             self.light_divisor = self.quality.divisor();
@@ -207,6 +236,7 @@ impl PassList {
             background,
             entities,
             smooth,
+            sprites,
             visible,
             scene: &self.scene_view,
             light: [&self.light_views[0], &self.light_views[1]],

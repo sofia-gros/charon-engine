@@ -285,6 +285,17 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 
 デスクトップのゲームパッド (XInput など) は `gilrs` (2026-11-13 に追加を承認) で対応した (`sticks_and_buttons_map_to_actions`、`right_stick_aims_with_screen_down_positive`)。実際のゲームパッドをつないだ確認と Android 実機での確認は未実施。
 
+## M14 画像と UI の大きさ (倍率)
+
+2026-11-13 の依頼「スプライトや画像系はスケール値を設定できるように。キャラクターは 32×64 で作って scale で小さくできる、GUI もサイズ変更可能に」。読む仕様: [06 §10](spec/06-rendering-platform.md)。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T14.1 | `SpritePass`・`Sprite` (RGBA の画像、`scale` = 1 画素あたりのセル数、基準点・回転・反転・補間・光)、`PassList::render_with_sprites`、`AppOptions::player_sprite` (`SpriteAsset`)、デモの 32×64 の魔法使い | `scale_sets_the_size_in_cells`、`a_32_by_64_character_scales_to_5_by_10_cells`、`invalid_sprites_are_rejected`、`content_hash_tracks_pixels_and_size`、`demo_renders_sprite_with_scale` |
+| T14.2 | `UI scale` (egui の `zoom_factor`、仮想パッドも)、`Character scale` (`Debug` パネル) | `scale_resizes_the_pad` |
+
+アニメーション (スプライトシート)、敵・アイテムへの画像の割り当ては未着手。ウィンドウでの操作確認は未実施 (RTX 4060 のオフスクリーン描画で確認)。
+
 ---
 
 ## 仕様の確かさについて

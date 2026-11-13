@@ -25,6 +25,10 @@ pub(super) struct Controls {
     pub(super) zoom: u32,
     pub(super) light_quality: LightQuality,
     pub(super) show_debug: bool,
+    /// 画面の部品 (パネル・仮想パッド) の大きさの倍率。
+    pub(super) ui_scale: f32,
+    /// 画像のスプライトの大きさの倍率 (ゲームの `SpriteAsset::scale` に掛ける)。
+    pub(super) sprite_scale: f32,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) save: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -49,6 +53,8 @@ impl Controls {
             zoom: 4,
             light_quality: LightQuality::High,
             show_debug: false,
+            ui_scale: 1.0,
+            sprite_scale: 1.0,
             #[cfg(not(target_arch = "wasm32"))]
             save: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -119,6 +125,8 @@ impl Gui {
     ) -> Option<DemoAction> {
         let world = scene.world;
         let tick_ms = stats.tick_ms;
+        // UI の大きさ (倍率)。egui の `zoom_factor` で、全部の部品が同じ倍率で拡大・縮小する。
+        self.context.set_zoom_factor(self.controls.ui_scale.clamp(0.5, 3.0));
         let input = self.state.take_egui_input(window);
         let controls = &mut self.controls;
         let demo = &mut self.demo;
@@ -177,6 +185,7 @@ impl Gui {
                     }
                 });
                 ui.add(egui::Slider::new(&mut controls.zoom, 1..=8).text("Zoom"));
+                ui.add(egui::Slider::new(&mut controls.ui_scale, 0.5..=3.0).text("UI scale"));
                 ui.horizontal(|ui| {
                     ui.label("Light");
                     for (quality, name) in [

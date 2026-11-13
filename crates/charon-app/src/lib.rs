@@ -49,7 +49,8 @@ use charon_physics::{BodyRender, CELLS_PER_METER, PhysicsEngine};
 use charon_render::{
     BackgroundLayerPass, BackgroundPass, BackgroundSource, CellPass, CompositePass,
     DeepBackgroundClock, DeepBackgroundParams, DeepBackgroundPass, EntityPass, FullscreenPass,
-    GpuContext, LightPass, PassList, SmoothBodyPass, SmoothBodySprite,
+    GpuContext, LightPass, PassList, SmoothBodyPass, SmoothBodySprite, Sprite, SpriteFilter,
+    SpritePass,
 };
 use charon_world::background::BackgroundWorld;
 use charon_world::building::{BuildOp, Layer, apply_build};
@@ -213,6 +214,23 @@ pub struct AppOptions {
     pub deep_background: Option<DeepBackgroundParams>,
     /// 世界に置く敵。周囲のチャンクが読み込まれたら `GameState::spawn_enemy` で生成する (仕様 10 §8.5)。
     pub enemies: Vec<EnemySpawn>,
+    /// プレイヤーを描く画像 (仕様 06 §10)。`None` なら単色の箱。当たり判定の大きさは変わらない。
+    pub player_sprite: Option<SpriteAsset>,
+}
+
+/// ゲームがエンジンに渡す、キャラクターなどの画像 (仕様 06 §10)。画像は大きく作り、`scale` で大きさを決める
+/// (例: 32×64 の画像を `scale = 10 / 64` で 5×10 セルに描く)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpriteAsset {
+    pub width: u16,
+    pub height: u16,
+    /// 行優先の RGBA8 (sRGB、ストレートアルファ)。長さは `width * height * 4`。
+    pub rgba: Arc<[u8]>,
+    /// 基準点の画像上の位置 (画素)。足元の中央なら `[width / 2, height]`。エンティティの足元の中央に置く。
+    pub pivot: [f32; 2],
+    /// 画像の 1 画素あたりのセル数。
+    pub scale: f32,
+    pub filter: SpriteFilter,
 }
 
 /// ゲームがエンジンに渡す敵の生成の指定 (仕様 10 §8.5)。
@@ -789,6 +807,7 @@ impl App {
         }
         // 画面のスティック・ボタン (仕様 10 §10)。キーボード・マウスの操作と、使っている方が優先される形で重ねる。
         self.touch_pad.set_viewport([size.width as f32, size.height as f32]);
+        self.touch_pad.set_scale(self.gui.as_ref().map_or(1.0, |gui| gui.controls.ui_scale));
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         let pad_input = self.gamepad.as_mut().map(gamepad::Gamepad::poll).unwrap_or_default();
         #[cfg(any(target_arch = "wasm32", target_os = "android"))]
@@ -923,14 +942,38 @@ impl App {
         let visible =
             visible_chunks(&self.world, &self.background, origin, [scene_width, scene_height]);
         let mut background = BackgroundAdapter(&mut self.background);
-        let sprites = sprites(&self.entities, &self.game);
+        // プレイヤーの画像 (仕様 06 §10)。画像があるときは、プレイヤーの箱は描かない。
+        let sprite_scale = self.gui.as_ref().map_or(1.0, |gui| gui.controls.sprite_scale);
+        let player_image =
+            self.options.player_sprite.as_ref().zip(self.player).and_then(|(asset, id)| {
+                let entity = self.entities.get(id)?;
+                Some(Sprite {
+                    id: 1,
+                    width: asset.width,
+                    height: asset.height,
+                    rgba: &asset.rgba,
+                    position: [
+                        (entity.x16 as f32 + f32::from(entity.width) * 8.0) / 16.0,
+                        (entity.y16 as f32 + f32::from(entity.height) * 16.0) / 16.0,
+                    ],
+                    pivot: asset.pivot,
+                    scale: asset.scale * sprite_scale,
+                    angle: 0.0,
+                    flip_x: self.facing < 0,
+                    filter: asset.filter,
+                    lit: true,
+                })
+            });
+        let skip = player_image.as_ref().and(self.player);
+        let boxes = sprites(&self.entities, &self.game, skip);
         let smooth = smooth_sprites(&self.physics);
-        if let Err(err) = passes.render_with_bodies(
+        if let Err(err) = passes.render_with_sprites(
             gpu,
             &mut self.world,
             Some(&mut background),
-            &sprites,
+            &boxes,
             &smooth,
+            player_image.as_slice(),
             &visible,
             &view,
             origin,
@@ -1008,6 +1051,8 @@ pub fn build_passes_with(
     });
     // 滑らかな剛体 (仕様 05 §11)。奥の背景のあと、後処理の前。
     passes.add(SmoothBodyPass::new(gpu, materials, ambient));
+    // 画像のスプライト (仕様 06 §10)。滑らかな剛体のあと、後処理の前。
+    passes.add(SpritePass::new(gpu, ambient));
     passes
         .add(FullscreenPass::post_process(gpu, include_str!("../../charon-render/src/bloom.wgsl")));
     Ok((passes, clock))

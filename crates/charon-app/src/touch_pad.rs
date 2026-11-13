@@ -68,6 +68,8 @@ pub(crate) struct TouchPad {
     touches: BTreeMap<u64, Touch>,
     last_aim: Option<(i32, i32)>,
     toggle: bool,
+    /// 部品全体の大きさの倍率 (0 は 1 とみなす)。
+    scale: f32,
 }
 
 /// 画面の大きさ (ピクセル) から決まる配置。
@@ -89,9 +91,11 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
-    pub(crate) fn new(viewport: [f32; 2]) -> Self {
+    /// `scale` は部品全体の大きさの倍率 (UI の大きさの設定)。0 以下・有限でない値は 1 とみなす。
+    pub(crate) fn new(viewport: [f32; 2], scale: f32) -> Self {
         let (w, h) = (viewport[0], viewport[1]);
-        let unit = (w.min(h) * 0.07).max(20.0);
+        let scale = if scale.is_finite() && scale > 0.0 { scale.clamp(0.5, 3.0) } else { 1.0 };
+        let unit = (w.min(h) * 0.07).max(20.0) * scale;
         Self {
             unit,
             stick_home: [3.4 * unit, h - 3.4 * unit],
@@ -150,7 +154,12 @@ impl TouchPad {
     }
 
     pub(crate) fn layout(&self) -> Layout {
-        Layout::new(self.viewport)
+        Layout::new(self.viewport, self.scale)
+    }
+
+    /// 部品全体の大きさの倍率 (UI の大きさ)。
+    pub(crate) fn set_scale(&mut self, scale: f32) {
+        self.scale = scale;
     }
 
     /// タッチのイベントを反映する。この指が部品のものなら true (カメラ操作やブラシに渡さない)。
@@ -301,6 +310,21 @@ mod tests {
         assert!(!pad.output().toggle_paint, "切り替えは 1 度だけ");
         pad.update(4, TouchPhase::Cancelled, layout.jump);
         assert!(!pad.output().jump);
+    }
+
+    /// UI の大きさの倍率で、ボタンの半径とスティックの半径が変わる。
+    #[test]
+    fn scale_resizes_the_pad() {
+        let mut pad = pad();
+        let normal = pad.layout();
+        pad.set_scale(2.0);
+        let big = pad.layout();
+        assert!((big.unit - normal.unit * 2.0).abs() < 1e-3);
+        assert!((big.radius() - normal.radius() * 2.0).abs() < 1e-3);
+        pad.set_scale(0.0);
+        assert_eq!(pad.layout(), normal, "0 は 1 とみなす");
+        pad.set_scale(f32::NAN);
+        assert_eq!(pad.layout(), normal, "有限でない値は 1 とみなす");
     }
 
     #[test]

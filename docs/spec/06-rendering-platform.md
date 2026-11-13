@@ -235,3 +235,46 @@ GPU が必要なテストは CI で動かせないことがあるため、GPU �
 | `palette_bytes` | `MaterialTable` からパレットのバイト列が正しく作られる |
 | `shaders_parse` | すべての `.wgsl` を naga で構文検査し、エラーがない |
 | 手動確認 (M4 完了時) | Windows、Linux、macOS、Android の実機で起動し、砂と水を置けることを確認して結果を `docs/PLATFORM_CHECK.md` に記録する |
+
+## 10. スプライトと UI の大きさ (M14)
+
+画像系の描画 (キャラクターなど) と UI は、**大きさを倍率で決められる**。画像は大きく作っておき、倍率で小さくも大きくもできる。
+
+### 10.1 スプライト (`charon-render::SpritePass`)
+
+```rust
+pub struct Sprite<'a> {
+    pub id: u64, pub width: u16, pub height: u16,
+    pub rgba: &'a [u8],        // 行優先の RGBA8 (sRGB、ストレートアルファ)、長さ width * height * 4
+    pub position: [f32; 2],    // 基準点のワールド座標 (セル)
+    pub pivot: [f32; 2],       // 基準点の画像上の位置 (画素)。足元の中央なら [width / 2, height]
+    pub scale: f32,            // 画像の 1 画素あたりのセル数 (> 0)
+    pub angle: f32, pub flip_x: bool,
+    pub filter: SpriteFilter,  // Nearest (ドット絵) / Linear (滑らか)
+    pub lit: bool,             // 光を掛けるか
+}
+```
+
+- 画面に描かれる大きさは `幅 × scale`・`高さ × scale` セル (`Sprite::size_in_cells`)。32×64 のキャラクターを `scale = 10 / 64` で 5×10 セルに描き、`scale` を変えるだけで大きさが変わる。画像は作り直さない。
+- 描画は画面の解像度で、基準点 `pivot` が `position` に来るように置き、基準点まわりに `angle` 回し、`flip_x` で基準点を中心に左右反転する。縁は透明度で重ねる (`ALPHA_BLENDING`)。
+- `lit` のとき、剛体と同じ式 `色 × min(1, 環境光 + ライト)` で光を掛ける。光が `Off` のときは掛けない。
+- パスの順序は、滑らかな剛体のあと、後処理 (ブルーム) の前。`PassList::render_with_sprites` (`render_with_bodies` は、スプライトなしで呼ぶ)。
+- 無効なスプライト (幅・高さが 0 か 2048 を超える、画素の長さが合わない、`scale` が 0 以下か有限でない、位置・基準点・角度が有限でない) は描かない。`id` ごとにテクスチャを持ち、画素の内容 (FNV-1a) が変わったときだけ作り直し、使われなくなった `id` は捨てる。
+- **アプリ (`charon-app`):** ゲームは `AppOptions::player_sprite: Option<SpriteAsset>` (画像・基準点・`scale`・補間) を渡す。プレイヤーは足元の中央に画像で描かれ (単色の箱は描かない)、左向きのときは左右反転する。当たり判定の大きさは変わらない。`Debug` パネルの `Character scale` (0.25〜3.0) が `scale` に掛かる倍率。
+- 未対応: スプライトシートとアニメーション (コマ送り)、敵・アイテムへの画像の割り当て (プレイヤーだけ)。
+
+### 10.2 UI の大きさ
+
+- `Debug` パネルの `UI scale` (0.5〜3.0) が、egui の `zoom_factor` として全部のパネルとグラフを同じ倍率で拡大・縮小する。
+- 仮想スティックとボタン ([仕様 10 §11](10-noita-like-game.md)) も同じ倍率で、ボタンの半径とスティックの半径が変わる (`TouchPad::set_scale`、0 以下・有限でない値は 1 とみなし、0.5〜3.0 に収める)。
+
+### 10.3 テスト
+
+| テスト | 確認 |
+|---|---|
+| `scale_sets_the_size_in_cells` | 大きさ (セル) が `画素数 × scale` |
+| `a_32_by_64_character_scales_to_5_by_10_cells` | 32×64 を `scale = 10 / 64` で 5×10 セルに描く |
+| `invalid_sprites_are_rejected` | 無効な値を描かない |
+| `content_hash_tracks_pixels_and_size` | 画素・大きさが変わるとハッシュが変わる |
+| `demo_renders_sprite_with_scale` | RTX 4060 のオフスクリーン描画で、拡大率 2 倍にすると面積が約 4 倍 (実測 410 → 1662 画素) ([`M14-sprite-scale1.png`](../screenshots/M14-sprite-scale1.png)・[`M14-sprite-scale2.png`](../screenshots/M14-sprite-scale2.png)) |
+| `scale_resizes_the_pad` | UI の倍率で仮想パッドの大きさが変わり、0・NaN は 1 とみなす |

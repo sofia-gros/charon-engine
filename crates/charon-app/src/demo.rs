@@ -57,6 +57,76 @@ pub(crate) fn demo_loadout() -> PlayerLoadout {
     }
 }
 
+/// デモ (ゲーム側) のキャラクターの画像: 32×64 の RGBA (魔法使い。右向き)。当たり判定 (5×10 セル) より大きく作り、
+/// `scale = 10 / 64` で足元の中央を基準に 5×10 セルに描く。`Character scale` (Debug パネル) で大きさを変えられる。
+pub(crate) fn demo_character_image() -> crate::SpriteAsset {
+    const W: usize = 32;
+    const H: usize = 64;
+    let mut rgba = vec![0u8; W * H * 4];
+    let mut put = |x: i32, y: i32, c: [u8; 4]| {
+        if (0..W as i32).contains(&x) && (0..H as i32).contains(&y) {
+            let at = (y as usize * W + x as usize) * 4;
+            rgba[at..at + 4].copy_from_slice(&c);
+        }
+    };
+    let ellipse = |cx: f32, cy: f32, rx: f32, ry: f32, x: i32, y: i32| {
+        let (dx, dy) = ((x as f32 + 0.5 - cx) / rx, (y as f32 + 0.5 - cy) / ry);
+        dx * dx + dy * dy <= 1.0
+    };
+    let robe = [96, 64, 190, 255];
+    let robe_dark = [66, 44, 140, 255];
+    let skin = [236, 190, 150, 255];
+    let hat = [70, 48, 150, 255];
+    let boots = [50, 36, 30, 255];
+    let wood = [140, 96, 50, 255];
+    for y in 0..H as i32 {
+        for x in 0..W as i32 {
+            // 帽子 (つば + とんがり)。
+            if ellipse(16.0, 15.0, 12.0, 3.0, x, y)
+                || (y < 14 && (x as f32 - 16.0).abs() < (y as f32) * 0.55 && y > 0)
+            {
+                put(x, y, hat);
+            }
+            // 顔。
+            if ellipse(16.0, 21.0, 6.5, 6.5, x, y) {
+                put(x, y, skin);
+            }
+            // ローブ (裾が広がる)。
+            let half = 6.0 + (y as f32 - 28.0).max(0.0) * 0.28;
+            if (28..58).contains(&y) && (x as f32 + 0.5 - 16.0).abs() < half {
+                put(x, y, if (x + y) % 7 == 0 { robe_dark } else { robe });
+            }
+            // 足 (ブーツ)。
+            if (58..64).contains(&y) && ((6..14).contains(&x) || (18..27).contains(&x)) {
+                put(x, y, boots);
+            }
+            // 杖 (右手)。
+            if (25..60).contains(&y) && (x == 27 || x == 28) {
+                put(x, y, wood);
+            }
+        }
+    }
+    // 目と杖の先の光。
+    for (x, y) in [(14, 21), (19, 21)] {
+        put(x, y, [30, 30, 40, 255]);
+    }
+    for y in 21..26 {
+        for x in 25..31 {
+            if ellipse(27.5, 23.5, 3.0, 3.0, x, y) {
+                put(x, y, [120, 230, 255, 255]);
+            }
+        }
+    }
+    crate::SpriteAsset {
+        width: W as u16,
+        height: H as u16,
+        rgba: rgba.into(),
+        pivot: [W as f32 / 2.0, H as f32],
+        scale: 10.0 / H as f32,
+        filter: charon_render::SpriteFilter::Nearest,
+    }
+}
+
 /// デモ (ゲーム側) の、背景のさらに奥で動く虹色の塊 (仕様 09 §9)。配置は世界の seed で決まる。
 /// 空の色は、シーンの背景色 (`DEMO_CLEAR`) と同じにする。
 pub(crate) fn demo_deep_background(seed: u64) -> DeepBackgroundParams {
@@ -212,6 +282,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             player: Some(demo_loadout()),
             deep_background: Some(demo_deep_background(metadata_seed)),
             enemies: demo_enemies(),
+            player_sprite: Some(demo_character_image()),
         },
         brush: demo_materials.rainbow_sand,
     })

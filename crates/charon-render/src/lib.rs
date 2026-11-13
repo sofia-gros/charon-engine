@@ -13,6 +13,7 @@ mod layers;
 mod light_pass;
 mod passes;
 mod smooth_body;
+mod sprite;
 
 pub use background_pass::{BackgroundLayerPass, BackgroundSource};
 pub use cell_pass::{CellPass, CellPassError, CellView};
@@ -26,6 +27,7 @@ pub use passes::{
     BackgroundPass, FrameContext, FullscreenPass, LightQuality, PassList, RenderPass,
 };
 pub use smooth_body::{SmoothBodyPass, SmoothBodySprite};
+pub use sprite::{Sprite, SpriteFilter, SpritePass};
 
 /// GPU またはサーフェスの初期化エラー。
 #[derive(Debug)]

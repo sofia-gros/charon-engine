@@ -42,9 +42,15 @@ fn rope_sprites(points: &[[f32; 2]], out: &mut Vec<EntitySprite>) {
 }
 
 /// エンティティと飛んでいる弾の描画用の矩形。弾は 2×2 セルの点。
-pub(crate) fn sprites(entities: &EntityWorld, game: &GameState) -> Vec<EntitySprite> {
+/// `skip` のエンティティは箱を描かない (画像のスプライトで描くとき)。
+pub(crate) fn sprites(
+    entities: &EntityWorld,
+    game: &GameState,
+    skip: Option<EntityId>,
+) -> Vec<EntitySprite> {
     let mut out: Vec<EntitySprite> = entities
         .iter()
+        .filter(|entity| Some(entity.id) != skip)
         .map(|entity| EntitySprite {
             x16: entity.x16,
             y16: entity.y16,

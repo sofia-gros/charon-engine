@@ -362,6 +362,11 @@ impl DemoUi {
                     }
                 });
                 ui.add(egui::Slider::new(&mut controls.zoom, 1..=8).text("Zoom"));
+                ui.add(egui::Slider::new(&mut controls.ui_scale, 0.5..=3.0).text("UI scale"));
+                ui.add(
+                    egui::Slider::new(&mut controls.sprite_scale, 0.25..=3.0)
+                        .text("Character scale"),
+                );
                 ui.horizontal(|ui| {
                     ui.label("Light");
                     for (quality, name) in [

@@ -51,6 +51,8 @@ struct Scene {
     tick: u64,
     /// 滑らかな剛体のスプライトを渡さない (スタンプしたセルが描かれないことを確かめる)。
     skip_smooth: bool,
+    /// プレイヤーを画像 (32x64) で描く拡大率 (1 画素あたりのセル数)。`None` なら描かない。
+    character_scale: Option<f32>,
     /// 光の品質。
     light: LightQuality,
     /// 画面の仮想スティックとボタン。`Some` なら UI の重ね描きに出す。
@@ -73,6 +75,7 @@ impl Scene {
             deep: Some(crate::demo::demo_deep_background(SEED)),
             tick: 0,
             skip_smooth: false,
+            character_scale: None,
             light: LightQuality::High,
             pad: None,
         }
@@ -274,18 +277,41 @@ fn render_world(gpu: &GpuContext, scene: &mut Scene, center: CellPos) -> (wgpu::
     let origin = Scene::origin(center);
     let visible =
         visible_chunks(&scene.world, &scene.background, origin, [WIDTH / ZOOM, HEIGHT / ZOOM]);
-    let sprites = crate::sim::sprites(&scene.entities, &scene.game);
+    let sprites = crate::sim::sprites(&scene.entities, &scene.game, None);
     let output = target(gpu);
     let view = output.create_view(&Default::default());
     let mut background = BackgroundAdapter(&mut scene.background);
     let smooth = if scene.skip_smooth { Vec::new() } else { crate::smooth_sprites(&scene.physics) };
+    let asset = crate::demo::demo_character_image();
+    let character: Vec<charon_render::Sprite<'_>> = scene
+        .character_scale
+        .zip(scene.player.and_then(|id| scene.entities.get(id)))
+        .map(|(scale, entity)| charon_render::Sprite {
+            id: 1,
+            width: asset.width,
+            height: asset.height,
+            rgba: &asset.rgba,
+            position: [
+                (entity.x16 as f32 + f32::from(entity.width) * 8.0) / 16.0,
+                (entity.y16 as f32 + f32::from(entity.height) * 16.0) / 16.0,
+            ],
+            pivot: asset.pivot,
+            scale,
+            angle: 0.0,
+            flip_x: false,
+            filter: asset.filter,
+            lit: true,
+        })
+        .into_iter()
+        .collect();
     passes
-        .render_with_bodies(
+        .render_with_sprites(
             gpu,
             &mut scene.world,
             Some(&mut background),
             &sprites,
             &smooth,
+            &character,
             &visible,
             &view,
             origin,
@@ -624,6 +650,31 @@ fn demo_renders_touch_pad() {
     }
     capture("touch_pad", "ui", &with);
     let _ = world_pixels;
+}
+
+/// スプライトの拡大率 (仕様 06 §10): 同じ 32x64 の画像を、拡大率を 2 倍にすると面積が約 4 倍になる。
+/// 実際の描画は CHARON_DEMO_CAPTURE_DIR に sprite_small / sprite_large で出す。
+#[test]
+fn demo_renders_sprite_with_scale() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = room_scene(&pack);
+    let (_, without) = render_world(&gpu, &mut scene, center);
+    let base = 10.0 / 64.0;
+    scene.character_scale = Some(base);
+    let (_, small) = render_world(&gpu, &mut scene, center);
+    scene.character_scale = Some(base * 2.0);
+    let (_, large) = render_world(&gpu, &mut scene, center);
+    let changed = |a: &[u8], b: &[u8]| -> usize {
+        a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).filter(|(x, y)| x != y).count()
+    };
+    let (small_area, large_area) = (changed(&small, &without), changed(&large, &without));
+    println!("sprite area: small {small_area}, large {large_area}");
+    assert!(small_area > 200, "画像が描かれる ({small_area})");
+    let ratio = large_area as f64 / small_area as f64;
+    assert!((3.0..5.0).contains(&ratio), "拡大率 2 倍で面積は約 4 倍 ({ratio:.2})");
+    capture("sprite_small", "world", &small);
+    capture("sprite_large", "world", &large);
 }
 
 fn empty_scene(pack: &ModPack) -> (Scene, CellPos) {
