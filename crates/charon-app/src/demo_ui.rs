@@ -297,6 +297,7 @@ fn draw_pause_menu(context: &egui::Context, controls: &mut Controls) -> Option<D
             ui.add(
                 egui::Slider::new(&mut controls.sprite_scale, 0.25..=3.0).text("Character scale"),
             );
+            sim_distance_slider(ui, &mut controls.sim_distance);
             ui.horizontal(|ui| {
                 ui.label("Light");
                 for (quality, name) in [
@@ -527,6 +528,7 @@ impl DemoUi {
                     egui::Slider::new(&mut controls.sprite_scale, 0.25..=3.0)
                         .text("Character scale"),
                 );
+                sim_distance_slider(ui, &mut controls.sim_distance);
                 ui.horizontal(|ui| {
                     ui.label("Light");
                     for (quality, name) in [
@@ -1069,6 +1071,24 @@ fn player_info(ui: &mut egui::Ui, overlay: &Overlay<'_>) {
         overlay.game.enemies.len(),
         if vitals.alive() { "" } else { " · DEAD" }
     ));
+}
+
+/// 更新距離 (チャンク) のスライダー: 0 は `Auto` (画面のまわりだけ)。カメラからこの距離の外のチャンクは、
+/// コールドフリーズする (砂・水・煙・熱の更新を一切しない、仕様 02 §9.4)。
+fn sim_distance_slider(ui: &mut egui::Ui, distance: &mut u32) {
+    let response =
+        ui.add(
+            egui::Slider::new(distance, 0..=charon_world::streaming::MAX_SIM_DISTANCE)
+                .text("Sim distance (chunks)")
+                .custom_formatter(|value, _| {
+                    if value < 0.5 { "Auto".to_owned() } else { format!("{value:.0}") }
+                })
+                .custom_parser(|text| {
+                    let text = text.trim();
+                    if text.eq_ignore_ascii_case("auto") { Some(0.0) } else { text.parse().ok() }
+                }),
+        );
+    response.on_hover_text("Chunks farther than this from the camera are frozen (not simulated).");
 }
 
 /// 閉じたパネルを、画面の左端に縦に並べた細いタブ (`|▸ 名前`) にする。触れると、そのパネルが開く (仕様 10 §14)。

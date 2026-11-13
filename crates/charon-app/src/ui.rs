@@ -34,6 +34,8 @@ pub(super) struct Controls {
     pub(super) master_volume: f32,
     pub(super) sfx_volume: f32,
     pub(super) music_volume: f32,
+    /// セルを更新する範囲の半径 (チャンク、0 = 自動)。この外はコールドフリーズする (仕様 02 §9.4)。
+    pub(super) sim_distance: u32,
     /// ポーズのメニューが開いている (開いている間、世界は止まる、仕様 10 §14)。
     pub(super) pause_menu: bool,
     /// 持ち物の画面が開いている。
@@ -71,6 +73,7 @@ impl Controls {
             master_volume: 1.0,
             sfx_volume: 1.0,
             music_volume: 0.7,
+            sim_distance: 0,
             pause_menu: false,
             inventory_open: false,
             rebinding: None,

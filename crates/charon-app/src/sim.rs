@@ -119,8 +119,9 @@ impl Sim<'_> {
         if let Some(state) = self.streaming.as_mut() {
             state.streamer.tick(self.world, &[camera]).map_err(|err| err.to_string())?;
             // 砂や水を動かすのは、画面のまわりだけ (読み込み半径より 2 チャンク内側)。
-            let radius = state.streamer.load_radius();
-            self.world.set_active_region(Some((camera, (radius - 2).max(1))));
+            // 範囲の外はコールドフリーズ: 設定した更新距離 (0 = 自動) の外は、セルを更新しない (仕様 02 §9.4)。
+            let radius = state.streamer.active_radius();
+            self.world.set_active_region(Some((camera, radius)));
         }
         if !*self.initialized {
             let world = &*self.world;

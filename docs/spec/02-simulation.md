@@ -337,6 +337,23 @@ open_for(x, y, watcher): セルが FLAG_BODY でなく、相が Empty、また�
 この欠陥は試作 (`tools/prototype`) では見つからなかった。試作には休眠がないためである。
 `breached_wall_drains` が検出した。
 
+### 9.4 更新距離とコールドフリーズ (T9.7、T18.3)
+
+休眠は「変化のない場所を処理しない」仕組みだが、**溶岩の熱の伝導や高温の蒸気のように、変化し続ける場所は眠らない** (煙は寿命で消えて眠る。溶岩の池は、煙が消えたあとも毎 tick 約 1,500 セルを更新し続けることを実測した: 60×9 の池、`docs/BENCHMARKS.md`)。そこで、カメラから遠いチャンクは、休眠かどうかによらず**コールドフリーズ**する (Minecraft の simulation distance、Terraria の画面外と同じ)。
+
+- `World::set_active_region(Some((中心のチャンク, 半径)))`: 半径は**チェビシェフ距離** (チャンク)。範囲の外のチャンクは、セルの更新 (砂・水・煙・熱・反応・寿命・燃焼) を**一切しない**。保留した変化 (`next_dirty`) はそのまま残り、範囲に入ったときに処理される。範囲の外のチャンクにも、範囲の内側からの書き込みは届く (境界のセルが入れ替わることはある)。`None` なら全チャンクを更新する。
+- **更新距離の設定** (`Streamer::set_sim_distance(chunks)`、`MAX_SIM_DISTANCE` = 16): **0 = 自動**。自動のときの半径は、`max(読み込み半径 − 2, 1)` で、読み込み半径は画面の大きさと拡大率から決まる (画面のまわりだけ)。1 以上を設定すると、その値 (読み込み半径によらない)。`Streamer::active_radius()` が、どちらの場合も使う半径を返す。読み込んでいないチャンクは、もともと更新されない。
+- 設定できる場所: `Debug` パネルと、ポーズのメニューの `Sim distance (chunks)` のスライダー (0 は `Auto`)。`settings.ron` の `sim_distance` に保存する (古い設定ファイルにはない項目で、なければ 0)。
+- 距離を小さくすると、画面に見えているチャンクも止まる (見えている水が止まって見える)。性能が足りない端末で、安全に処理を減らすための設定。
+
+| テスト | 確認 |
+|---|---|
+| `outside_active_region_is_frozen` | (`charon-core`、T9.7) 範囲の外は保留して、入ったら処理 |
+| `active_radius_follows_the_setting_and_clamps` | 0 は自動 (読み込み半径 − 2、最低 1)、設定した値、上限、0 にもどすと自動 |
+| `chunks_outside_the_sim_distance_are_frozen_and_resume_in_range` | 距離の外の砂は 1 セルも動かず、カメラが移って距離の中に入ると動き出す |
+| `sim_distance_roundtrips_clamps_and_is_optional_in_old_files` | `settings.ron` の保存・読み込み、上限、古いファイル |
+| `smoke_decays_by_itself_and_the_world_falls_asleep` | 煙は寿命で消えて、世界は眠る |
+
 ## 10. 必須テスト
 
 テストはすべて `charon-core` の中に置き、描画なしで動かす。

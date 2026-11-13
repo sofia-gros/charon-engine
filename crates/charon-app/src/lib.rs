@@ -582,6 +582,7 @@ impl App {
             self.settings.master_volume = controls.master_volume;
             self.settings.sfx_volume = controls.sfx_volume;
             self.settings.music_volume = controls.music_volume;
+            self.settings.sim_distance = controls.sim_distance;
             self.settings.keys = controls.bindings.clone();
         }
         self.settings.sanitize();
@@ -1072,8 +1073,12 @@ impl App {
             }
         }
         let (camera, radius) = camera_range(size, zoom, origin);
+        // 更新距離 (チャンク、0 = 自動): この外のチャンクはコールドフリーズする (仕様 02 §9.4)。
+        let sim_distance =
+            self.gui.as_ref().map_or(self.settings.sim_distance, |gui| gui.controls.sim_distance);
         if let Some(state) = self.streaming.as_mut() {
             state.streamer.set_load_radius(radius);
+            state.streamer.set_sim_distance(sim_distance);
         }
         let mut stream_error: Option<String> = None;
         let mut physics_ms = 0.0_f32;
@@ -1599,6 +1604,7 @@ impl ApplicationHandler for App {
                 gui.controls.master_volume = self.settings.master_volume;
                 gui.controls.sfx_volume = self.settings.sfx_volume;
                 gui.controls.music_volume = self.settings.music_volume;
+                gui.controls.sim_distance = self.settings.sim_distance;
                 gui.controls.bindings = self.keys.bindings().clone();
                 #[cfg(target_arch = "wasm32")]
                 {

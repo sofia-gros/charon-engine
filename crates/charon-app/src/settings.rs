@@ -239,6 +239,10 @@ pub struct Settings {
     pub master_volume: f32,
     pub sfx_volume: f32,
     pub music_volume: f32,
+    /// セルを更新する範囲の半径 (チャンク、0 = 自動、最大 16)。この外のチャンクは**コールドフリーズ**する (仕様 02 §9.4)。
+    /// 古い設定ファイルにはない項目なので、なければ 0。
+    #[serde(default)]
+    pub sim_distance: u32,
     pub keys: KeyBindings,
 }
 
@@ -252,6 +256,7 @@ impl Default for Settings {
             master_volume: 1.0,
             sfx_volume: 1.0,
             music_volume: 0.7,
+            sim_distance: 0,
             keys: KeyBindings::default(),
         }
     }
@@ -307,6 +312,7 @@ impl Settings {
         self.master_volume = clamp(self.master_volume, 0.0, 1.0, 1.0);
         self.sfx_volume = clamp(self.sfx_volume, 0.0, 1.0, 1.0);
         self.music_volume = clamp(self.music_volume, 0.0, 1.0, 0.7);
+        self.sim_distance = self.sim_distance.min(charon_world::streaming::MAX_SIM_DISTANCE);
         self.keys.sanitize();
     }
 
@@ -396,6 +402,25 @@ mod tests {
         assert_eq!(keys.action_of(KeyCode::KeyF), Some(Action::Dig));
         keys.reset();
         assert_eq!(keys, KeyBindings::default());
+    }
+
+    #[test]
+    fn sim_distance_roundtrips_clamps_and_is_optional_in_old_files() {
+        let settings = Settings { sim_distance: 5, ..Settings::default() };
+        let loaded = Settings::from_ron(&settings.to_ron().unwrap()).unwrap();
+        assert_eq!(loaded.sim_distance, 5);
+        let mut wild = Settings { sim_distance: 9999, ..Settings::default() };
+        wild.sanitize();
+        assert_eq!(wild.sim_distance, charon_world::streaming::MAX_SIM_DISTANCE);
+        // `sim_distance` が増える前の設定ファイル (その項目がない) も読めて、自動 (0) になる。
+        let text = settings.to_ron().unwrap();
+        let old: String = text
+            .lines()
+            .filter(|line| !line.contains("sim_distance"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!old.contains("sim_distance"));
+        assert_eq!(Settings::from_ron(&old).unwrap().sim_distance, 0);
     }
 
     #[test]

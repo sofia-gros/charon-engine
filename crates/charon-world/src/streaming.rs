@@ -180,9 +180,13 @@ impl WorkContext {
     }
 }
 
+/// 更新距離の上限 (チャンク)。
+pub const MAX_SIM_DISTANCE: u32 = 16;
+
 /// 複数のカメラのチェビシェフ範囲を維持する。`tick` は `World::step` と同じ頻度で呼ぶ。
 pub struct Streamer {
     load_radius: i32,
+    sim_distance: u32,
     pending: BTreeMap<ChunkPos, Pending>,
     ready: BTreeMap<u64, Chunk>,
     next_id: u64,
@@ -198,6 +202,7 @@ impl fmt::Debug for Streamer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Streamer")
             .field("load_radius", &self.load_radius)
+            .field("sim_distance", &self.sim_distance)
             .field("pending", &self.pending.len())
             .field("ready", &self.ready.len())
             .finish_non_exhaustive()
@@ -315,6 +320,7 @@ impl Streamer {
                 .map_err(StreamError::Io)?;
             return Ok(Self {
                 load_radius: load_radius.max(0),
+                sim_distance: 0,
                 pending: BTreeMap::new(),
                 ready: BTreeMap::new(),
                 next_id: 0,
@@ -326,6 +332,7 @@ impl Streamer {
         }
         Ok(Self {
             load_radius: load_radius.max(0),
+            sim_distance: 0,
             pending: BTreeMap::new(),
             ready: BTreeMap::new(),
             next_id: 0,
@@ -346,6 +353,29 @@ impl Streamer {
     /// 画面サイズや拡大率の変化に合わせて読み込み半径を更新する。
     pub fn set_load_radius(&mut self, radius: i32) {
         self.load_radius = radius.max(0);
+    }
+
+    /// 設定した更新距離 (チャンク)。0 は自動 (読み込み半径から決める)。
+    pub fn sim_distance(&self) -> u32 {
+        self.sim_distance
+    }
+
+    /// 更新距離を設定する (仕様 02 §9.4)。0 は自動。`MAX_SIM_DISTANCE` を超える値は収める。
+    /// 範囲の外のチャンクは**コールドフリーズ**する: セルの更新 (砂・水・煙・熱・反応) を一切行わず、保留した変化は
+    /// 範囲に入ったときに処理される。
+    pub fn set_sim_distance(&mut self, chunks: u32) {
+        self.sim_distance = chunks.min(MAX_SIM_DISTANCE);
+    }
+
+    /// カメラの周りで、セルを更新する範囲の半径 (チャンク、チェビシェフ距離)。
+    /// 自動 (0) のときは、読み込み半径より 2 チャンク内側 (画面のまわりだけ)。設定したときは、その値。
+    /// どちらも 1 以上。読み込んでいないチャンクはもともと更新されない。
+    pub fn active_radius(&self) -> i32 {
+        if self.sim_distance == 0 {
+            (self.load_radius - 2).max(1)
+        } else {
+            self.sim_distance.min(MAX_SIM_DISTANCE) as i32
+        }
     }
 
     /// 要求 → 完成分の受領（最大 4）→ 範囲外の保存・退避（最大 4）の順。
@@ -550,6 +580,72 @@ mod tests {
             streamer.tick(world, &[camera]).unwrap();
             world.step();
         }
+    }
+
+    /// 更新距離 (仕様 02 §9.4): 0 は自動 (読み込み半径 − 2、最低 1)。設定した値はそのまま使い、上限で止まる。
+    #[test]
+    fn active_radius_follows_the_setting_and_clamps() {
+        let materials = Arc::new(MaterialTable::builtin().unwrap());
+        let dir = TestDir::new();
+        let (_, mut streamer) = setup(&dir, &materials, 1);
+        for (load, auto) in [(0, 1), (1, 1), (2, 1), (3, 1), (6, 4), (15, 13)] {
+            streamer.set_load_radius(load);
+            assert_eq!(streamer.sim_distance(), 0);
+            assert_eq!(streamer.active_radius(), auto, "読み込み半径 {load}");
+        }
+        streamer.set_load_radius(6);
+        streamer.set_sim_distance(3);
+        assert_eq!(streamer.active_radius(), 3, "設定した値");
+        streamer.set_load_radius(15);
+        assert_eq!(streamer.active_radius(), 3, "読み込み半径によらない");
+        streamer.set_sim_distance(999);
+        assert_eq!(streamer.sim_distance(), MAX_SIM_DISTANCE, "上限で止まる");
+        assert_eq!(streamer.active_radius(), MAX_SIM_DISTANCE as i32);
+        streamer.set_sim_distance(0);
+        assert_eq!(streamer.active_radius(), 13, "0 にもどすと自動");
+        streamer.finish().unwrap();
+    }
+
+    /// コールドフリーズ: 更新距離の外のチャンクは、砂が一切動かず、距離の中に入ったら動き出す。
+    #[test]
+    fn chunks_outside_the_sim_distance_are_frozen_and_resume_in_range() {
+        let materials = Arc::new(MaterialTable::builtin().unwrap());
+        let sand = materials.id("sand").unwrap();
+        let dir = TestDir::new();
+        let (mut world, mut streamer) = setup(&dir, &materials, 1);
+        let (near, far) = (ChunkPos::new(0, 0), ChunkPos::new(10, 0));
+        for chunk in [near, far] {
+            world.insert_chunk(chunk);
+            let x = chunk.origin().x + 10;
+            let pos = CellPos::new(x, 10);
+            let cell = world.make_cell(sand, pos);
+            world.set(pos, cell);
+        }
+        let height = |world: &World, chunk: ChunkPos| -> Option<i32> {
+            let x = chunk.origin().x + 10;
+            (0..64).find(|&y| world.get(CellPos::new(x, y)).material == sand)
+        };
+        streamer.set_sim_distance(2);
+        let hash_far = |world: &World| {
+            (0..64)
+                .map(|y| world.get(CellPos::new(far.origin().x + 10, y)).material.0)
+                .collect::<Vec<_>>()
+        };
+        let before_far = hash_far(&world);
+        for _ in 0..120 {
+            world.set_active_region(Some((near, streamer.active_radius())));
+            world.step();
+        }
+        assert_eq!(height(&world, near), Some(63), "距離の中の砂は、床まで落ちる");
+        assert_eq!(height(&world, far), Some(10), "距離の外の砂は、1 セルも動かない");
+        assert_eq!(hash_far(&world), before_far);
+        // カメラが移ると、こんどは遠かった方が動き、近かった方は止まる。
+        for _ in 0..120 {
+            world.set_active_region(Some((far, streamer.active_radius())));
+            world.step();
+        }
+        assert_eq!(height(&world, far), Some(63), "距離の中に入ったら動き出す");
+        streamer.finish().unwrap();
     }
 
     #[test]
