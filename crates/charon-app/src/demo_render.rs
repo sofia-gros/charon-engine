@@ -550,17 +550,16 @@ fn demo_renders_wand_panel() {
     capture("wand", "world", &world_pixels);
     capture("wand", "ui", &ui_pixels);
     // 小さなバーだけの HUD は、画面の右上 (仕様 10 §11.1.1)。
-    let top = (1480, 30, 1600, 100);
+    let top = (1380, 0, 1600, 70);
     let red = |r: i32, g: i32, b: i32| r > 170 && g < 90 && b < 90;
     let blue = |r: i32, g: i32, b: i32| b > 190 && r < 140 && g < 140;
     let (hp_ui, hp_world) = (count_in(&ui_pixels, top, red), count_in(&world_pixels, top, red));
     let (mana_ui, mana_world) =
         (count_in(&ui_pixels, top, blue), count_in(&world_pixels, top, blue));
     println!("wand panel: 赤 {hp_ui} (世界 {hp_world})、青 {mana_ui} (世界 {mana_world})");
-    // 体力は 65%: 幅 90 の 65% (約 58) × 高さ 7 画素。マナは満タン (90 × 7)。
-    assert!(hp_ui > hp_world + 300, "体力のバーが描かれる ({hp_ui} / {hp_world})");
-    assert!(mana_ui > mana_world + 500, "マナのバーが描かれる ({mana_ui} / {mana_world})");
-    assert!(mana_ui > hp_ui, "体力は 65% なので、満タンのマナより短い");
+    // 体力のハート (65% なので、一部が暗い)・マナの星 (満タン)。
+    assert!(hp_ui > hp_world + 100, "体力のハートが描かれる ({hp_ui} / {hp_world})");
+    assert!(mana_ui > mana_world + 100, "マナの星が描かれる ({mana_ui} / {mana_world})");
 }
 
 /// 仕様 10 §9.5: ワイヤーが描かれ、`Wand` パネルに道具 (`Tool (right)`) の行が出る。

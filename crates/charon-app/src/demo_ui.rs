@@ -237,111 +237,239 @@ pub(super) struct Overlay<'a> {
     pub(super) defs: Option<&'a charon_game::defs::Definitions>,
 }
 
-/// 持ち物の画面 (仕様 18・19): ホットバー・装備・アイテムの一覧 (ホットバーへ・装備)・作れるもの (`Craft`)・
-/// セル 64 個からのブロック。操作は `controls.inv_commands` に積み、App が次のフレームでゲームに反映する。
+/// 持ち物の画面 (仕様 18 §1、Terraria Android 型): 右上の半透明の格子 (10 列 × 5 行、1 行目 = ホットバー)・格子の下の
+/// `Filter: ...` と装備・作れるもののリスト (左) と `Craft` ボタン (右端)。ゲームは止めない。操作は `controls.inv_commands`。
+#[allow(deprecated)]
 fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut Controls) {
-    use charon_game::items::{EquipSlot, ItemClass};
-    let mut open = true;
-    let slots_note = |n: usize| format!("{}", (n + 1) % 10);
+    use charon_game::items::{EquipSlot, ItemKind};
     let Some(inventory) = overlay.player.and_then(|id| overlay.game.inventories.get(&id)) else {
-        egui::Window::new("Inventory").open(&mut open).show(context, |ui| {
-            ui.label("No character.");
-        });
-        controls.inventory_open = open;
+        egui::Area::new(egui::Id::unique("charon inventory none"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 70.0))
+            .order(egui::Order::Foreground)
+            .show(context, |ui| {
+                ui.label("No character.");
+            });
         return;
     };
     let name_of = |item: charon_game::items::ItemId| item_label(overlay, item).0;
-    let equipment = overlay.player.and_then(|id| overlay.game.equipment.get(&id));
-    egui::Window::new("Inventory").open(&mut open).default_pos([40.0, 120.0]).show(context, |ui| {
-        ui.label("Hotbar");
-        ui.horizontal_wrapped(|ui| {
-            for slot in 0..charon_game::inventory::HOTBAR_SLOTS {
-                let text = inventory
-                    .hotbar_active(slot)
-                    .map_or_else(|| "-".to_owned(), |i| short_name(&name_of(i)));
-                let label = format!("{}:{text}", slots_note(slot));
-                if ui.selectable_label(inventory.selected() == slot, label).clicked() {
-                    controls.inv_commands.push(InvCommand::Select(slot));
-                }
-            }
-        });
-        ui.separator();
-        ui.label("Equipment");
-        ui.horizontal_wrapped(|ui| {
-            for slot in EquipSlot::ALL {
-                let item = equipment.and_then(|e| e.get(slot));
-                let text = item.map_or_else(|| "-".to_owned(), name_of);
-                if ui.button(format!("{slot:?}: {text}")).clicked() && item.is_some() {
-                    controls.inv_commands.push(InvCommand::Unequip(slot));
-                }
-            }
-        });
-        if let Some(stats) = equipment.zip(overlay.defs).map(|(e, d)| e.stats(|i| d.item_def(i))) {
-            ui.label(format!(
-                "Defense {} · resist fire {}% poison {}% cold {}% · weapon damage {}",
-                stats.defense,
-                stats.resist.fire,
-                stats.resist.poison,
-                stats.resist.cold,
-                stats.damage
-            ));
+    let kind_of = |item: charon_game::items::ItemId| {
+        overlay.defs.and_then(|d| d.item_def(item)).map(|d| &d.kind)
+    };
+    let filter_id = egui::Id::new("charon inv filter");
+    let recipe_id = egui::Id::new("charon inv recipe");
+    let filter: usize = context.data(|d| d.get_temp(filter_id)).unwrap_or(0);
+    const FILTERS: [&str; 5] = ["All", "Weapons", "Armor", "Blocks", "Other"];
+    let passes = |item: charon_game::items::ItemId| match filter {
+        1 => matches!(kind_of(item), Some(ItemKind::Weapon { .. } | ItemKind::Tool { .. })),
+        2 => matches!(kind_of(item), Some(ItemKind::Armor { .. })),
+        3 => matches!(item.class(), charon_game::items::ItemClass::Block(_)),
+        4 => {
+            !matches!(
+                kind_of(item),
+                Some(ItemKind::Weapon { .. } | ItemKind::Tool { .. } | ItemKind::Armor { .. })
+            ) && !matches!(item.class(), charon_game::items::ItemClass::Block(_))
         }
-        ui.separator();
-        ui.label(format!("{} kinds · {} items", inventory.item_iter().count(), inventory.total()));
-        egui::ScrollArea::vertical().id_salt("charon inv items").max_height(200.0).show(ui, |ui| {
-            for (item, count) in inventory.item_iter() {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} × {count}", name_of(item)));
-                    if ui.small_button("Hotbar").clicked() {
-                        controls.inv_commands.push(InvCommand::Pin(inventory.selected(), item));
-                    }
-                    let equippable = overlay
-                        .defs
-                        .and_then(|d| d.item_def(item))
-                        .is_some_and(|d| d.equip_slot().is_some());
-                    if equippable && ui.small_button("Equip").clicked() {
-                        controls.inv_commands.push(InvCommand::Equip(item));
-                    }
-                    if let ItemClass::Cells(m) = item.class()
-                        && count >= charon_game::blocks::BLOCK_CELLS as u32
-                        && matches!(
-                            overlay.world.materials().get(m).phase,
-                            charon_core::material::Phase::Solid
-                                | charon_core::material::Phase::Powder
-                        )
-                        && ui.small_button("→ Block (64)").clicked()
-                    {
-                        controls.inv_commands.push(InvCommand::CraftBlock(m));
-                    }
-                });
-            }
-        });
-        if let Some(defs) = overlay.defs {
-            ui.separator();
-            ui.label("Craft");
-            egui::ScrollArea::vertical().id_salt("charon inv recipes").max_height(160.0).show(
-                ui,
-                |ui| {
-                    for recipe in defs.recipes() {
-                        let have = recipe.inputs.iter().all(|&(i, n)| inventory.item_count(i) >= n);
-                        let needs: Vec<String> = recipe
-                            .inputs
-                            .iter()
-                            .map(|&(i, n)| format!("{} {n}", name_of(i)))
-                            .collect();
+        _ => true,
+    };
+    let slot_size = 34.0;
+    let (cols, rows) = (10usize, 5usize);
+    egui::Area::new(egui::Id::new("charon inventory grid"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 70.0))
+        .order(egui::Order::Foreground)
+        .show(context, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(140))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    // 1 行目: ホットバー。残りの行: 持ち物のアイテム (ホットバーにないもの、ID の昇順)。
+                    let pinned: Vec<Option<charon_game::items::ItemId>> =
+                        (0..cols).map(|s| inventory.hotbar(s)).collect();
+                    let rest: Vec<(charon_game::items::ItemId, u32)> = inventory
+                        .item_iter()
+                        .filter(|(i, _)| !pinned.contains(&Some(*i)) && passes(*i))
+                        .collect();
+                    let mut rest = rest.into_iter();
+                    for row in 0..rows {
                         ui.horizontal(|ui| {
-                            let text =
-                                format!("{} ({})", name_of(recipe.output.0), needs.join(", "));
-                            if ui.add_enabled(have, egui::Button::new(text)).clicked() {
-                                controls.inv_commands.push(InvCommand::Craft(recipe.name.clone()));
+                            ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+                            #[allow(clippy::needless_range_loop)]
+                            for col in 0..cols {
+                                let (item, count, slot) = if row == 0 {
+                                    let item = pinned[col];
+                                    let count = item.map_or(0, |i| inventory.item_count(i));
+                                    (item, count, Some(col))
+                                } else {
+                                    match rest.next() {
+                                        Some((i, n)) => (Some(i), n, None),
+                                        None => (None, 0, None),
+                                    }
+                                };
+                                let selected = slot == Some(inventory.selected());
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(slot_size, slot_size),
+                                    egui::Sense::click(),
+                                );
+                                let stroke = if selected {
+                                    egui::Stroke::new(2.5, egui::Color32::from_rgb(255, 220, 60))
+                                } else {
+                                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90))
+                                };
+                                ui.painter().rect(
+                                    rect,
+                                    3.0,
+                                    egui::Color32::from_white_alpha(22),
+                                    stroke,
+                                    egui::StrokeKind::Inside,
+                                );
+                                if let Some(item) = item {
+                                    let (name, color) = item_label(overlay, item);
+                                    ui.painter().rect_filled(rect.shrink(6.0), 3.0, color);
+                                    ui.painter().text(
+                                        rect.center_bottom() - egui::vec2(0.0, 2.0),
+                                        egui::Align2::CENTER_BOTTOM,
+                                        short_name(&name),
+                                        egui::FontId::proportional(9.0),
+                                        egui::Color32::WHITE,
+                                    );
+                                    if count > 0 {
+                                        ui.painter().text(
+                                            rect.right_top() + egui::vec2(-3.0, 2.0),
+                                            egui::Align2::RIGHT_TOP,
+                                            count.to_string(),
+                                            egui::FontId::proportional(11.0),
+                                            egui::Color32::WHITE,
+                                        );
+                                    }
+                                    let response = response.on_hover_text(name);
+                                    if response.clicked() {
+                                        match slot {
+                                            Some(s) => {
+                                                controls.inv_commands.push(InvCommand::Select(s))
+                                            }
+                                            None => {
+                                                let equippable = overlay
+                                                    .defs
+                                                    .and_then(|d| d.item_def(item))
+                                                    .is_some_and(|d| d.equip_slot().is_some());
+                                                if equippable {
+                                                    controls
+                                                        .inv_commands
+                                                        .push(InvCommand::Equip(item));
+                                                } else {
+                                                    controls.inv_commands.push(InvCommand::Pin(
+                                                        inventory.selected(),
+                                                        item,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if row == 0 && response.clicked() {
+                                    controls.inv_commands.push(InvCommand::Select(col));
+                                }
                             }
                         });
                     }
-                },
-            );
-        }
-    });
-    controls.inventory_open = open;
+                    // 格子の下: 絞り込みと装備。
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(format!("Filter: {}", FILTERS[filter % FILTERS.len()]))
+                            .clicked()
+                        {
+                            context.data_mut(|d| {
+                                d.insert_temp(filter_id, (filter + 1) % FILTERS.len())
+                            });
+                        }
+                        let equipment =
+                            overlay.player.and_then(|id| overlay.game.equipment.get(&id));
+                        for slot in EquipSlot::ALL {
+                            let item = equipment.and_then(|e| e.get(slot));
+                            let text = item.map_or_else(|| "-".to_owned(), name_of);
+                            if ui
+                                .small_button(short_name(&text))
+                                .on_hover_text(format!("{slot:?}: {text}"))
+                                .clicked()
+                                && item.is_some()
+                            {
+                                controls.inv_commands.push(InvCommand::Unequip(slot));
+                            }
+                        }
+                    });
+                    // 作れるもの (材料のあるものを上に) と Craft ボタン。
+                    if let Some(defs) = overlay.defs {
+                        let mut recipes: Vec<(usize, bool)> = defs
+                            .recipes()
+                            .iter()
+                            .enumerate()
+                            .map(|(i, r)| {
+                                (i, r.inputs.iter().all(|&(it, n)| inventory.item_count(it) >= n))
+                            })
+                            .collect();
+                        recipes.sort_by_key(|&(i, ok)| (!ok, i));
+                        let chosen: usize = context.data(|d| d.get_temp(recipe_id)).unwrap_or(0);
+                        ui.horizontal(|ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("charon inv recipes v2")
+                                .max_height(110.0)
+                                .max_width(230.0)
+                                .show(ui, |ui| {
+                                    ui.set_width(220.0);
+                                    for &(i, ok) in &recipes {
+                                        let r = &defs.recipes()[i];
+                                        let text =
+                                            egui::RichText::new(name_of(r.output.0)).color(if ok {
+                                                egui::Color32::WHITE
+                                            } else {
+                                                egui::Color32::from_white_alpha(100)
+                                            });
+                                        if ui.selectable_label(chosen == i, text).clicked() {
+                                            context.data_mut(|d| d.insert_temp(recipe_id, i));
+                                        }
+                                    }
+                                });
+                            ui.vertical(|ui| {
+                                if let Some(r) = defs.recipes().get(chosen) {
+                                    let needs: Vec<String> = r
+                                        .inputs
+                                        .iter()
+                                        .map(|&(i, n)| format!("{} {n}", name_of(i)))
+                                        .collect();
+                                    ui.label(egui::RichText::new(needs.join("\n")).size(11.0));
+                                    let ok = r
+                                        .inputs
+                                        .iter()
+                                        .all(|&(it, n)| inventory.item_count(it) >= n);
+                                    if ui.add_enabled(ok, egui::Button::new("Craft")).clicked() {
+                                        controls
+                                            .inv_commands
+                                            .push(InvCommand::Craft(r.name.clone()));
+                                    }
+                                }
+                                // セルが 64 個たまった材質は、ブロックにできる。
+                                for (item, count) in inventory.item_iter() {
+                                    if let charon_game::items::ItemClass::Cells(m) = item.class()
+                                        && count >= charon_game::blocks::BLOCK_CELLS as u32
+                                        && matches!(
+                                            overlay.world.materials().get(m).phase,
+                                            charon_core::material::Phase::Solid
+                                                | charon_core::material::Phase::Powder
+                                        )
+                                        && ui
+                                            .small_button(format!("{} → Block", name_of(item)))
+                                            .clicked()
+                                    {
+                                        controls.inv_commands.push(InvCommand::CraftBlock(m));
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    if ui.small_button("Close").clicked() {
+                        controls.inventory_open = false;
+                    }
+                });
+        });
 }
 
 /// ポーズのメニュー (仕様 10 §14): 再開・設定 (UI の大きさ・キャラクターの大きさ・光)・キー割り当て・持ち物・終了。
@@ -599,6 +727,7 @@ impl DemoUi {
         let mut open = self.panels;
         // 計測 (FPS・グラフ・版の表示) は、デスクトップか、`Debug` パネルを開いたときだけ。タッチの画面では邪魔になる。
         let show_stats = overlay.pad.is_none() || open[PANEL_DEBUG];
+        draw_hearts_and_stars(context, overlay);
         draw_hud_bars(context, overlay);
         draw_boss_bar(context, overlay);
         draw_death_overlay(context, overlay);
@@ -1271,6 +1400,75 @@ fn draw_boss_bar(context: &egui::Context, overlay: &Overlay<'_>) {
         });
 }
 
+/// 体力のハート (右上、10 個ずつ 1〜2 段、1 個 = 体力 20) とマナの星 (右端に縦、1 個 = マナ 20)。仕様 18 §1。
+/// 半分以上残っていれば塗り、足りない分は暗くする。ハートは 2 つの円と 1 つの三角形、星は 10 個の三角形で描く (凸の図形だけ)。
+fn draw_hearts_and_stars(context: &egui::Context, overlay: &Overlay<'_>) {
+    let Some(id) = overlay.player else { return };
+    let (Some(vitals), Some(wand)) = (overlay.game.vitals.get(id), overlay.game.wands.get(&id))
+    else {
+        return;
+    };
+    let count = |max: i64| usize::try_from((max.max(0) + 19) / 20).unwrap_or(0);
+    let hearts = count(i64::from(vitals.max_hp)).min(20);
+    let stars = count(i64::from(wand.mana_max)).min(10);
+    let (size, gap) = (18.0, 3.0);
+    egui::Area::new(egui::Id::unique("charon hearts"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(context, |ui| {
+            let rows = hearts.div_ceil(10).max(1);
+            let width = 10.0 * (size + gap) + size + 2.0 * gap;
+            let tall = (stars as f32 * (size + gap)).max(rows as f32 * (size + gap));
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, tall), egui::Sense::hover());
+            let painter = ui.painter();
+            let dim = egui::Color32::from_black_alpha(120);
+            for i in 0..hearts {
+                let left = (i64::from(vitals.hp) - i as i64 * 20).clamp(0, 20);
+                let color = if left >= 10 { egui::Color32::from_rgb(220, 50, 60) } else { dim };
+                let (col, row) = (i % 10, i / 10);
+                let center = egui::pos2(
+                    rect.left() + (col as f32 + 0.5) * (size + gap),
+                    rect.top() + (row as f32 + 0.5) * (size + gap),
+                );
+                let r = size * 0.27;
+                painter.circle_filled(center + egui::vec2(-r, -r * 0.5), r * 1.05, color);
+                painter.circle_filled(center + egui::vec2(r, -r * 0.5), r * 1.05, color);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        center + egui::vec2(-r * 2.0, -r * 0.2),
+                        center + egui::vec2(r * 2.0, -r * 0.2),
+                        center + egui::vec2(0.0, r * 2.4),
+                    ],
+                    color,
+                    egui::Stroke::NONE,
+                ));
+            }
+            for i in 0..stars {
+                let left = (i64::from(wand.mana.min(1_000_000)) - i as i64 * 20).clamp(0, 20);
+                let color = if left >= 10 { egui::Color32::from_rgb(90, 130, 255) } else { dim };
+                let center = egui::pos2(
+                    rect.right() - (size + gap) * 0.5,
+                    rect.top() + (i as f32 + 0.5) * (size + gap),
+                );
+                let (outer, inner) = (size * 0.5, size * 0.22);
+                let point = |k: usize| {
+                    let angle =
+                        std::f32::consts::PI * (k as f32 / 5.0) - std::f32::consts::FRAC_PI_2;
+                    let radius = if k.is_multiple_of(2) { outer } else { inner };
+                    center + egui::vec2(angle.cos(), angle.sin()) * radius
+                };
+                for k in 0..10 {
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![center, point(k), point((k + 1) % 10)],
+                        color,
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+        });
+}
+
 fn draw_hud_bars(context: &egui::Context, overlay: &Overlay<'_>) {
     use charon_game::status::StatusKind;
     let Some(id) = overlay.player else { return };
@@ -1280,10 +1478,8 @@ fn draw_hud_bars(context: &egui::Context, overlay: &Overlay<'_>) {
     };
     let fraction =
         |value: f32, max: f32| if max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
-    let mut bars = vec![
-        (fraction(vitals.hp as f32, vitals.max_hp as f32), egui::Color32::from_rgb(210, 60, 60)),
-        (fraction(wand.mana as f32, wand.mana_max as f32), egui::Color32::from_rgb(90, 110, 240)),
-    ];
+    let _ = wand;
+    let mut bars: Vec<(f32, egui::Color32)> = Vec::new();
     if let Some(lev) = overlay.game.levitation.get(&id) {
         bars.push((
             fraction(f32::from(lev.fuel), f32::from(lev.def.fuel_max)),
@@ -1306,7 +1502,10 @@ fn draw_hud_bars(context: &egui::Context, overlay: &Overlay<'_>) {
     .map(|(_, color)| color)
     .collect();
     egui::Area::new(egui::Id::unique("charon hud"))
-        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 40.0))
+        .anchor(
+            egui::Align2::RIGHT_TOP,
+            egui::vec2(-40.0, 12.0 + 24.0 * (f32::from(vitals.max_hp > 200) + 1.0)),
+        )
         .order(egui::Order::Foreground)
         .interactable(false)
         .show(context, |ui| {
