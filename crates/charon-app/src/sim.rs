@@ -158,6 +158,10 @@ impl Sim<'_> {
         self.entities.step_players(&inputs, self.world).map_err(|err| err.to_string())?;
         // エンティティは砂に勝つ: 楕円に重なった粉体は、近くの空きへ押し出される。
         self.entities.push_out_powder(self.world);
+        // 浮遊 (仕様 10 §18): ジャンプのボタンを押している間、燃料で上へ。
+        if let Some(id) = *self.player {
+            self.game.step_levitation(self.entities, id, input.jump);
+        }
         let actions: Vec<_> = self
             .player
             .iter()
@@ -224,6 +228,9 @@ impl Sim<'_> {
                     && let Err(err) = self.game.equip_dig(id, definitions, dig)
                 {
                     eprintln!("掘る道具 {dig} を持たせられません: {err}");
+                }
+                if let Some(def) = loadout.levitation {
+                    self.game.equip_levitation(id, def);
                 }
                 // 持ち物 (掘った材質を集める、仕様 10 §13)。
                 if let Err(err) = self.game.give_inventory(id) {

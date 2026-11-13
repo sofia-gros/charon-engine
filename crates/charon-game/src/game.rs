@@ -15,6 +15,7 @@ use crate::collapse::Collapse;
 use crate::defs::{Definitions, EnemyDef, HookDef};
 use crate::dig::{Beam, Dig, Dug};
 use crate::inventory::Inventory;
+use crate::levitation::{Levitation, LevitationDef};
 use crate::projectile::{Hit, ProjectileWorld};
 use crate::status::StatusTable;
 use crate::vitals::{Vitals, VitalsError, VitalsTable, covered_cells, step_environment};
@@ -135,6 +136,8 @@ pub struct GameState {
     pub collapse: Option<Collapse>,
     /// 状態異常 (仕様 10 §17)。
     pub statuses: StatusTable,
+    /// 浮遊 (仕様 10 §18)。
+    pub levitation: BTreeMap<EntityId, Levitation>,
 }
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
@@ -229,6 +232,27 @@ impl GameState {
             events: Vec::new(),
             collapse: None,
             statuses: StatusTable::new(),
+            levitation: BTreeMap::new(),
+        }
+    }
+
+    /// 浮遊の装備を渡す (燃料は満タン)。
+    pub fn equip_levitation(&mut self, id: EntityId, def: LevitationDef) {
+        self.levitation.insert(id, Levitation::new(def));
+    }
+
+    /// 浮遊を 1 tick 進める (仕様 10 §18)。`held` はジャンプのボタン。倒れている・装備がない・エンティティがないときは何もしない。
+    /// 上向きに進んだら真。移動 (`step_players`) のあとに呼ぶ。
+    pub fn step_levitation(
+        &mut self,
+        entities: &mut EntityWorld,
+        id: EntityId,
+        held: bool,
+    ) -> bool {
+        let alive = self.vitals.get(id).is_none_or(Vitals::alive);
+        match (self.levitation.get_mut(&id), entities.get_mut(id)) {
+            (Some(lev), Some(entity)) => lev.step(entity, held && alive),
+            _ => false,
         }
     }
 

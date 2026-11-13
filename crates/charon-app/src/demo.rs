@@ -61,6 +61,7 @@ pub(crate) fn demo_loadout() -> PlayerLoadout {
         wand: "fse_demo:starter".to_owned(),
         hook: Some("grapple".to_owned()),
         dig: Some("laser".to_owned()),
+        levitation: Some(charon_game::levitation::LevitationDef::default()),
     }
 }
 

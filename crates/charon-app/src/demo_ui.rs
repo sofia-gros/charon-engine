@@ -924,6 +924,15 @@ fn draw_wand_panel(context: &egui::Context, overlay: &Overlay<'_>) {
                     egui::Color32::from_rgb(90, 90, 230),
                     format!("{}/{}", wand.mana, wand.mana_max),
                 );
+                if let Some(lev) = overlay.game.levitation.get(&id) {
+                    bar(
+                        ui,
+                        "Fuel",
+                        fraction(f32::from(lev.fuel), f32::from(lev.def.fuel_max)),
+                        egui::Color32::from_rgb(220, 170, 60),
+                        format!("{}", lev.fuel / 60),
+                    );
+                }
                 if let Some(hook) = overlay.game.hooks.get(&id) {
                     let state = match hook.rope().map(|r| r.phase()) {
                         Some(charon_physics::rope::RopePhase::Flying) => "flying",

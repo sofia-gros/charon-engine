@@ -566,3 +566,20 @@ Android 実機での確認は未実施。
 | `liquid_wets_and_extinguishes_fire_touches_ignite` | 火で燃える、液体で濡れて消える、濡れている間は燃えない、乾いたら燃える |
 | `durations_are_clamped_and_extended_and_death_clears` | 上限、0、延長、倒れたら消える |
 | `statuses_are_deterministic` | 同じ手順で同じ結果 |
+
+## 18. 浮遊 (T17.5、`charon_game::levitation`)
+
+ジャンプのボタンを押している間、燃料を使って上へ進む (Noita の浮遊)。整数だけ。`GameState::levitation` に `Levitation` を持たせる (`equip_levitation(id, LevitationDef)`、燃料は満タンで始まる)。デモのプレイヤーは `PlayerLoadout::levitation` で持つ。
+
+- `LevitationDef { fuel_max, thrust, rise_max, recharge }`。既定は 180 tick (約 3 秒)・`thrust` 8・`rise_max` 40・`recharge` 3。`thrust` と `rise_max` は 0..=96 に収める。
+- `step_levitation(entities, id, held)` を、移動 (`step_players`) のあと、ゲーム状態の `step` の前に呼ぶ。空中で押していて燃料があれば、`vy` から `thrust` を引き (`-rise_max` まで)、燃料を 1 減らす。接地している間は燃料が `recharge` ずつ戻る (`fuel_max` まで)。押していない・燃料がない・装備がない・倒れているときは何もしない。
+- 同期 (Lockstep) のパケットは変えない。ジャンプのボタンは `PlayerInput::jump` で、すでに同期されている。
+- 注意: ふつうのジャンプ (初速 96、重力 4) でも約 70 セル上がる。浮遊は、そのあとも上がり続けられることと、燃料の管理が価値。
+- デモの画面に燃料の棒 (Fuel) を出す。
+
+| テスト | 確認 |
+|---|---|
+| `holding_the_button_rises_higher_than_a_jump_until_the_fuel_runs_out` | 押し続けるとふつうのジャンプの 2 倍以上高く上がり、燃料が尽きると落ちる |
+| `fuel_recharges_on_the_ground_and_only_burns_when_held` | 押さなければ減らない、接地で満タンまで戻る |
+| `no_equipment_or_dead_players_cannot_levitate_and_values_are_clamped` | 装備なし・倒れていると浮かない、値を範囲に収める |
+| `levitation_is_deterministic` | 同じ手順で同じ軌跡 |

@@ -5,6 +5,7 @@ pub mod defs;
 pub mod dig;
 pub mod game;
 pub mod inventory;
+pub mod levitation;
 pub mod lockstep;
 pub mod mods;
 pub mod net;

@@ -256,6 +256,8 @@ pub struct PlayerLoadout {
     pub hook: Option<String>,
     /// 右手の掘る道具: `Definitions::dig` に渡す名前 (仕様 10 §12)。
     pub dig: Option<String>,
+    /// 浮遊 (ジャンプのボタンを押している間、燃料で上へ、仕様 10 §18)。
+    pub levitation: Option<charon_game::levitation::LevitationDef>,
 }
 
 /// `Main Menu` の `Singleplayer` / `Random Seed` で作り直した、新しい世界の一式。
