@@ -1,0 +1,7 @@
+// エンジンが既定で持つ掘る道具 (Starbound のレーザーのように、狙った場所の円を削る、仕様 10 §12)。
+// ゲームは MOD の digs.ron で足したり、`replace: true` で上書きしたりできる。
+// power = 1 tick に円の中の各セルへ与えるダメージ (材質の `hardness` に達したセルが消える。掘る時間 = 硬さ / 力 tick)、
+// radius = 削る円の半径 (セル)、range = 光線が届く距離 (セル)、recover = 当てていないセルのダメージが 1 tick に回復する量。
+[
+    (name: "laser", power: 6, radius: 5, range: 48, recover: 2),
+]

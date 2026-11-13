@@ -69,6 +69,12 @@ pub(crate) fn sprites(
             rope_sprites(rope.points(), &mut out);
         }
     }
+    // 掘る道具のレーザー (仕様 10 §12): 手から当たった点まで、1 セル間隔の点。
+    for dig in game.digs.values() {
+        if let Some(beam) = dig.beam() {
+            rope_sprites(&[beam.from, beam.to], &mut out);
+        }
+    }
     out
 }
 
@@ -213,6 +219,11 @@ impl Sim<'_> {
                     && let Err(err) = self.game.equip_hook(id, definitions, hook)
                 {
                     eprintln!("道具 {hook} を持たせられません: {err}");
+                }
+                if let Some(dig) = &loadout.dig
+                    && let Err(err) = self.game.equip_dig(id, definitions, dig)
+                {
+                    eprintln!("掘る道具 {dig} を持たせられません: {err}");
                 }
             }
             (vitals, wand) => {

@@ -29,6 +29,9 @@ pub struct KeyState {
     pad_jump: bool,
     pad_fire: bool,
     pad_tool: bool,
+    pad_dig: bool,
+    /// `E` キー: 掘る道具 (仕様 10 §12)。
+    dig: bool,
 }
 
 /// Android のゲームパッドのボタンのキーコード (`KeyEvent.KEYCODE_BUTTON_*`)。
@@ -48,7 +51,8 @@ impl KeyState {
         match code {
             ANDROID_BUTTON_A => self.pad_jump = pressed,
             ANDROID_BUTTON_X | ANDROID_BUTTON_R1 | ANDROID_BUTTON_R2 => self.pad_fire = pressed,
-            ANDROID_BUTTON_B | ANDROID_BUTTON_L1 | ANDROID_BUTTON_L2 => self.pad_tool = pressed,
+            ANDROID_BUTTON_B | ANDROID_BUTTON_L1 => self.pad_tool = pressed,
+            ANDROID_BUTTON_L2 => self.pad_dig = pressed,
             ANDROID_BUTTON_Y => {}
             _ => return false,
         }
@@ -60,6 +64,11 @@ impl KeyState {
         (self.pad_fire, self.pad_tool)
     }
 
+    /// 掘る道具を押しているか (`E` キー、ゲームパッドの `L2`)。
+    pub(crate) fn dig_held(&self) -> bool {
+        self.dig || self.pad_dig
+    }
+
     /// 対応するキーなら状態を更新して true。対応しないキーは何もしない。
     pub fn set(&mut self, code: KeyCode, pressed: bool) -> bool {
         match code {
@@ -68,6 +77,7 @@ impl KeyState {
             KeyCode::KeyW | KeyCode::ArrowUp => self.up = pressed,
             KeyCode::KeyS | KeyCode::ArrowDown => self.down = pressed,
             KeyCode::Space | KeyCode::KeyC => self.space = pressed,
+            KeyCode::KeyE => self.dig = pressed,
             KeyCode::ShiftLeft | KeyCode::ShiftRight => self.shift = pressed,
             _ => return false,
         }
@@ -147,7 +157,7 @@ pub(crate) fn game_input(
     if free_camera {
         return GameInput::default();
     }
-    GameInput { fire: left && !paint, tool: right, aim: aim.unwrap_or((0, 0)) }
+    GameInput { fire: left && !paint, tool: right, dig: false, aim: aim.unwrap_or((0, 0)) }
 }
 
 /// プレイヤーの中心からカーソルのセルの中心への向き (1/16 セル単位)。仕様 10 §6.3。
@@ -273,6 +283,9 @@ mod tests {
         assert!(keys.set_android_button(ANDROID_BUTTON_X, false));
         assert!(keys.set_android_button(ANDROID_BUTTON_R1, false));
         assert_eq!(keys.pad_buttons(), (false, true));
+        assert!(keys.set_android_button(ANDROID_BUTTON_L2, true), "L2 は掘る道具");
+        assert!(keys.dig_held());
+        assert_eq!(keys.pad_buttons(), (false, true), "L2 は道具 (ワイヤー) ではない");
         assert!(keys.set_android_button(ANDROID_BUTTON_Y, true), "切り替えのボタンも対応する");
         assert!(!keys.set_android_button(1, true), "知らないボタンは無視する");
         keys.release_all();
@@ -285,21 +298,21 @@ mod tests {
         // 左ボタン = 武器、右ボタン = 道具。独立していて、同時にも使える。
         assert_eq!(
             game_input(true, false, false, false, aim),
-            GameInput { fire: true, tool: false, aim: (3, -4) }
+            GameInput { fire: true, tool: false, dig: false, aim: (3, -4) }
         );
         assert_eq!(
             game_input(false, true, false, false, aim),
-            GameInput { fire: false, tool: true, aim: (3, -4) }
+            GameInput { fire: false, tool: true, dig: false, aim: (3, -4) }
         );
         assert_eq!(
             game_input(true, true, false, false, aim),
-            GameInput { fire: true, tool: true, aim: (3, -4) }
+            GameInput { fire: true, tool: true, dig: false, aim: (3, -4) }
         );
         assert!(!game_input(false, false, false, false, aim).fire);
         // 描画モードでは左ボタンはブラシで、武器にならない。右ボタンの道具は使える。
         assert_eq!(
             game_input(true, true, true, false, aim),
-            GameInput { fire: false, tool: true, aim: (3, -4) }
+            GameInput { fire: false, tool: true, dig: false, aim: (3, -4) }
         );
         // 自由カメラのあいだは、どちらも使わない。
         assert_eq!(game_input(true, true, false, true, aim), GameInput::default());

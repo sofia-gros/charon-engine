@@ -164,7 +164,7 @@ fn lockstep_rejects_mismatch() {
         };
         let before = (world.tick(), world.state_hash(), entities.state_hash());
         let packet = input.encode();
-        assert_eq!(&packet[..2], &[3, 0]);
+        assert_eq!(&packet[..2], &[4, 0]);
         assert_eq!(&packet[2..10], &0u64.to_le_bytes());
         assert_eq!(&packet[10..18], &players[0].0.to_le_bytes());
         assert_eq!(TickInput::decode(&packet).unwrap(), input);
@@ -180,6 +180,8 @@ fn lockstep_rejects_mismatch() {
                 1
             } else if index == 10 {
                 0
+            } else if index == 29 {
+                4 // bit 2 以上は無効 (3 は tool + dig で有効)
             } else {
                 3
             };
@@ -312,17 +314,21 @@ fn engine_defs(world: &World) -> Definitions {
 }
 
 #[test]
-fn lockstep_packet_v3_roundtrip() {
+fn lockstep_packet_v4_roundtrip() {
     let input = TickInput {
         tick: 7,
         player: EntityId(3),
         input: PlayerInput { horizontal: -1, jump: true },
-        action: GameInput { fire: true, tool: true, aim: (-5, 70_000) },
+        action: GameInput { fire: true, tool: true, dig: true, aim: (-5, 70_000) },
     };
     let packet = input.encode();
     assert_eq!(packet.len(), 30);
-    assert_eq!(&packet[..2], &[3, 0]);
-    assert_eq!(packet[29], 1, "tool は末尾の 1 バイト");
+    assert_eq!(&packet[..2], &[4, 0]);
+    assert_eq!(packet[29], 3, "末尾の 1 バイトの bit 0 = tool、bit 1 = dig");
+    let only_dig =
+        TickInput { action: GameInput { tool: false, dig: true, ..input.action }, ..input };
+    assert_eq!(only_dig.encode()[29], 2);
+    assert_eq!(TickInput::decode(&only_dig.encode()).unwrap(), only_dig);
     assert_eq!(packet[20], 1);
     assert_eq!(&packet[21..25], &(-5i32).to_le_bytes());
     assert_eq!(&packet[25..29], &70_000i32.to_le_bytes());
@@ -338,7 +344,7 @@ fn lockstep_packet_v3_roundtrip() {
     bad_fire[20] = 2;
     assert!(matches!(TickInput::decode(&bad_fire), Err(LockstepError::InvalidPacket)));
     let mut bad_tool = packet;
-    bad_tool[29] = 2;
+    bad_tool[29] = 4;
     assert!(matches!(TickInput::decode(&bad_tool), Err(LockstepError::InvalidPacket)));
     // 古い 29 バイトのパケットは長さが違う。
     assert!(matches!(TickInput::decode(&packet[..29]), Err(LockstepError::InvalidPacket)));

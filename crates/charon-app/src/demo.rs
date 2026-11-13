@@ -54,6 +54,7 @@ pub(crate) fn demo_loadout() -> PlayerLoadout {
         max_hp: 100,
         wand: "fse_demo:starter".to_owned(),
         hook: Some("grapple".to_owned()),
+        dig: Some("laser".to_owned()),
     }
 }
 
@@ -739,7 +740,7 @@ mod tests {
             for tick in 0..300 {
                 // 床に立ってから、天井へ向けて右ボタンを押し続け、左ボタンも押す。
                 let action = if tick >= 150 {
-                    GameInput { fire: true, tool: true, aim: (16, -48) }
+                    GameInput { fire: true, tool: true, dig: false, aim: (16, -48) }
                 } else {
                     GameInput::default()
                 };
@@ -786,6 +787,67 @@ mod tests {
                 (start_y - top) / 16
             );
             assert!(shots > 0, "seed {seed}: 武器 (左手) も同時に撃てる");
+            streaming.take().unwrap().streamer.finish().unwrap();
+        }
+    }
+
+    /// 仕様 10 §12: デモのプレイヤーは掘る道具 (レーザー) を持って始まり、左の壁 (石、硬さ 600) へ向けて押し続けると、
+    /// 力 6 で 100 tick 後に壁が消える。その前には消えない (画面なし)。
+    #[test]
+    fn demo_dig_in_scene() {
+        use charon_core::coords::CellPos;
+        for seed in 1..=2 {
+            let dir = TestDir::new();
+            let OpenDemo { session, options, .. } = open_demo(&config(&dir), seed).unwrap();
+            let DemoSession { mut world, streamer, save_root, metadata, mut physics } = session;
+            let mut streaming = Some(StreamingState { streamer, save_root, metadata });
+            let mut initialized = false;
+            let mut entities = EntityWorld::new();
+            let mut player = None;
+            let mut spawn = options.player_spawn;
+            let mut enemy_spawns = Vec::new();
+            let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
+            let mut physics_ms = 0.0;
+            let mut started = None;
+            let mut removed_at = None;
+            for tick in 0..400 {
+                let digging = tick >= 150;
+                let action = GameInput { dig: digging, aim: (-1000, 0), ..Default::default() };
+                Sim {
+                    world: &mut world,
+                    streaming: &mut streaming,
+                    physics: &mut physics,
+                    initialized: &mut initialized,
+                    entities: &mut entities,
+                    player: &mut player,
+                    spawn: &mut spawn,
+                    game: &mut game,
+                    definitions: options.definitions.as_deref(),
+                    loadout: options.player.as_ref(),
+                    enemy_spawns: &mut enemy_spawns,
+                }
+                .tick(ChunkPos::new(0, 3), PlayerInput::default(), action, &mut physics_ms)
+                .unwrap();
+                let Some(id) = player else { continue };
+                let e = entities.get(id).unwrap();
+                let row = ((e.y16 + i64::from(e.height) * 8) / 16) as i32;
+                if tick == 149 {
+                    assert!(game.digs.contains_key(&id), "seed {seed}: 掘る道具を持って始まる");
+                    assert_ne!(world.get(CellPos::new(7, row)).material, MaterialId::EMPTY);
+                }
+                if digging {
+                    started.get_or_insert(tick);
+                    let gone = world.get(CellPos::new(7, row)).material == MaterialId::EMPTY;
+                    if gone && removed_at.is_none() {
+                        removed_at = Some(tick);
+                    }
+                }
+            }
+            let elapsed = removed_at.expect("壁が消える") - started.unwrap();
+            assert!(
+                (99..=101).contains(&elapsed),
+                "seed {seed}: 硬さ 600 / 力 6 = 100 tick ({elapsed})"
+            );
             streaming.take().unwrap().streamer.finish().unwrap();
         }
     }

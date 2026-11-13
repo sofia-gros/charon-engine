@@ -17,6 +17,8 @@ pub(crate) struct PadOutput {
     pub fire: bool,
     /// 右手の道具 (ワイヤーフック)。
     pub tool: bool,
+    /// 掘る道具 (仕様 10 §12)。
+    pub dig: bool,
     pub aim: Option<(i32, i32)>,
     /// このフレームに、武器 / ブラシの切り替えが押された。
     pub toggle_paint: bool,
@@ -30,6 +32,7 @@ impl PadOutput {
             jump: self.jump || other.jump,
             fire: self.fire || other.fire,
             tool: self.tool || other.tool,
+            dig: self.dig || other.dig,
             aim: other.aim.or(self.aim),
             toggle_paint: self.toggle_paint || other.toggle_paint,
         }
@@ -51,6 +54,7 @@ enum Owner {
     Aim,
     Jump,
     Hook,
+    Dig,
     Paint,
 }
 
@@ -81,6 +85,7 @@ pub(crate) struct Layout {
     pub aim_home: [f32; 2],
     pub jump: [f32; 2],
     pub hook: [f32; 2],
+    pub dig: [f32; 2],
     pub paint: [f32; 2],
     /// 狙いスティックの領域の左端と右端 (x)。
     aim_zone: [f32; 2],
@@ -102,7 +107,8 @@ impl Layout {
             aim_home: [w - 7.2 * unit, h - 3.4 * unit],
             jump: [w - 1.7 * unit, h - 1.8 * unit],
             hook: [w - 1.7 * unit, h - 4.5 * unit],
-            paint: [w - 1.7 * unit, h - 7.2 * unit],
+            dig: [w - 1.7 * unit, h - 7.2 * unit],
+            paint: [w - 1.7 * unit, h - 9.9 * unit],
             aim_zone: [w * 0.45, w - 3.6 * unit],
             zone_top: h * 0.4,
             stick_right: w * 0.4,
@@ -122,6 +128,9 @@ impl Layout {
         }
         if near(self.hook) {
             return Some(Owner::Hook);
+        }
+        if near(self.dig) {
+            return Some(Owner::Dig);
         }
         if near(self.paint) {
             return Some(Owner::Paint);
@@ -204,6 +213,7 @@ impl TouchPad {
         let owner = match button {
             "jump" => Owner::Jump,
             "hook" => Owner::Hook,
+            "dig" => Owner::Dig,
             _ => Owner::Paint,
         };
         self.touches.values().any(|t| t.owner == owner)
@@ -234,10 +244,11 @@ impl TouchPad {
                 }
                 Owner::Jump => out.jump = true,
                 Owner::Hook => out.tool = true,
+                Owner::Dig => out.dig = true,
                 Owner::Paint => {}
             }
         }
-        if out.fire || out.tool {
+        if out.fire || out.tool || out.dig {
             out.aim = Some(self.last_aim.unwrap_or(DEFAULT_AIM));
         }
         out.toggle_paint = std::mem::take(&mut self.toggle);
@@ -305,6 +316,10 @@ mod tests {
         let layout = pad.layout();
         assert!(pad.update(4, TouchPhase::Started, layout.jump));
         assert!(pad.output().jump && pad.held("jump"));
+        assert!(pad.update(6, TouchPhase::Started, layout.dig));
+        let dig = pad.output();
+        assert!(dig.dig && !dig.tool && dig.aim.is_some(), "DIG は掘る道具 (向きは最後の狙い)");
+        pad.update(6, TouchPhase::Ended, layout.dig);
         assert!(pad.update(5, TouchPhase::Started, layout.paint));
         assert!(pad.output().toggle_paint);
         assert!(!pad.output().toggle_paint, "切り替えは 1 度だけ");

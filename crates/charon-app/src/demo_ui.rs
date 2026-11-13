@@ -274,6 +274,7 @@ fn draw_touch_pad(context: &egui::Context, pad: &crate::touch_pad::TouchPad) {
     for (center, label, held) in [
         (layout.jump, "JUMP", pad.held("jump")),
         (layout.hook, "HOOK", pad.held("hook")),
+        (layout.dig, "DIG", pad.held("dig")),
         (layout.paint, "PAINT", pad.held("paint")),
     ] {
         let color = if held { knob } else { fill };

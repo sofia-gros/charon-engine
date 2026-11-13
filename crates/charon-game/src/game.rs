@@ -12,6 +12,7 @@ use charon_physics::PhysicsEngine;
 use charon_physics::rope::{Rope, RopeEvent, RopeParams, RopePhase, tether_velocity};
 
 use crate::defs::{Definitions, EnemyDef, HookDef};
+use crate::dig::{Beam, Dig, Dug};
 use crate::projectile::{Hit, ProjectileWorld};
 use crate::vitals::{Vitals, VitalsError, VitalsTable, covered_cells, step_environment};
 use crate::wand::{CastError, CastOutcome, SpellTable, Wand, WandError};
@@ -33,6 +34,8 @@ pub struct GameInput {
     pub fire: bool,
     /// 道具 (ワイヤーフック) を使う。右クリック。押している間、ワイヤーを巻き取る。
     pub tool: bool,
+    /// 掘る道具 (レーザー) を使う。押している間、狙った場所の円を削る (仕様 10 §12)。
+    pub dig: bool,
     pub aim: (i32, i32),
 }
 
@@ -47,6 +50,8 @@ pub enum GameError {
     UnknownSpell(String),
     /// 定義にないワイヤーフック。
     UnknownHook(String),
+    /// 定義にない掘る道具。
+    UnknownDig(String),
     Entity(EntityError),
     Wand(WandError),
     Vitals(VitalsError),
@@ -60,6 +65,7 @@ impl std::fmt::Display for GameError {
             Self::UnknownEnemy(name) => write!(f, "敵 \"{name}\" は定義されていません"),
             Self::UnknownSpell(name) => write!(f, "敵の攻撃の呪文 \"{name}\" が表にありません"),
             Self::UnknownHook(name) => write!(f, "ワイヤーフック \"{name}\" は定義されていません"),
+            Self::UnknownDig(name) => write!(f, "掘る道具 \"{name}\" は定義されていません"),
             Self::Entity(e) => write!(f, "敵を生成できません: {e}"),
             Self::Wand(e) => write!(f, "{e}"),
             Self::Vitals(e) => write!(f, "{e}"),
@@ -103,6 +109,8 @@ pub struct StepReport {
     pub hits: Vec<Hit>,
     /// この tick に撤去した敵 (ID の昇順)。
     pub defeated: Vec<EntityId>,
+    /// この tick に掘ったセル (ID・座標の昇順)。集める・拾うのはゲームの仕事 (仕様 10 §12)。
+    pub dug: Vec<Dug>,
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +121,8 @@ pub struct GameState {
     pub enemies: BTreeMap<EntityId, Enemy>,
     /// 右手のワイヤーフック。
     pub hooks: BTreeMap<EntityId, Hook>,
+    /// 掘る道具 (レーザー)。
+    pub digs: BTreeMap<EntityId, Dig>,
     pub spells: SpellTable,
 }
 
@@ -188,6 +198,7 @@ impl GameState {
             wands: BTreeMap::new(),
             enemies: BTreeMap::new(),
             hooks: BTreeMap::new(),
+            digs: BTreeMap::new(),
             spells,
         }
     }
@@ -216,6 +227,26 @@ impl GameState {
         }
         self.hooks.insert(id, Hook { def: def.clone(), rope: None, cooldown: 0, held: false });
         Ok(())
+    }
+
+    /// 仕様 10 §12: 杖を持つキャラクターに、掘る道具 `name` を持たせる。
+    pub fn equip_dig(
+        &mut self,
+        id: EntityId,
+        defs: &Definitions,
+        name: &str,
+    ) -> Result<(), GameError> {
+        let def = defs.dig(name).ok_or_else(|| GameError::UnknownDig(name.to_owned()))?;
+        if !self.wands.contains_key(&id) {
+            return Err(GameError::InvalidAction);
+        }
+        self.digs.insert(id, Dig::new(def.clone()));
+        Ok(())
+    }
+
+    /// 出ている掘る道具の光線 (描画用)。
+    pub fn dig_beam(&self, id: EntityId) -> Option<Beam> {
+        self.digs.get(&id)?.beam()
     }
 
     /// 出ているワイヤー (描画用)。
@@ -322,6 +353,8 @@ impl GameState {
         }
         // (3') 道具 (ワイヤーフック)。
         self.step_hooks(world, entities, &by_id);
+        // (3'') 掘る道具 (レーザー)。
+        let dug = self.step_digs(world, entities, &by_id);
         // (4) 敵。
         self.step_enemies(world, entities, tick, seed);
         // (5) 弾の移動と着弾。
@@ -338,7 +371,28 @@ impl GameState {
             self.vitals.remove(id);
             entities.remove(id);
         }
-        Ok(StepReport { hits, defeated })
+        Ok(StepReport { hits, defeated, dug })
+    }
+
+    /// 仕様 10 §12: 掘る道具を ID 昇順に更新する。倒れたキャラクターは使えない。
+    fn step_digs(
+        &mut self,
+        world: &mut World,
+        entities: &EntityWorld,
+        inputs: &BTreeMap<EntityId, GameInput>,
+    ) -> Vec<Dug> {
+        let mut dug = Vec::new();
+        let ids: Vec<EntityId> = self.digs.keys().copied().collect();
+        for id in ids {
+            let input = inputs.get(&id).copied().unwrap_or_default();
+            let alive = self.vitals.get(id).is_some_and(Vitals::alive);
+            let Some(entity) = entities.get(id) else { continue };
+            let hand = center16(entity);
+            if let Some(tool) = self.digs.get_mut(&id) {
+                dug.extend(tool.step(world, hand, input.aim, input.dig && alive));
+            }
+        }
+        dug
     }
 
     /// 仕様 10 §9.4: ワイヤーフックを ID 昇順に更新し、張ったワイヤーでプレイヤーを引く。
@@ -569,6 +623,10 @@ impl GameState {
             feed(&hook.cooldown.to_le_bytes());
             feed(&[u8::from(hook.held)]);
             feed(&hook.rope.as_ref().map_or(0, Rope::state_hash).to_le_bytes());
+        }
+        for (&id, dig) in &self.digs {
+            feed(&id.0.to_le_bytes());
+            feed(&dig.state_hash().to_le_bytes());
         }
         for (&id, enemy) in &self.enemies {
             feed(&id.0.to_le_bytes());

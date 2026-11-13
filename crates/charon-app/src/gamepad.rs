@@ -32,7 +32,7 @@ pub(crate) struct PadState {
 }
 
 /// 写像: 左スティック・十字キーで歩く (上でジャンプ)、`A` (South) でジャンプ、`X` (West)・`R1`・`R2` で武器、
-/// `B` (East)・`L1`・`L2` で道具、右スティックで狙う、`Y` (North) で武器 / ブラシの切り替え (`north_pressed` は押した瞬間)。
+/// `B` (East)・`L1` で道具、`L2` で掘る道具、右スティックで狙う、`Y` (North) で武器 / ブラシの切り替え (`north_pressed` は押した瞬間)。
 pub(crate) fn map_state(state: PadState, north_pressed: bool) -> PadOutput {
     let mut out = PadOutput::default();
     if state.left_x > WALK_THRESHOLD || state.dpad_right {
@@ -43,7 +43,8 @@ pub(crate) fn map_state(state: PadState, north_pressed: bool) -> PadOutput {
     }
     out.jump = state.south || state.dpad_up || state.left_y > JUMP_THRESHOLD;
     out.fire = state.west || state.right_shoulder || state.right_trigger;
-    out.tool = state.east || state.left_shoulder || state.left_trigger;
+    out.tool = state.east || state.left_shoulder;
+    out.dig = state.left_trigger;
     let length = state.right_x.hypot(state.right_y);
     if length > AIM_THRESHOLD {
         // 画面の y は下が正なので、スティックの上を負にする。
@@ -123,7 +124,9 @@ mod tests {
         let fire = map_state(PadState { right_trigger: true, ..Default::default() }, false);
         assert!(fire.fire && !fire.tool);
         let tool = map_state(PadState { east: true, ..Default::default() }, false);
-        assert!(tool.tool && !tool.fire);
+        assert!(tool.tool && !tool.fire && !tool.dig);
+        let dig = map_state(PadState { left_trigger: true, ..Default::default() }, false);
+        assert!(dig.dig && !dig.tool, "L2 は掘る道具");
         assert_eq!(
             map_state(PadState::default(), false),
             PadOutput::default(),

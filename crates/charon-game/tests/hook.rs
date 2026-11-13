@@ -270,7 +270,7 @@ fn weapon_and_tool_are_independent() {
     testkit::fill(&mut arena.world, 50, 0, 51, 59, '#');
     let hooked = arena.add_player(10, 44, Some("grapple"));
     let plain = arena.add_player(30, 44, None);
-    let both = GameInput { fire: true, tool: true, aim: (1, 0) };
+    let both = GameInput { fire: true, tool: true, dig: false, aim: (1, 0) };
     let report = {
         arena.entities.step_players(&[], &arena.world).unwrap();
         let seed = arena.world.seed();

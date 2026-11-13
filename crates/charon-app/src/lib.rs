@@ -238,6 +238,8 @@ pub struct PlayerLoadout {
     pub wand: String,
     /// 右手の道具: `Definitions::hook` に渡すワイヤーフックの名前 (仕様 10 §9.5)。
     pub hook: Option<String>,
+    /// 右手の掘る道具: `Definitions::dig` に渡す名前 (仕様 10 §12)。
+    pub dig: Option<String>,
 }
 
 /// `Main Menu` の `Singleplayer` / `Random Seed` で作り直した、新しい世界の一式。
@@ -370,6 +372,8 @@ struct App {
     weapon_down: bool,
     /// 右ボタン (道具) を押している間 true。
     tool_down: bool,
+    /// 中ボタン (掘る道具) を押している間 true。
+    dig_down: bool,
     /// 最後に見たカーソルの位置 (ウィンドウのピクセル)。
     cursor: [f32; 2],
     /// まだ生成していないプレイヤーの初期位置。生成に失敗したら `None` にする。
@@ -435,6 +439,7 @@ impl App {
             deep_clock: None,
             weapon_down: false,
             tool_down: false,
+            dig_down: false,
             cursor: [0.0, 0.0],
             spawn_pending: None,
             enemies_pending: Vec::new(),
@@ -844,7 +849,9 @@ impl App {
             let (fire, tool) = (pad.fire || button_fire, pad.tool || button_tool);
             action.fire |= fire && !paint;
             action.tool |= tool;
-            if fire || tool {
+            let dig = pad.dig || self.keys.dig_held() || self.dig_down;
+            action.dig |= dig;
+            if fire || tool || dig {
                 action.aim = pad.aim.unwrap_or((i32::from(self.facing) * 1000, -300));
             }
         }
@@ -1526,6 +1533,9 @@ impl ApplicationHandler for App {
             // 押下は UI が使っていなければ撃つ。離したときは常に止める。
             WindowEvent::MouseInput { button: MouseButton::Right, state, .. } => {
                 self.tool_down = state == ElementState::Pressed && !consumed;
+            }
+            WindowEvent::MouseInput { button: MouseButton::Middle, state, .. } => {
+                self.dig_down = state == ElementState::Pressed && !consumed;
             }
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {

@@ -118,6 +118,7 @@ pub struct Material {
 
     // 描画 (仕様 06)
     pub emission: [u8; 3],     // 発光色。光らないなら [0,0,0]
+    pub hardness: u16,         // 掘るときの硬さ (仕様 10 §12)。固体 300・粉体 20 が既定、液体・気体・空は 0 (掘れない)、boundary は u16::MAX
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -209,6 +210,7 @@ struct RawMaterial {
     #[serde(default = "d_friction")] rigid_friction: f32,
     #[serde(default = "d_restitution")] restitution: f32,
     #[serde(default)] emission: [u8; 3],
+    #[serde(default)] hardness: Option<u16>,   // RON では `hardness: Some(600)`。省略すると位相ごとの既定
 }
 ```
 

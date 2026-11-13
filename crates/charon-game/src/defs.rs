@@ -11,10 +11,12 @@ const ENGINE_SPELLS: &str = include_str!("../../../assets/spells.ron");
 const ENGINE_WANDS: &str = include_str!("../../../assets/wands.ron");
 const ENGINE_ENEMIES: &str = include_str!("../../../assets/enemies.ron");
 const ENGINE_HOOKS: &str = include_str!("../../../assets/hooks.ron");
+const ENGINE_DIGS: &str = include_str!("../../../assets/digs.ron");
 
 const MAX_WANDS: usize = 256;
 const MAX_ENEMIES: usize = 256;
 const MAX_HOOKS: usize = 256;
+const MAX_DIGS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefsError {
@@ -26,6 +28,7 @@ pub enum DefsError {
     Invalid { owner: String, reason: &'static str },
     UnknownWand(String),
     UnknownHook(String),
+    UnknownDig(String),
     Wand(WandError),
     TooMany(&'static str),
 }
@@ -45,6 +48,7 @@ impl std::fmt::Display for DefsError {
             Self::Invalid { owner, reason } => write!(f, "\"{owner}\": {reason}"),
             Self::UnknownWand(name) => write!(f, "杖 \"{name}\" は定義されていません"),
             Self::UnknownHook(name) => write!(f, "ワイヤーフック \"{name}\" は定義されていません"),
+            Self::UnknownDig(name) => write!(f, "掘る道具 \"{name}\" は定義されていません"),
             Self::Wand(e) => write!(f, "{e}"),
             Self::TooMany(kind) => write!(f, "{kind} が多すぎます"),
         }
@@ -101,6 +105,32 @@ pub struct HookDef {
     pub cooldown: u16,
 }
 
+/// 掘る道具の定義 (仕様 10 §12)。力・半径・距離はセル単位。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DigDef {
+    pub name: String,
+    /// 1 tick に円の中の各セルへ与えるダメージ。材質の硬さに達したセルが消える (掘る時間 = 硬さ / 力)。
+    pub power: u16,
+    /// 削る円の半径 (セル)。
+    pub radius: u8,
+    /// 光線が届く距離 (セル)。
+    pub range: u16,
+    /// 当てていないセルのダメージが、1 tick に回復する量。
+    pub recover: u16,
+}
+
+#[derive(Deserialize)]
+struct RawDig {
+    name: String,
+    #[serde(default)]
+    replace: bool,
+    power: i64,
+    radius: i64,
+    range: i64,
+    #[serde(default)]
+    recover: i64,
+}
+
 #[derive(Deserialize)]
 struct RawHook {
     name: String,
@@ -155,6 +185,7 @@ pub struct DefinitionFiles<'a> {
     pub wands: Option<&'a str>,
     pub enemies: Option<&'a str>,
     pub hooks: Option<&'a str>,
+    pub digs: Option<&'a str>,
 }
 
 /// 呪文・杖・敵の定義。層で重ねる。
@@ -164,6 +195,7 @@ pub struct Definitions {
     wands: Vec<WandDef>,
     enemies: Vec<EnemyDef>,
     hooks: Vec<HookDef>,
+    digs: Vec<DigDef>,
 }
 
 fn range(
@@ -251,6 +283,7 @@ impl Definitions {
                 wands: Some(ENGINE_WANDS),
                 enemies: Some(ENGINE_ENEMIES),
                 hooks: Some(ENGINE_HOOKS),
+                digs: Some(ENGINE_DIGS),
             },
             materials,
             None,
@@ -277,6 +310,9 @@ impl Definitions {
         }
         if let Some(text) = files.hooks {
             next.layer_hooks(text, namespace)?;
+        }
+        if let Some(text) = files.digs {
+            next.layer_digs(text, namespace)?;
         }
         *self = next;
         Ok(())
@@ -408,6 +444,39 @@ impl Definitions {
         Ok(())
     }
 
+    fn layer_digs(&mut self, text: &str, namespace: Option<&str>) -> Result<(), DefsError> {
+        let raws: Vec<RawDig> = ron::from_str(text)
+            .map_err(|e| DefsError::Parse { file: "digs.ron", reason: e.to_string() })?;
+        let mut seen = BTreeSet::new();
+        for raw in raws {
+            let name = qualify("掘る道具", &raw.name, raw.replace, namespace)?;
+            let power = range(&name, raw.power, 1, 10_000, "power は 1..=10000 です")?;
+            let radius = range(&name, raw.radius, 1, 24, "radius は 1..=24 です")?;
+            let reach = range(&name, raw.range, 1, 400, "range は 1..=400 です")?;
+            let recover = range(&name, raw.recover, 0, 10_000, "recover は 0..=10000 です")?;
+            let def = DigDef {
+                name,
+                power: power as u16,
+                radius: radius as u8,
+                range: reach as u16,
+                recover: recover as u16,
+            };
+            place("掘る道具", &mut self.digs, |d| &d.name, &mut seen, raw.replace, def)?;
+        }
+        if self.digs.len() > MAX_DIGS {
+            return Err(DefsError::TooMany("掘る道具"));
+        }
+        Ok(())
+    }
+
+    pub fn dig(&self, name: &str) -> Option<&DigDef> {
+        self.digs.iter().find(|d| d.name == name)
+    }
+
+    pub fn dig_names(&self) -> impl Iterator<Item = &str> {
+        self.digs.iter().map(|d| d.name.as_str())
+    }
+
     pub fn hook(&self, name: &str) -> Option<&HookDef> {
         self.hooks.iter().find(|h| h.name == name)
     }
@@ -490,6 +559,15 @@ impl Definitions {
                 h.pull_max,
             ]);
             hash.bytes(&h.cooldown.to_le_bytes());
+        }
+        hash.bytes(&[3]);
+        for d in &self.digs {
+            hash.bytes(d.name.as_bytes());
+            hash.bytes(&[0]);
+            hash.bytes(&d.power.to_le_bytes());
+            hash.bytes(&[d.radius]);
+            hash.bytes(&d.range.to_le_bytes());
+            hash.bytes(&d.recover.to_le_bytes());
         }
         hash.finish()
     }

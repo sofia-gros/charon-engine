@@ -55,6 +55,9 @@ pub struct Material {
     pub restitution: f32,
 
     pub emission: [u8; 3],
+    /// 掘るときの硬さ (仕様 10 §12)。掘る道具の力 (1 tick に与えるダメージ) の合計がこの値に達すると、セルが消える。
+    /// 固体は 300、粉体は 20 が既定。液体・気体・空は掘れない (0)。`u16::MAX` は掘れない固体 (`boundary`)。
+    pub hardness: u16,
 }
 
 /// 材質の読み込みで起きるエラー。
@@ -164,6 +167,8 @@ struct RawMaterial {
     restitution: f32,
     #[serde(default)]
     emission: [u8; 3],
+    #[serde(default)]
+    hardness: Option<u16>,
 }
 
 /// ローカル定義への短い参照だけを名前空間化する。組み込み名と他 MOD の完全修飾名は保つ。
@@ -204,6 +209,7 @@ fn builtin_material(name: &str, phase: Phase, density: u16, conductivity: u8) ->
         rigid_friction: d_friction(),
         restitution: d_restitution(),
         emission: [0, 0, 0],
+        hardness: if name == "boundary" { u16::MAX } else { 0 },
     }
 }
 
@@ -324,6 +330,11 @@ impl MaterialTable {
                 rigid_friction: raw.rigid_friction,
                 restitution: raw.restitution,
                 emission: raw.emission,
+                hardness: match raw.phase {
+                    Phase::Solid => raw.hardness.unwrap_or(300),
+                    Phase::Powder => raw.hardness.unwrap_or(20),
+                    _ => 0,
+                },
                 name: raw.name,
             });
         }
@@ -385,6 +396,31 @@ mod tests {
         assert_eq!(t.id("empty"), Some(MaterialId::EMPTY));
         assert_eq!(t.id("boundary"), Some(MaterialId::BOUNDARY));
         assert_eq!(t.id("stone"), Some(MaterialId(2)));
+    }
+
+    /// 掘る硬さ (仕様 10 §12): 既定は固体 300・粉体 20・液体や気体は 0、`boundary` は掘れない。
+    #[test]
+    fn hardness_defaults_by_phase() {
+        let t = MaterialTable::builtin().unwrap();
+        let hardness = |name: &str| t.get(t.id(name).unwrap()).hardness;
+        assert_eq!(hardness("stone"), 600, "石は materials.ron で 600");
+        assert_eq!(hardness("ice"), 200);
+        assert_eq!(hardness("wood"), 150);
+        assert_eq!(hardness("sand"), 20, "粉体の既定");
+        assert_eq!(hardness("water"), 0, "液体は掘れない");
+        assert_eq!(hardness("steam"), 0, "気体は掘れない");
+        assert_eq!(hardness("boundary"), u16::MAX);
+        assert_eq!(hardness("empty"), 0);
+        let custom = MaterialTable::from_ron(
+            r#"[(name: "rock", phase: Solid, density: 2000, color: (1, 1, 1, 255), hardness: Some(1234)),
+                (name: "soft", phase: Solid, density: 100, color: (1, 1, 1, 255)),
+                (name: "mud", phase: Powder, density: 900, color: (1, 1, 1, 255), hardness: Some(5)),
+                (name: "juice", phase: Liquid, density: 1000, color: (1, 1, 1, 255), hardness: Some(99))]"#,
+        )
+        .unwrap();
+        let h = |name: &str| custom.get(custom.id(name).unwrap()).hardness;
+        assert_eq!((h("rock"), h("soft"), h("mud")), (1234, 300, 5));
+        assert_eq!(h("juice"), 0, "液体は指定しても掘れない");
     }
 
     #[test]
