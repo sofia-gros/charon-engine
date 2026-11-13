@@ -308,6 +308,18 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 | T15.5 | 音: `charon-audio` (依存なしのミキサー・効果音の生成・WAV)、出来事から効果音、音量の設定 ([仕様 12](spec/12-audio.md))。**デバイスへの出力は未実装** (依存クレートの許可待ち) | `charon-audio` の 10 個のテスト、`events_follow_state_changes` ほか、`volumes_are_clamped` |
 | T15.6 | 通信: Lockstep の上のホスト中継 TCP `charon-game::net` ([仕様 13](spec/13-network.md))。**アプリへの組み込みは未実装** | `two_peers_stay_in_sync_over_tcp`、`mismatched_peers_are_refused`、`bad_inputs_drop_the_connection`、`malformed_frames_are_dropped`、`connection_info_roundtrips_and_rejects_garbage` |
 | T15.3 | 持ち物とゲーム状態の保存 `game.ron` ([10 §13](spec/10-noita-like-game.md)) | `add_take_and_count` ほか、`game_state_roundtrips_through_ron`、`game_save_file_io`、`dig_collects_into_the_inventory` |
+| T15.7 | 音声デバイスへの出力 (`cpal`、デバイスのレートに合わせる、開けなければ無音) ([12 §4](spec/12-audio.md))。聞こえるかは未確認 | `channels_are_arranged_for_the_device`、`the_audio_device_opens_or_reports_why_not`、`changing_the_rate_keeps_sound_speed` |
+
+## M16 エンジン API の拡充
+
+2026-11-13 の依頼 (順序は実装者が決め、止まらず進める。確かめ方はデモに足すこと)。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T16.1 | 問い合わせ: raycast・視線・円の検索 ([01 §7](spec/01-core-data.md)) | `raycast_*`、`line_of_sight_and_the_outside_of_the_world`、`circle_search_is_ordered_and_counts` |
+| T16.2 | カメラの演出: なめらかな追従・揺れ ([06 §11](spec/06-rendering-platform.md))。デモで撃つ・倒すと揺れる | `following_converges_without_overshooting`、`following_is_frame_rate_independent`、`far_targets_snap_and_smoothing_can_be_off`、`shake_moves_the_view_and_dies_out` |
+| T16.3 | 出来事 `GameEvent` ([10 §15](spec/10-noita-like-game.md)) | `dug_cells_arrive_as_events_once_and_the_queue_is_bounded` |
+| T16.4 | 地形の崩落 ([10 §16](spec/10-noita-like-game.md))。デモで有効 | `unsupported_cluster_falls_as_one_piece_and_lands` ほか 5 個 (`tests/collapse.rs`) |
 
 ---
 

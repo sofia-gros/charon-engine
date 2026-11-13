@@ -525,3 +525,21 @@ Android 実機での確認は未実施。
 | テスト | 確認 |
 |---|---|
 | `dug_cells_arrive_as_events_once_and_the_queue_is_bounded` | 掘ったセルの数だけ `Dug` が届く、受け取ると空、溜まる数に上限がある |
+
+## 16. 地形の崩落 (T16.4、`charon_game::collapse`)
+
+掘って支えを失った固体が、ひとかたまりのまま落ちる。`GameState::collapse` に `Some(Collapse::new())` を入れたゲームだけで働く (デモは掘る道具があれば有効)。
+
+- **支えの判定**: 掘ったセルの上下左右にある固体 (`Phase::Solid`、剛体のセルを除く) から、つながった固体を 4 近傍で集める。集めた数が `MAX_CLUSTER` (400) 以上、または読み込まれていない場所 (`BOUNDARY`) に触れていれば「地面とつながっている」とみなして落とさない。そうでなければ支えがない。材質の名前は使わない。
+- **落ち方**: 同時に落とすのは `MAX_FALLING` (32) かたまりまで。毎 tick、下の行から順に 1 セル下と `swap` する。下が空・液体・気体なら進み (液体は押しのけられる)、固体・粉体・剛体・境界にふさがれたら止まって、そこで普通の固体に戻る。セルの数は変わらない。
+- 落ちている途中のセルが固体でなくなったら (掘られた・燃えた)、そのかたまりは追わない。
+- 順序: 掘る道具 (§12) の直後、敵・弾より前に、通知と 1 セルの移動を行う。
+
+| テスト | 確認 |
+|---|---|
+| `unsupported_cluster_falls_as_one_piece_and_lands` | 板と柱の上半分が一緒に 5 セル落ちて着地する。セルの数は不変 |
+| `supported_terrain_stays` | 床につながる部分は落ちない |
+| `clusters_touching_the_boundary_are_supported` | 境界に触れるかたまりは落ちない |
+| `huge_clusters_are_treated_as_ground` | 大きなかたまりは落ちない |
+| `falling_displaces_liquid_and_stops_on_powder` | 水の数は不変、砂の上で止まる |
+| `a_cluster_that_is_dug_stops_being_followed` | 落下中に掘られたら追わない |

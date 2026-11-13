@@ -11,6 +11,7 @@ use charon_physics::PhysicsEngine;
 
 use charon_physics::rope::{Rope, RopeEvent, RopeParams, RopePhase, tether_velocity};
 
+use crate::collapse::Collapse;
 use crate::defs::{Definitions, EnemyDef, HookDef};
 use crate::dig::{Beam, Dig, Dug};
 use crate::inventory::Inventory;
@@ -129,6 +130,8 @@ pub struct GameState {
     pub spells: SpellTable,
     /// 起きた出来事 (仕様 10 §15)。`step` が足し、ゲームが [`GameState::take_events`] で受け取る。
     events: Vec<GameEvent>,
+    /// 地形の崩落 (仕様 10 §16)。`Some` のとき、掘って支えを失った固体が落ちる。
+    pub collapse: Option<Collapse>,
 }
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
@@ -221,6 +224,7 @@ impl GameState {
             inventories: BTreeMap::new(),
             spells,
             events: Vec::new(),
+            collapse: None,
         }
     }
 
@@ -406,6 +410,12 @@ impl GameState {
         self.step_hooks(world, entities, &by_id);
         // (3'') 掘る道具 (レーザー)。
         let dug = self.step_digs(world, entities, &by_id);
+        // (3''') 地形の崩落 (仕様 10 §16): 掘って支えを失ったかたまりを落とす。
+        if let Some(collapse) = self.collapse.as_mut() {
+            let cells: Vec<CellPos> = dug.iter().map(|d| d.pos).collect();
+            collapse.notice(world, &cells);
+            collapse.step(world);
+        }
         // (4) 敵。
         self.step_enemies(world, entities, tick, seed);
         // (5) 弾の移動と着弾。

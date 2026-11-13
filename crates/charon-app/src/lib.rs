@@ -552,6 +552,10 @@ impl App {
             .definitions
             .as_deref()
             .map_or_else(|| GameState::new(SpellTable::default()), GameState::from_definitions);
+        // 掘る道具のあるゲームでは、支えを失った地形が落ちる (仕様 10 §16)。
+        if self.options.player.as_ref().is_some_and(|loadout| loadout.dig.is_some()) {
+            self.game.collapse = Some(charon_game::collapse::Collapse::new());
+        }
         self.weapon_down = false;
         self.tool_down = false;
     }
