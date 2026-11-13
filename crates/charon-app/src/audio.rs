@@ -21,6 +21,12 @@ pub enum SoundEvent {
     Pickup,
     DigStart,
     DigStop,
+    /// ブロックを置いた。
+    Place,
+    /// ブロックを壊した。
+    Break,
+    /// 近接の攻撃・ボスを倒した、などの手応え。
+    Hit,
 }
 
 /// 出来事を決めるための、1 フレームの状態。
@@ -70,6 +76,9 @@ pub struct SoundBank {
     pub pickup: Sound,
     /// 掘っている間、繰り返す。
     pub dig: Sound,
+    pub place: Sound,
+    pub breaks: Sound,
+    pub hit: Sound,
 }
 
 impl SoundBank {
@@ -80,6 +89,9 @@ impl SoundBank {
             anchor: Sound::noise(0.07, rate, 11, 1.0),
             pickup: Sound::sweep(Shape::Sine, 700.0, 1400.0, 0.09, rate),
             dig: Sound::sweep(Shape::Square, 110.0, 95.0, 0.25, rate),
+            place: Sound::sweep(Shape::Square, 220.0, 150.0, 0.07, rate),
+            breaks: Sound::noise(0.12, rate, 23, 0.8),
+            hit: Sound::sweep(Shape::Saw, 320.0, 90.0, 0.1, rate),
         }
     }
 }
@@ -106,6 +118,9 @@ impl SoundBank {
             anchor: load("anchor", fallback.anchor.clone()),
             pickup: load("pickup", fallback.pickup.clone()),
             dig: load("dig", fallback.dig.clone()),
+            place: load("place", fallback.place.clone()),
+            breaks: load("break", fallback.breaks.clone()),
+            hit: load("hit", fallback.hit.clone()),
         }
     }
 }
@@ -263,6 +278,15 @@ impl Audio {
                 SoundEvent::Pickup => {
                     play(&mut mixer, &self.bank.pickup, 0.4);
                 }
+                SoundEvent::Place => {
+                    play(&mut mixer, &self.bank.place, 0.5);
+                }
+                SoundEvent::Break => {
+                    play(&mut mixer, &self.bank.breaks, 0.5);
+                }
+                SoundEvent::Hit => {
+                    play(&mut mixer, &self.bank.hit, 0.6);
+                }
                 SoundEvent::DigStart => {
                     self.dig_voice = mixer.play(
                         &self.bank.dig,
@@ -294,6 +318,9 @@ impl Audio {
                 SoundEvent::Shoot => (&self.bank.shoot, 0.6),
                 SoundEvent::HookAnchor => (&self.bank.anchor, 0.7),
                 SoundEvent::Pickup => (&self.bank.pickup, 0.4),
+                SoundEvent::Place => (&self.bank.place, 0.5),
+                SoundEvent::Break => (&self.bank.breaks, 0.5),
+                SoundEvent::Hit => (&self.bank.hit, 0.6),
                 // 掘る音は続くので、状態の変化で鳴らす。ここでは扱わない。
                 SoundEvent::DigStart | SoundEvent::DigStop => continue,
             };

@@ -28,6 +28,23 @@ mod timestep;
 mod touch_pad;
 mod ui;
 
+/// 数字キー (1〜9、0) が選ぶホットバーの枠 (0..10)。
+fn digit_slot(code: KeyCode) -> Option<usize> {
+    Some(match code {
+        KeyCode::Digit1 => 0,
+        KeyCode::Digit2 => 1,
+        KeyCode::Digit3 => 2,
+        KeyCode::Digit4 => 3,
+        KeyCode::Digit5 => 4,
+        KeyCode::Digit6 => 5,
+        KeyCode::Digit7 => 6,
+        KeyCode::Digit8 => 7,
+        KeyCode::Digit9 => 8,
+        KeyCode::Digit0 => 9,
+        _ => return None,
+    })
+}
+
 /// ズームのボタンを押している間の、拡大率が変わる速さ (1 秒あたりの自然対数)。0.9 なら約 2.5 倍 / 秒。
 const ZOOM_BUTTON_RATE: f32 = 0.9;
 
@@ -1725,6 +1742,17 @@ impl ApplicationHandler for App {
             }
             gui.controls.rebinding = None;
             return;
+        }
+        // 数字キー 1〜0: ホットバーの枠を選ぶ (仕様 18 §4)。
+        if let WindowEvent::KeyboardInput { event: key, .. } = &event
+            && key.state == ElementState::Pressed
+            && !key.repeat
+            && !consumed
+            && let PhysicalKey::Code(code) = key.physical_key
+            && let Some(slot) = digit_slot(code)
+            && let Some(inventory) = self.player.and_then(|id| self.game.inventories.get_mut(&id))
+        {
+            inventory.select(slot);
         }
         if self.options.follow_player {
             // UI が文字入力などでキーを使うときは押下を無視する。離したキーは常に反映する。

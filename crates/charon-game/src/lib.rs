@@ -16,6 +16,7 @@ pub mod lockstep;
 pub mod mods;
 pub mod net;
 pub mod projectile;
+pub mod respawn;
 pub mod save;
 pub mod spawner;
 pub mod status;

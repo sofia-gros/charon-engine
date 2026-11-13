@@ -156,6 +156,8 @@ pub struct GameState {
     pub(crate) weapon_cooldown: BTreeMap<EntityId, u16>,
     /// 敵の自動のスポーンと削除 (仕様 22 §3)。`None` なら、ゲームが `spawn_enemy` で出す。
     pub spawner: Option<crate::spawner::Spawner>,
+    /// 倒れてから数えている tick (復活までの待ち、仕様 23 §1)。
+    pub(crate) death_timer: BTreeMap<EntityId, u16>,
 }
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
@@ -178,6 +180,8 @@ pub enum GameEvent {
     Melee { attacker: EntityId, target: EntityId, damage: i32 },
     /// ボスを倒した (ID と、倒れた位置の中心のセル、仕様 22)。`Defeated` も同時に起きる。
     BossDefeated(EntityId, CellPos),
+    /// プレイヤーが復活した (仕様 23 §1)。
+    Respawned(EntityId),
 }
 
 /// ブロックの設置・破壊の失敗。
@@ -282,6 +286,7 @@ impl GameState {
             item_defs: Vec::new(),
             weapon_cooldown: BTreeMap::new(),
             spawner: None,
+            death_timer: BTreeMap::new(),
         }
     }
 
@@ -1015,6 +1020,12 @@ impl GameState {
             feed(&[0xE9, 0x01]);
             feed(&id.0.to_le_bytes());
             feed(&equipment.state_hash().to_le_bytes());
+        }
+        // 復活の待ちがなければ、これまでと同じ値 (印も流さない)。
+        for (&id, ticks) in &self.death_timer {
+            feed(&[0xDE, 0xAD]);
+            feed(&id.0.to_le_bytes());
+            feed(&ticks.to_le_bytes());
         }
         // 武器の間隔がなければ、これまでと同じ値 (印も流さない)。
         for (&id, left) in &self.weapon_cooldown {

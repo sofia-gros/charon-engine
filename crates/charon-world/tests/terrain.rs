@@ -239,3 +239,24 @@ fn structures_are_made_of_whole_aligned_blocks() {
     assert!(block_cells > 2000, "ダンジョンや家がある: {block_cells} セル");
     assert_eq!(partial, 0, "ブロックは、いつも 64 セルそろっている");
 }
+
+/// 生成の速さ: 画面のまわりの 15×11 チャンクを作る時間 (目安を出力し、極端に遅くないことだけを確かめる)。
+#[test]
+fn generating_the_view_around_the_spawn_is_fast_enough() {
+    let (g, table) = generator();
+    let start = std::time::Instant::now();
+    let mut solid = 0usize;
+    for cy in 0..11 {
+        for cx in -7..=7 {
+            let chunk = g.generate(1, ChunkPos::new(cx, cy + 1), &table);
+            solid += chunk.cells.iter().filter(|c| c.material != MaterialId::EMPTY).count();
+        }
+    }
+    let ms = start.elapsed().as_secs_f32() * 1000.0;
+    println!(
+        "165 チャンクの生成: {ms:.0} ms (1 チャンクあたり {:.1} ms)、固体 {solid} セル",
+        ms / 165.0
+    );
+    assert!(solid > 0);
+    assert!(ms < 30_000.0, "極端に遅い: {ms} ms");
+}

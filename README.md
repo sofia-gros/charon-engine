@@ -12,7 +12,7 @@
 ![Rust](https://img.shields.io/badge/rust-1.99%2B%20(stable)-orange?logo=rust)
 ![Edition](https://img.shields.io/badge/edition-2024-orange)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-success)
-![Status](https://img.shields.io/badge/status-M12%20%E5%AE%9F%E8%A3%85%E6%B8%88%E3%81%BF-blue)
+![Status](https://img.shields.io/badge/status-M26%20%E5%AE%9F%E8%A3%85%E6%B8%88%E3%81%BF%20(%E5%AE%9F%E6%A9%9F%E6%9C%AA)-blue)
 ![wgpu](https://img.shields.io/badge/renderer-wgpu%20%2B%20WGSL-informational)
 
 [ロードマップ](docs/ROADMAP.md) ・ [実装の状況](docs/STATUS.md) ・ [仕様](docs/spec/) ・ [ゲーム API](docs/GAME_API.md) ・ [テストの書き方](docs/TESTING.md) ・ [実装者向けの規則](CLAUDE.md)
@@ -22,8 +22,9 @@
 ---
 
 > [!NOTE]
-> **M12 まで実装・自動テスト済みです。** Windows (Ryzen 7 2700 / RTX 4060) で起動と実描画を確認し、速度は十分でした。
-> 100 万セル / 8 ms の性能目標は未達 (約 35〜41 ms) です。ウィンドウでの最新の操作確認、macOS、Android 実機、Web の保存・操作は未検証です。
+> **M26 まで実装・自動テスト済みです** (M19〜M26: ブロック・アイテム・体の大きさ・建築の操作・戦闘・冒険の世界・敵とボス・仕上げ)。
+> 古い版 (M12 まで) は、Windows (Ryzen 7 2700 / RTX 4060) で起動と実描画を確認しました。**M19 以降は、自動テストと描画のテスト (GPU) まで**で、ウィンドウ・Android 実機での操作と見た目は**未確認**です。
+> 100 万セル / 8 ms の性能目標は未達 (約 35〜41 ms) です。macOS、Android 実機、Web の保存・操作も未検証です。
 > 詳しくは[実装の状況](docs/STATUS.md)と[プラットフォーム確認](docs/PLATFORM_CHECK.md)をご覧ください。
 
 | | |
@@ -46,6 +47,9 @@
 | **どこでも動く描画** | wgpu + WGSL、コンピュートシェーダーなし。光は Off / Low / High / xHigh から選べる |
 | **音** | 依存なしのミキサー (パン・音量・ピッチ・ループ)、効果音の生成、WAV の読み込み。`cpal` で音声デバイスへ出力 (聞こえるかは未確認、BGM・空間音は未実装) |
 | **ゲームの入口・アセット・スクリプト** | `Game` トレイト (`on_start`・`on_tick`)、`prelude`、PNG・WAV・OGG の読み込み、Rhai の MOD スクリプト (命令の上限つき)。互換性の方針は [API_POLICY](docs/API_POLICY.md) |
+| **ブロック・アイテム・建築** | 8×8 セルのブロック (置く・押し出す・壊す・粉の崩れ)、データ駆動のアイテム・クラフト・装備・ホットバー、Terraria 型のタッチ操作 (仕様 18) |
+| **戦闘・敵・ボス** | 近接・弓・杖、防具の防御・耐性、ノックバック、火の玉、武器を持つ敵・ボス、自動のスポーンと削除 |
+| **冒険の世界** | 丘・バイオーム・池・洞窟・鉱石・ブロックでできたダンジョンと家、底の境界 (仕様 21) |
 | **状態異常・浮遊・ドロップ** | 燃える・濡れる・毒、燃料つきのジェット、落ちているものを拾う・落とす |
 | **問い合わせ・出来事・演出** | raycast・視線・円の検索、`GameEvent` (当たった・倒した・掘った)、カメラのなめらかな追従と揺れ、掘ったあとの地形の崩落 |
 | **通信 (エンジンの層)** | Lockstep の上のホスト中継 TCP (標準ライブラリだけ)。接続情報の照合、他人のふり・壊れたメッセージの拒否、2 つの世界が毎 tick 同じハッシュになることをテスト。アプリへの組み込みは未実装 |

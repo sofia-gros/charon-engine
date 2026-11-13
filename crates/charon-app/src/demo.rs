@@ -521,7 +521,17 @@ impl crate::api::Game for DemoGame {
         for event in events {
             match event {
                 GameEvent::Defeated(..) => ctx.shake(0.5),
+                GameEvent::BossDefeated(..) => {
+                    ctx.shake(1.2);
+                    ctx.play(crate::audio::SoundEvent::Hit);
+                }
                 GameEvent::Hit(hit) if hit.entity.is_some() => ctx.shake(0.15),
+                GameEvent::Melee { .. } => {
+                    ctx.shake(0.2);
+                    ctx.play(crate::audio::SoundEvent::Hit);
+                }
+                GameEvent::BlockPlaced(..) => ctx.play(crate::audio::SoundEvent::Place),
+                GameEvent::BlockBroken(..) => ctx.play(crate::audio::SoundEvent::Break),
                 _ => {}
             }
         }

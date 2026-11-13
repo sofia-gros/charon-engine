@@ -481,62 +481,7 @@ fn draw_touch_pad(
         painter.circle(at(center), radius * scale, if held { knob } else { fill }, line);
         label(center, text, 0.6);
     }
-    // ホットバー (横一列): 見えている枠と `...`。選んでいる枠は黄色い枠。
-    if let Some(inventory) = overlay.player.and_then(|id| overlay.game.inventories.get(&id)) {
-        for slot in 0..=HOTBAR_VISIBLE {
-            let [l, t, r, b] = layout.slot_rect(slot);
-            let rect = egui::Rect::from_min_max(at([l, t]), at([r, b]));
-            if slot == HOTBAR_VISIBLE {
-                painter.rect(rect, 4.0, fill, line, egui::StrokeKind::Inside);
-                label([(l + r) / 2.0, (t + b) / 2.0], "...", 0.6);
-                continue;
-            }
-            let selected = inventory.selected() == slot;
-            let stroke = if selected {
-                egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 220, 60))
-            } else {
-                line
-            };
-            painter.rect(rect, 4.0, fill, stroke, egui::StrokeKind::Inside);
-            let equipped = |i| {
-                overlay
-                    .player
-                    .and_then(|id| overlay.game.equipment.get(&id))
-                    .is_some_and(|e| e.iter().any(|(_, x)| x == i))
-            };
-            if let Some(item) =
-                inventory.hotbar(slot).filter(|&i| inventory.item_count(i) > 0 || equipped(i))
-            {
-                let (name, color) = item_label(overlay, item);
-                painter.rect_filled(rect.shrink(unit * 0.25), 3.0, color);
-                painter.text(
-                    rect.center_top() + egui::vec2(0.0, unit * 0.1),
-                    egui::Align2::CENTER_TOP,
-                    short_name(&name),
-                    egui::FontId::proportional(unit * 0.32),
-                    egui::Color32::WHITE,
-                );
-                painter.text(
-                    rect.right_bottom() - egui::vec2(unit * 0.1, unit * 0.1),
-                    egui::Align2::RIGHT_BOTTOM,
-                    inventory.item_count(item).to_string(),
-                    egui::FontId::proportional(unit * 0.38),
-                    egui::Color32::WHITE,
-                );
-            }
-        }
-        // 選んでいるアイテムの名前と数 (画面の上)。
-        if let Some(item) = inventory.selected_item() {
-            let (name, _) = item_label(overlay, item);
-            painter.text(
-                egui::pos2(context.content_rect().center().x, unit * 0.6),
-                egui::Align2::CENTER_CENTER,
-                format!("{name} ({})", inventory.item_count(item)),
-                egui::FontId::proportional(unit * 0.6),
-                egui::Color32::from_white_alpha(230),
-            );
-        }
-    }
+    draw_hotbar(context, &painter, scale, &layout, overlay, HOTBAR_VISIBLE, false);
     // カーソル (ブロックの格子に揃う枠。置けない・届かないときは赤)。
     if let Some(view) = pad.cursor_view() {
         let color = match view.state {
@@ -656,6 +601,11 @@ impl DemoUi {
         let show_stats = overlay.pad.is_none() || open[PANEL_DEBUG];
         draw_hud_bars(context, overlay);
         draw_boss_bar(context, overlay);
+        draw_death_overlay(context, overlay);
+        draw_hints(context, overlay, world_ticks);
+        if overlay.pad.is_none() {
+            draw_desktop_hotbar(context, overlay);
+        }
         if controls.inventory_open {
             draw_inventory(context, overlay, controls);
         }
@@ -1113,6 +1063,171 @@ pub(super) fn pointer_cell(pos: [f32; 2], zoom: f32, origin: [f32; 2]) -> Option
 /// 画面の右上の、小さなバーだけの表示 (背景・文字なし)。上から体力 (赤)・マナ (青)・燃料 (黄)、息は減っているときだけ (水色)。
 /// 状態異常は、バーの下に小さな四角 (燃える = 橙、濡れる = 水色、毒 = 緑) で出す。杖を持つプレイヤーがいるときだけ。
 /// 文字の情報 (道具・持ち物・次の呪文など) は、`Debug` パネルの `player_info` に出す。
+/// ホットバー (横一列): `visible` 個の枠 (タッチは `...` も)。選んでいる枠は黄色い枠。`numbers` なら、枠に数字 (キー) を出す。
+fn draw_hotbar(
+    context: &egui::Context,
+    painter: &egui::Painter,
+    scale: f32,
+    layout: &crate::touch_pad::Layout,
+    overlay: &Overlay<'_>,
+    visible: usize,
+    numbers: bool,
+) {
+    let at = |p: [f32; 2]| egui::pos2(p[0] * scale, p[1] * scale);
+    let unit = layout.unit * scale;
+    let line = egui::Stroke::new(2.0, egui::Color32::from_white_alpha(110));
+    let fill = egui::Color32::from_white_alpha(28);
+    let Some(inventory) = overlay.player.and_then(|id| overlay.game.inventories.get(&id)) else {
+        return;
+    };
+    let more = !numbers;
+    for slot in 0..(visible + usize::from(more)) {
+        let [l, t, r, b] = layout.slot_rect(slot);
+        let rect = egui::Rect::from_min_max(at([l, t]), at([r, b]));
+        if more && slot == visible {
+            painter.rect(rect, 4.0, fill, line, egui::StrokeKind::Inside);
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "...",
+                egui::FontId::proportional(unit * 0.6),
+                egui::Color32::from_white_alpha(200),
+            );
+            continue;
+        }
+        let selected = inventory.selected() == slot;
+        let stroke = if selected {
+            egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 220, 60))
+        } else {
+            line
+        };
+        painter.rect(rect, 4.0, fill, stroke, egui::StrokeKind::Inside);
+        if numbers {
+            painter.text(
+                rect.left_top() + egui::vec2(unit * 0.1, unit * 0.05),
+                egui::Align2::LEFT_TOP,
+                ((slot + 1) % 10).to_string(),
+                egui::FontId::proportional(unit * 0.32),
+                egui::Color32::from_white_alpha(170),
+            );
+        }
+        let equipped = |i| {
+            overlay
+                .player
+                .and_then(|id| overlay.game.equipment.get(&id))
+                .is_some_and(|e| e.iter().any(|(_, x)| x == i))
+        };
+        if let Some(item) =
+            inventory.hotbar(slot).filter(|&i| inventory.item_count(i) > 0 || equipped(i))
+        {
+            let (name, color) = item_label(overlay, item);
+            painter.rect_filled(rect.shrink(unit * 0.25), 3.0, color);
+            painter.text(
+                rect.center_bottom() - egui::vec2(0.0, unit * 0.1),
+                egui::Align2::CENTER_BOTTOM,
+                short_name(&name),
+                egui::FontId::proportional(unit * 0.3),
+                egui::Color32::WHITE,
+            );
+            if inventory.item_count(item) > 0 {
+                painter.text(
+                    rect.right_top() + egui::vec2(-unit * 0.1, unit * 0.05),
+                    egui::Align2::RIGHT_TOP,
+                    inventory.item_count(item).to_string(),
+                    egui::FontId::proportional(unit * 0.34),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+    }
+    // 選んでいるアイテムの名前と数 (画面の上)。
+    if let Some(item) = inventory.selected_item() {
+        let (name, _) = item_label(overlay, item);
+        painter.text(
+            egui::pos2(context.content_rect().center().x, unit * 0.6),
+            egui::Align2::CENTER_CENTER,
+            format!("{name} ({})", inventory.item_count(item)),
+            egui::FontId::proportional(unit * 0.6),
+            egui::Color32::from_white_alpha(230),
+        );
+    }
+}
+
+/// タッチのない画面 (デスクトップ) のホットバー: 左上に 10 枠、数字キー 1〜0 で選ぶ。
+fn draw_desktop_hotbar(context: &egui::Context, overlay: &Overlay<'_>) {
+    let painter = context.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::unique("charon desktop hotbar"),
+    ));
+    let scale = 1.0 / context.pixels_per_point();
+    let size = context.content_rect().size() * context.pixels_per_point();
+    let layout = crate::touch_pad::Layout::new([size.x, size.y], 0.6);
+    draw_hotbar(
+        context,
+        &painter,
+        scale,
+        &layout,
+        overlay,
+        charon_game::inventory::HOTBAR_SLOTS,
+        true,
+    );
+}
+
+/// 倒れたときの表示 (仕様 23 §1): 画面の中央に、復活までの秒数。
+fn draw_death_overlay(context: &egui::Context, overlay: &Overlay<'_>) {
+    let Some(id) = overlay.player else { return };
+    let Some(ticks) = overlay.game.death_ticks(id) else { return };
+    let left = charon_game::respawn::RESPAWN_TICKS.saturating_sub(ticks) / 60 + 1;
+    let painter = context.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::unique("charon death"),
+    ));
+    let center = context.content_rect().center();
+    painter.rect_filled(context.content_rect(), 0.0, egui::Color32::from_black_alpha(90));
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        "You died",
+        egui::FontId::proportional(40.0),
+        egui::Color32::from_rgb(230, 70, 70),
+    );
+    painter.text(
+        center + egui::vec2(0.0, 40.0),
+        egui::Align2::CENTER_CENTER,
+        format!("Respawning in {left}"),
+        egui::FontId::proportional(18.0),
+        egui::Color32::from_white_alpha(220),
+    );
+}
+
+/// 最初のヒント (仕様 23 §2): 世界の始まりの 25 秒だけ、画面の下に操作を出す。
+fn draw_hints(context: &egui::Context, overlay: &Overlay<'_>, world_ticks: u64) {
+    if world_ticks > HINT_TICKS || overlay.player.is_none() {
+        return;
+    }
+    let text = if overlay.pad.is_some() {
+        "Left stick: walk  |  ^^: jump  |  Big button: use the selected item (tilt to aim)  |  Hotbar: tap  |  []: inventory & crafting"
+    } else {
+        "A / D: walk  |  W: jump  |  Left click: use the selected item  |  1-0: hotbar  |  I: inventory & crafting  |  Esc: menu"
+    };
+    egui::Area::new(egui::Id::unique("charon hints"))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -12.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(context, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(130))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(text).size(13.0).color(egui::Color32::WHITE));
+                });
+        });
+}
+
+/// ヒントを出す、世界の始まりからの tick (25 秒)。
+const HINT_TICKS: u64 = 60 * 25;
+
 /// ボスの体力のバー (画面の上の中央、仕様 22 §4)。ボスがいるときだけ。
 fn draw_boss_bar(context: &egui::Context, overlay: &Overlay<'_>) {
     let boss = overlay.game.enemies.iter().find(|(id, enemy)| {
@@ -1509,6 +1624,76 @@ mod tests {
         assert!(inventory > closed, "持ち物の画面が出る ({closed} → {inventory})");
         assert!(pause > closed + 10, "ポーズのメニューが出る ({closed} → {pause})");
         assert_ne!(rebinding, 0);
+    }
+
+    /// 仕様 23: 最初のヒント・倒れたときの表示・デスクトップのホットバーが出る。
+    #[test]
+    fn hints_death_overlay_and_desktop_hotbar_draw() {
+        use charon_game::defs::Definitions;
+        use charon_game::game::GameState;
+        use charon_game::vitals::{MAX_HP, Vitals};
+        let materials = std::sync::Arc::new(MaterialTable::builtin().unwrap());
+        let defs = Definitions::engine_defaults(&materials).unwrap();
+        let world = world_from_ascii(&box_art(40, 40), 1);
+        let physics = PhysicsEngine::new();
+        let mut entities = EntityWorld::new();
+        let player = entities.spawn_player(8 * 16, 4 * 16, &world).unwrap();
+        let mut game = GameState::from_definitions(&defs);
+        game.add_character(player, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
+        game.give_inventory(player).unwrap();
+        let pick = defs.item_id("wood_pickaxe", world.materials()).unwrap();
+        let inventory = game.inventories.get_mut(&player).unwrap();
+        inventory.add_item(pick, 1);
+        inventory.pin(0, pick);
+        let shapes =
+            |game: &GameState, entities: &EntityWorld, with_player: bool, ticks: u64| -> usize {
+                let overlay = Overlay {
+                    world: &world,
+                    physics: &physics,
+                    entities,
+                    game,
+                    player: with_player.then_some(player),
+                    pad: None,
+                    defs: Some(&defs),
+                };
+                let mut demo = DemoUi::new(world.materials());
+                let mut controls = Controls::new(material_of(&world, 's'));
+                let context = egui::Context::default();
+                let mut count = 0;
+                for frame in 0..3u32 {
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1024.0, 768.0),
+                        )),
+                        time: Some(f64::from(frame) / 60.0),
+                        ..Default::default()
+                    };
+                    let mut output = context.run_pass(input, |context| {
+                        demo.draw(
+                            context,
+                            &mut controls,
+                            &overlay,
+                            FrameStats { frame_ms: 2.0, tick_ms: 1.0, phys_ms: 0.1 },
+                            ticks,
+                        );
+                    });
+                    count = output.shapes.len();
+                    output.textures_delta.clear();
+                }
+                count
+            };
+        let without = shapes(&game, &entities, false, 100_000);
+        let hotbar = shapes(&game, &entities, true, 100_000);
+        assert!(hotbar > without + 10, "デスクトップのホットバーが出る ({without} → {hotbar})");
+        let hints = shapes(&game, &entities, true, 0);
+        assert!(hints > hotbar, "最初のヒントが出る ({hotbar} → {hints})");
+        // 倒れると、復活までの表示が出る。
+        game.vitals.get_mut(player).unwrap().hp = 0;
+        game.step_respawn(&world, &mut entities, [8, 4]);
+        assert!(game.death_ticks(player).is_some());
+        let dead = shapes(&game, &entities, true, 100_000);
+        assert!(dead > hotbar, "倒れたときの表示が出る ({hotbar} → {dead})");
     }
 
     /// パネル (仕様 10 §14): タッチの画面では最初はすべて閉じて、左端の細いタブになり、触れると開く。

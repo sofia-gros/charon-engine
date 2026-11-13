@@ -181,6 +181,10 @@ impl Sim<'_> {
         self.game
             .step(self.world, self.physics, self.entities, &actions, tick, seed)
             .map_err(|err| err.to_string())?;
+        // 倒れたプレイヤーの復活 (仕様 23 §1)。
+        if let Some(spawn) = *self.spawn {
+            self.game.step_respawn(self.world, self.entities, spawn);
+        }
         // 敵の自動のスポーンと削除 (仕様 22 §3)。
         if let Some(definitions) = self.definitions {
             self.game.step_spawner(self.world, self.entities, definitions, tick, seed);

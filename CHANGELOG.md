@@ -20,6 +20,12 @@
 - **保存**: `PlayerSave` に `items`・`hotbar`・`selected`・`equipment` (古い保存にはなくてよい)。名前で保存し、知らない名前は読み飛ばす。`GameSave::with_items` / `apply_items`。
 - **壊れるもの**: `PlayerSave` の項目が増えた (構造体を直接書いている場合は `items: vec![]` ほかを足す)。持ち物の種類の上限 (256) は、セル・ブロック・定義の合計になった。`DefinitionFiles` / `ModSource` に `items`・`recipes` が増えた。
 
+### 追加 (仕上げ、M26、仕様 23)
+
+- **死亡と復活**: 倒れて 3 秒で、出発点で満タンで復活する (持ち物はそのまま)。`GameState::step_respawn`・`death_ticks`、`GameEvent::Respawned`。画面に `You died`。
+- 最初の 25 秒のヒント。デスクトップのホットバーと数字キー。効果音 `Place`・`Break`・`Hit`。
+- **壊れるもの**: `GameEvent` に `Respawned` が増えた。`SoundBank` に `place`・`breaks`・`hit` が増えた。
+
 ### 追加 (敵とボス、M25、仕様 22)
 
 - **敵の定義**: `weapon`・`armor` (自動装備)・`loot`・`boss`。既定の敵に `skeleton`・`archer`・`mage`・`golem` (ボス) を足した。敵は、近接の剣・矢・火の玉で戦い、倒すと戦利品を落とす。`GameEvent::BossDefeated`、体力のバー (ボス)。
