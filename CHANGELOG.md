@@ -2,7 +2,7 @@
 
 互換性の方針は [docs/API_POLICY.md](docs/API_POLICY.md)。`0.x` の間は、安定の範囲 (`charon_app::prelude`) を壊す変更はマイナーの版で行い、ここに書く。
 
-## 0.0.4 (予定)
+## 0.0.4
 
 ### 追加
 
@@ -20,6 +20,10 @@
 - `GameEvent::Defeated(EntityId)` は `Defeated(EntityId, CellPos)` になった (倒れた位置が付く)。
 - `PlayerLoadout` に `levitation` が増えた。構造体を直接書いている場合は `levitation: None` を足す。
 - 増えそうな `enum` を `#[non_exhaustive]` にした (`GameEvent`、`GameError`、`StatusKind`、`SoundEvent`、`AssetError`、`Command`)。`match` に `_ =>` が要る。
+
+### 性能
+
+- `Neighborhood` が、液体・気体の有無を作るときに 1 回だけ数えるようにした。砂の場面が約 5〜9% 速い。結果は変わらない (仕様 08 §7)。100 万セル 8 ms の目標は未達 (約 4.4 倍)。
 
 ### 開発
 

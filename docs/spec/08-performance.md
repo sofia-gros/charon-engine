@@ -53,6 +53,14 @@ T9.1 と同じ場面・同じマシンで、プロファイルまたは局所計
    - 前提: `Chunk::cells` への書き込みは `Chunk::write` だけ (`CLAUDE.md` の規則どおり)。数は `FLAG_BODY` のセルも含めるので、実際より少なく数えることはない。
    - 変えないもの: 起こすセル・順序・乱数・`state_hash`・`dirty`。走査が見つけた場合の処理は 1 行も変えない。
 3. **検証**: `optimization_matches_baseline` (seed 1〜8 の 128 ハッシュ)、`parallel_matches_serial`、`golden_hashes`、`mass_is_conserved`、休眠テスト、`phase_counts_follow_every_write` (数がセルの実数と一致する)。
-4. **次の候補 (未着手・未計測)**: 水・蒸気が多い世界では 2. が効かない。そのときは (a) 走査の内側の `get` / `materials.get` の重複、(b) `set` ごとの 5×5 `keep_awake` のまとめ、(c) `step_heat` の 4 方向 × 2 回の材質参照、を同じ手順 (上限を実験で測る → 挙動を変えず省く) で順に検討する。測るまで効果を主張しない。
+4. **次の候補 (T17.8 で (a) の一部を実施、以下は残り)**: 水・蒸気が多い世界では 2. が効かない。そのときは (a) 走査の内側の `get` / `materials.get` の重複、(b) `set` ごとの 5×5 `keep_awake` のまとめ、(c) `step_heat` の 4 方向 × 2 回の材質参照、を同じ手順 (上限を実験で測る → 挙動を変えず省く) で順に検討する。測るまで効果を主張しない。
 
 8 ms 目標は期待値に含めない。
+
+## 7. T17.8: 液体・気体の有無の確認を 1 回にする
+
+`Neighborhood::set` は、空のセルを書くたびに `wake_watchers` を呼び、そのたびに 9 チャンクの `has_phase` を調べていた。`Neighborhood` に `may_have_liquid` / `may_have_gas` を持たせ、`new()` で 1 回数える。`set` が液体・気体を書いたら立てる。**下げない**: 立ったままなら走査が無駄になるだけで、走査の結果 (どのセルを起こすか) は、数をその場で調べた場合と同じになる。立っていないのは、作ったときに 9 チャンクに 1 つもなく、その後も書かれていないときだけで、そのときは走査しても何も起こらない。
+
+- 結果は変わらない: `golden_hashes`、`optimization_matches_baseline`、`parallel_matches_serial`、休眠のテストが、変更前と同じ値で通る。
+- 効果 (`docs/BENCHMARKS.md`): 砂の場面が約 5〜9% 速い。水・反応の場面は変わらない。
+- 8 ms 目標は未達のまま (約 4.4 倍)。

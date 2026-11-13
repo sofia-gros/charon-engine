@@ -28,6 +28,10 @@ pub struct Neighborhood<'a> {
     reactions: Option<&'a ReactionTable>,
     seed: u64,
     tick: u64,
+    /// 9 チャンクに液体・気体のセルがあるかもしれないか。作ったときの数で決め、書き込みで液体・気体が
+    /// 現れたら立てる。消えても下げない (立っているだけなら、走査が無駄になるだけで結果は変わらない)。
+    may_have_liquid: bool,
+    may_have_gas: bool,
 }
 
 impl<'a> Neighborhood<'a> {
@@ -39,7 +43,9 @@ impl<'a> Neighborhood<'a> {
         seed: u64,
         tick: u64,
     ) -> Self {
-        Self { center, chunks, materials, reactions, seed, tick }
+        let any = |phase| chunks.iter().flatten().any(|c| c.has_phase(phase));
+        let (may_have_liquid, may_have_gas) = (any(Phase::Liquid), any(Phase::Gas));
+        Self { center, chunks, materials, reactions, seed, tick, may_have_liquid, may_have_gas }
     }
 
     /// チャンクを取り出す (ワールドへ戻すため)。添字は [`Neighborhood::slot_pos`] で位置に変換する。
@@ -131,9 +137,13 @@ impl<'a> Neighborhood<'a> {
         let old = chunk.get(lx, ly);
         chunk.write(lx, ly, cell, self.materials);
         self.keep_awake(x, y);
-        if old.material != cell.material
-            && !matches!(self.materials.get(cell.material).phase, Phase::Solid | Phase::Powder)
-        {
+        let phase = self.materials.get(cell.material).phase;
+        match phase {
+            Phase::Liquid => self.may_have_liquid = true,
+            Phase::Gas => self.may_have_gas = true,
+            _ => {}
+        }
+        if old.material != cell.material && !matches!(phase, Phase::Solid | Phase::Powder) {
             self.wake_watchers(x, y);
         }
     }
@@ -147,7 +157,12 @@ impl<'a> Neighborhood<'a> {
         for (dy, watcher) in [(1, Phase::Liquid), (-1, Phase::Gas)] {
             let row = y - dy;
             // 見つかる相のセルが 9 チャンクのどこにもなければ、走査しても何も起こさない。
-            if !self.chunks.iter().flatten().any(|c| c.has_phase(watcher)) {
+            let may_exist = match watcher {
+                Phase::Liquid => self.may_have_liquid,
+                Phase::Gas => self.may_have_gas,
+                _ => true,
+            };
+            if !may_exist {
                 continue;
             }
             if !self.is_open_for(x, row, watcher) {

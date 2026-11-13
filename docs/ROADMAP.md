@@ -321,6 +321,23 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 | T16.3 | 出来事 `GameEvent` ([10 §15](spec/10-noita-like-game.md)) | `dug_cells_arrive_as_events_once_and_the_queue_is_bounded` |
 | T16.4 | 地形の崩落 ([10 §16](spec/10-noita-like-game.md))。デモで有効 | `unsupported_cluster_falls_as_one_piece_and_lands` ほか 5 個 (`tests/collapse.rs`) |
 
+## M17 エンジンとして使える入口・アセット・スクリプト・機能の穴
+
+2026-11-13 の依頼 (順序は実装者が決め、止まらず進める)。エディタは作らない。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T17.1 | ゲームの入口 `Game` トレイト・`Context`・`GameLogic` ([14](spec/14-game-api.md))。デモを載せ替え | `game_logic_is_started_once_and_ticked_with_events`、`effects_are_clamped_and_bounded` |
+| T17.2 | アセット: PNG・WAV・OGG、置き場の上書き、`SpriteSpec`、`SoundBank::from_assets` ([15](spec/15-assets.md))。OGG は壊れたファイルを断ることだけテスト | `tests` in `assets.rs` 6 個、`sound_bank_falls_back_to_generated_sounds` |
+| T17.3 | MOD のスクリプト (Rhai、命令の上限) ([16](spec/16-scripting.md))。デモ MOD の `script.rhai` | `script/tests.rs` 5 個 |
+| T17.4 | 状態異常: 燃える・濡れる・毒 ([10 §17](spec/10-noita-like-game.md)) | `tests/status.rs` 4 個 |
+| T17.5 | 浮遊: 燃料つきのジェット ([10 §18](spec/10-noita-like-game.md)) | `tests/levitation.rs` 4 個 |
+| T17.6 | ドロップ: 落ちる・拾う・落とす・掘ったものをドロップに ([10 §19](spec/10-noita-like-game.md)) | `tests/drops.rs` 7 個 |
+| T17.7 | API の安定: `prelude`、`non_exhaustive`、[API_POLICY](API_POLICY.md)、[CHANGELOG](../CHANGELOG.md) | `tests/prelude.rs` 2 個 |
+| T17.8 | 性能: 液体・気体の有無の確認を 1 回にする ([08 §7](spec/08-performance.md))。砂の場面が約 5〜9% 速い。8 ms 目標は未達 | 既存のテスト (`golden_hashes` ほか) が同じ値で通る、[BENCHMARKS](BENCHMARKS.md) |
+
+未着手 (次の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み、BGM・空間音、フォント、経路探索、性能の次の候補 (08 §6 の (b)(c))。
+
 ---
 
 ## 仕様の確かさについて
