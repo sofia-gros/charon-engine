@@ -288,3 +288,18 @@ pub struct Sprite<'a> {
 | `content_hash_tracks_pixels_and_size` | 画素・大きさが変わるとハッシュが変わる |
 | `demo_renders_sprite_with_scale` | RTX 4060 のオフスクリーン描画で、拡大率 2 倍にすると面積が約 4 倍 (実測 410 → 1662 画素) ([`M14-sprite-scale1.png`](../screenshots/M14-sprite-scale1.png)・[`M14-sprite-scale2.png`](../screenshots/M14-sprite-scale2.png)) |
 | `scale_resizes_the_pad` | UI の倍率で仮想パッドの大きさが変わり、0・NaN は 1 とみなす |
+
+## 11. カメラの演出 (`charon-app::camera`)
+
+描画側だけのもので、シミュレーションと保存には影響しない (浮動小数点数を使ってよい)。
+
+- `CameraFx::step(target, dt, smooth)`: 追いたい位置へ、時間に依らない指数 (`1 - e^(-14 dt)`) で近づく。`SNAP_DISTANCE` (320 セル) より離れたら (リスポーンなど) 一度で移る。最初のフレームも目標に直接。
+- `CameraFx::shake(amount)`: 強さ 0..=1 を足す (1 で頭打ち)。振れ幅は `強さ² × 10` セル以下で、毎秒 1.8 ずつ減る。NaN は無視。
+- デモでは、撃つ (0.12)・フックが刺さる (0.2)・敵を倒す (0.5) で揺れる。自由カメラでは追従を忘れる。
+
+| テスト | 確認 |
+|---|---|
+| `following_converges_without_overshooting` | 行き過ぎずに追いつく |
+| `following_is_frame_rate_independent` | 30 fps と 60 fps で同じ |
+| `far_targets_snap_and_smoothing_can_be_off` | 遠いときは一度で移る、なめらかさを切れる |
+| `shake_moves_the_view_and_dies_out` | 揺れて、収まる。頭打ちと振れ幅の上限 |

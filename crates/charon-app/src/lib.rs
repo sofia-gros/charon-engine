@@ -4,6 +4,7 @@ mod animation;
 pub mod audio;
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
+pub mod camera;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod demo;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -428,6 +429,10 @@ struct App {
     settings: Settings,
     /// 効果音 (仕様 12)。出来事から音を作って混ぜる。
     audio: audio::Audio,
+    /// カメラの追従と揺れ (仕様 06 §11)。
+    camera_fx: camera::CameraFx,
+    /// 前のフレームの敵の数 (倒したら揺らすため)。
+    previous_enemies: usize,
     /// 読み込んだ `game.ron` (仕様 10 §13)。プレイヤーが生まれたら、体力・マナ・位置・持ち物を戻す。
     #[cfg(not(target_arch = "wasm32"))]
     pending_game_save: Option<GameSave>,
@@ -497,6 +502,8 @@ impl App {
             sprite_facing: BTreeMap::new(),
             settings: Settings::default(),
             audio: audio::Audio::new(),
+            camera_fx: camera::CameraFx::default(),
+            previous_enemies: 0,
             #[cfg(not(target_arch = "wasm32"))]
             pending_game_save: None,
             timer: FixedTimestep::default(),
@@ -869,7 +876,10 @@ impl App {
                 let delta = self.keys.camera_delta();
                 origin = [origin[0] + delta[0] as f32, origin[1] + delta[1] as f32];
             } else if let Some(player) = self.player.and_then(|id| self.entities.get(id)) {
-                origin = follow_origin(player, [size.width, size.height], zoom);
+                let target = follow_origin(player, [size.width, size.height], zoom);
+                origin = self.camera_fx.step(target, elapsed.as_secs_f32(), true);
+            } else {
+                self.camera_fx.reset();
             }
             if let Some(gui) = self.gui.as_mut() {
                 gui.controls.origin = origin;
@@ -1063,7 +1073,19 @@ impl App {
                     controls.music_volume,
                 );
             }
-            self.audio.update(snapshot);
+            for event in self.audio.update(snapshot) {
+                // 画面の揺れ: 撃つ・フックが刺さる・掘り始める、で少しだけ。
+                match event {
+                    audio::SoundEvent::Shoot => self.camera_fx.shake(0.12),
+                    audio::SoundEvent::HookAnchor => self.camera_fx.shake(0.2),
+                    _ => {}
+                }
+            }
+            let enemies = self.game.enemies.len();
+            if enemies < self.previous_enemies {
+                self.camera_fx.shake(0.5);
+            }
+            self.previous_enemies = enemies;
             self.audio.pump();
         }
         let smooth = smooth_sprites(&self.physics);
