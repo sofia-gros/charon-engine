@@ -33,9 +33,9 @@ fn engine_defaults_load() {
     let materials = materials();
     let defs = Definitions::engine_defaults(&materials).unwrap();
     let names: Vec<&str> = defs.spells.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["spark", "bomb", "sand_shot", "water_shot"], "記載順");
+    assert_eq!(names, ["spark", "bomb", "sand_shot", "water_shot", "fireball"], "記載順");
     assert_eq!(defs.spells.id("bomb"), Some(SpellId(1)));
-    assert_eq!(defs.wand_names().collect::<Vec<_>>(), ["basic", "bomber"]);
+    assert_eq!(defs.wand_names().collect::<Vec<_>>(), ["basic", "bomber", "fire_wand"]);
     assert_eq!(defs.enemy_names().collect::<Vec<_>>(), ["walker", "shooter"]);
 
     // 杖は名前から作れて、定義どおりの呪文・マナを持つ。
@@ -86,7 +86,7 @@ fn layer_adds_and_replaces() {
     .unwrap();
 
     // 追加された呪文・杖・敵は名前空間が付き、末尾に並ぶ。
-    assert_eq!(defs.spells.id("game:zap"), Some(SpellId(4)));
+    assert_eq!(defs.spells.id("game:zap"), Some(SpellId(5)));
     assert!(defs.spells.id("zap").is_none());
     let mine = defs.wand_def("game:mine").unwrap();
     // 名前は、まず game:、次にそのままで解決される (zap は game:zap、spark と bomb はエンジンの)。
@@ -96,7 +96,7 @@ fn layer_adds_and_replaces() {
     // 上書きは中身だけを置き換え、位置 (SpellId) と呼び出し側の杖を保つ。
     assert_eq!(defs.spells.id("spark"), Some(SpellId(0)));
     assert_eq!(defs.spells.get(SpellId(0)).unwrap().damage, 77);
-    assert_eq!(defs.spells.len(), 5);
+    assert_eq!(defs.spells.len(), 6);
     let mut projectiles = ProjectileWorld::new();
     let mut basic = defs.wand("basic").unwrap();
     assert_eq!(basic.spells, before.spells, "同じ位置の呪文を指す");
@@ -336,7 +336,7 @@ fn mod_definitions_load_in_id_order() {
     assert_eq!(forward.definitions.content_hash(), backward.definitions.content_hash());
     // ファイルがなくても読め、エンジンの既定が残る。
     let none = ModPack::load(&[]).unwrap();
-    assert_eq!(none.definitions.spells.len(), 4);
+    assert_eq!(none.definitions.spells.len(), 5);
     assert_eq!(none.definitions.spells.get(SpellId(0)).unwrap().damage, 8);
 }
 

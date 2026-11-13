@@ -30,6 +30,28 @@ impl std::fmt::Display for VitalsError {
 
 impl std::error::Error for VitalsError {}
 
+/// ダメージの種類 (仕様 20)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DamageKind {
+    /// 防御で減る。
+    Physical,
+    /// 火・毒・冷気: 耐性 (%) で減る。
+    Fire,
+    Poison,
+    Cold,
+}
+
+/// 防具による軽減 (装備から写す、仕様 20 §2)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Armor {
+    /// 物理ダメージを減らす量。
+    pub defense: i32,
+    /// 属性の耐性 (%、0..=100)。
+    pub fire: u8,
+    pub poison: u8,
+    pub cold: u8,
+}
+
 /// エンティティ 1 つぶんの体力と息。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Vitals {
@@ -37,6 +59,14 @@ pub struct Vitals {
     pub max_hp: i32,
     pub breath: u16,
     drown_clock: u8,
+    /// 防具による軽減。`GameState` が装備から毎 tick 写す。
+    pub armor: Armor,
+}
+
+/// `amount` を耐性 `resist` (%) で減らす。四捨五入。
+fn scale(amount: i32, resist: u8) -> i32 {
+    let keep = 100 - i64::from(resist.min(100));
+    i32::try_from((i64::from(amount) * keep + 50) / 100).unwrap_or(i32::MAX)
 }
 
 impl Vitals {
@@ -44,7 +74,7 @@ impl Vitals {
         if !(1..=10_000).contains(&max_hp) {
             return Err(VitalsError::InvalidMaxHp);
         }
-        Ok(Self { hp: max_hp, max_hp, breath: BREATH_MAX, drown_clock: 0 })
+        Ok(Self { hp: max_hp, max_hp, breath: BREATH_MAX, drown_clock: 0, armor: Armor::default() })
     }
 
     pub fn alive(&self) -> bool {
@@ -56,6 +86,26 @@ impl Vitals {
         if amount > 0 {
             self.hp = self.hp.saturating_sub(amount).max(0);
         }
+    }
+
+    /// 防具で軽減したダメージを与える (仕様 20 §2)。実際に与えた量を返す。
+    /// 物理: `amount − defense`。ただし、元の 1/4 (1 以上) までしか減らない。属性: `amount × (100 − 耐性) / 100` (四捨五入)。
+    pub fn damage_kind(&mut self, amount: i32, kind: DamageKind) -> i32 {
+        if amount <= 0 {
+            return 0;
+        }
+        let applied = match kind {
+            DamageKind::Physical => {
+                let floor = (amount / 4).max(1);
+                amount.saturating_sub(self.armor.defense.max(0)).max(floor)
+            }
+            DamageKind::Fire => scale(amount, self.armor.fire),
+            DamageKind::Poison => scale(amount, self.armor.poison),
+            DamageKind::Cold => scale(amount, self.armor.cold),
+        };
+        let before = self.hp;
+        self.damage(applied);
+        before - self.hp
     }
 
     /// `amount` が 0 以下なら何もしない。`hp` は `max_hp` で止まる。
@@ -174,5 +224,6 @@ pub fn step_environment(entity: &Entity, vitals: &mut Vitals, world: &World) {
         vitals.breath = vitals.breath.saturating_add(4).min(BREATH_MAX);
         vitals.drown_clock = 0;
     }
-    vitals.damage(hot + drown);
+    vitals.damage_kind(hot, DamageKind::Fire);
+    vitals.damage(drown);
 }

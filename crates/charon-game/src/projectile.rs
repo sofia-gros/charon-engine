@@ -30,6 +30,12 @@ pub enum Payload {
     Deposit {
         material: MaterialId,
     },
+    /// 火の玉 (仕様 20 §4): 着弾の中心から半径 1..=16 の円の中で、空きセルの半分に `material` (火) を置き、
+    /// 燃える材質のセルは発火する温度まで熱する。燃え広がりは、通常のセルの規則に任せる。
+    Ignite {
+        material: MaterialId,
+        radius: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +84,11 @@ pub struct Hit {
     pub projectile: ProjectileId,
     pub entity: Option<EntityId>,
     pub cell: CellPos,
+    /// 当たったときの弾の速度 (1/16 セル / tick)。ノックバックの向きに使う。
+    pub vx: i16,
+    pub vy: i16,
+    /// 弾のダメージ。
+    pub damage: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -152,6 +163,14 @@ impl ProjectileWorld {
             Payload::Deposit { material } if usize::from(material.0) >= world.materials().len() => {
                 return Err(ProjectileError::UnknownMaterial);
             }
+            Payload::Ignite { radius, .. } if !(1..=16).contains(&radius) => {
+                return Err(ProjectileError::InvalidRadius);
+            }
+            Payload::Ignite { material, .. }
+                if usize::from(material.0) >= world.materials().len() =>
+            {
+                return Err(ProjectileError::UnknownMaterial);
+            }
             _ => {}
         }
         if self.projectiles.len() >= MAX_PROJECTILES {
@@ -216,6 +235,16 @@ impl ProjectileWorld {
             }
 
             let Some((cell, entity)) = collision else {
+                // 火の玉は、飛んだあとに火の筋を残す (仕様 20 §4)。火のセルが光るので、動く光になる。撃った人の体の中では置かない。
+                if p.grace.is_none()
+                    && let Payload::Ignite { material, .. } = p.payload
+                    && let Some(pos) = cell_at(start_x, start_y)
+                    && world.get(pos).material == MaterialId::EMPTY
+                    && !world.get(pos).has(FLAG_BODY)
+                {
+                    let flame = world.make_cell(material, pos);
+                    world.set(pos, flame);
+                }
                 p.x16 = start_x + i64::from(p.vx);
                 p.y16 = start_y + i64::from(p.vy);
                 p.life -= 1;
@@ -237,7 +266,7 @@ impl ProjectileWorld {
             if let Some(target) = entity
                 && let Some(v) = vitals.get_mut(target)
             {
-                v.damage(p.damage);
+                v.damage_kind(p.damage, crate::vitals::DamageKind::Physical);
             }
             match p.payload {
                 Payload::None => {}
@@ -267,8 +296,13 @@ impl ProjectileWorld {
                         world.set(pos, cell);
                     }
                 }
+                Payload::Ignite { material, radius } => {
+                    // 当たった場所の手前の空きセルを中心にする (壁の中ではなく、手前で燃える)。
+                    let center = cell_at(last_free.0, last_free.1).unwrap_or(cell);
+                    ignite(world, center, material, radius);
+                }
             }
-            hits.push(Hit { projectile: id, entity, cell });
+            hits.push(Hit { projectile: id, entity, cell, vx: p.vx, vy: p.vy, damage: p.damage });
         }
         hits
     }
@@ -299,10 +333,42 @@ impl ProjectileWorld {
                     feed(&[2]);
                     feed(&material.0.to_le_bytes());
                 }
+                Payload::Ignite { material, radius } => {
+                    feed(&[3, radius]);
+                    feed(&material.0.to_le_bytes());
+                }
             }
         }
         feed(&self.next_id.to_le_bytes());
         hash
+    }
+}
+
+/// 火の玉の着弾 (仕様 20 §4): `center` から半径 `radius` の円で、空きセルの半分 (市松) に火を置き、
+/// 燃える材質のセルは発火する温度まで熱する。
+fn ignite(world: &mut World, center: CellPos, fire: MaterialId, radius: u8) {
+    let r = i32::from(radius);
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx * dx + dy * dy > r * r {
+                continue;
+            }
+            let pos = CellPos::new(center.x.saturating_add(dx), center.y.saturating_add(dy));
+            let cell = world.get(pos);
+            if cell.has(FLAG_BODY) || cell.material == MaterialId::BOUNDARY {
+                continue;
+            }
+            if cell.material == MaterialId::EMPTY {
+                if (dx + dy).rem_euclid(2) == 0 {
+                    let flame = world.make_cell(fire, pos);
+                    world.set(pos, flame);
+                }
+            } else if let Some(at) = world.materials().get(cell.material).ignite_at {
+                let mut hot = cell;
+                hot.temp = hot.temp.max(at);
+                world.set(pos, hot);
+            }
+        }
     }
 }
 
@@ -380,6 +446,9 @@ fn apply_explosion(
         } else {
             0
         };
-        v.damage(explosion_damage(radius, dx * dx + dy * dy, max_damage));
+        v.damage_kind(
+            explosion_damage(radius, dx * dx + dy * dy, max_damage),
+            crate::vitals::DamageKind::Fire,
+        );
     }
 }

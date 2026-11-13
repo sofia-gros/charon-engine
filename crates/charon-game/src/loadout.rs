@@ -112,6 +112,17 @@ impl GameState {
         }
         equipment.set(slot, Some(item));
         self.inventories.insert(id, trial);
+        // 杖の武器を装備したら、そのキャラクターの杖が入れ替わる (仕様 20 §1)。
+        if let Some(ItemKind::Weapon {
+            class: crate::items::WeaponClass::Wand,
+            wand: Some(name),
+            ..
+        }) = defs.item_def(item).map(|d| &d.kind)
+            && let Ok(wand) = defs.wand(name)
+            && self.wands.contains_key(&id)
+        {
+            self.wands.insert(id, wand);
+        }
         Ok(())
     }
 

@@ -10,4 +10,7 @@
      damage: 0, spread: 16, payload: Deposit(material: "sand")),
     (name: "water_shot", mana_cost: 10, cast_delay: 10, speed: 96, gravity: 2, life: 90,
      damage: 0, spread: 16, payload: Deposit(material: "water")),
+    // 火の玉: 当たった場所の周りに火を置き、燃える材質を発火させる。火は木・油に燃え広がり、近くのキャラクターに引火する。
+    (name: "fireball", mana_cost: 25, cast_delay: 24, speed: 80, gravity: 1, life: 100,
+     damage: 14, spread: 4, payload: Ignite(material: "fire", radius: 4)),
 ]

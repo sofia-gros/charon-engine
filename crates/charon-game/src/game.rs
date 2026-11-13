@@ -136,7 +136,7 @@ pub struct GameState {
     pub equipment: BTreeMap<EntityId, crate::items::Equipment>,
     pub spells: SpellTable,
     /// 起きた出来事 (仕様 10 §15)。`step` が足し、ゲームが [`GameState::take_events`] で受け取る。
-    events: Vec<GameEvent>,
+    pub(crate) events: Vec<GameEvent>,
     /// 地形の崩落 (仕様 10 §16)。`Some` のとき、掘って支えを失った固体が落ちる。
     pub collapse: Option<Collapse>,
     /// 状態異常 (仕様 10 §17)。
@@ -147,6 +147,10 @@ pub struct GameState {
     pub drops: Drops,
     /// 真なら、掘ったセルは持ち物に直接ではなく、材質ごとのドロップとして落ちる (仕様 10 §19)。
     pub dig_to_drops: bool,
+    /// アイテムの定義の写し (防具の軽減・武器の種類を引く、仕様 20)。
+    pub(crate) item_defs: Vec<crate::items::ItemDef>,
+    /// 武器の次の攻撃までの tick (近接・遠距離)。
+    pub(crate) weapon_cooldown: BTreeMap<EntityId, u16>,
 }
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
@@ -165,6 +169,8 @@ pub enum GameEvent {
     BlockPlaced(BlockPos, MaterialId),
     /// ブロックを壊した (仕様 17 §4)。
     BlockBroken(BlockPos, MaterialId),
+    /// 近接の攻撃が当たった (仕様 20)。`damage` は防具で軽減したあとの量。
+    Melee { attacker: EntityId, target: EntityId, damage: i32 },
 }
 
 /// ブロックの設置・破壊の失敗。
@@ -266,6 +272,8 @@ impl GameState {
             levitation: BTreeMap::new(),
             drops: Drops::new(),
             dig_to_drops: false,
+            item_defs: Vec::new(),
+            weapon_cooldown: BTreeMap::new(),
         }
     }
 
@@ -412,7 +420,9 @@ impl GameState {
 
     /// 定義 (仕様 10 §7) の呪文表を取り込んだ、キャラクターのいない状態。
     pub fn from_definitions(definitions: &Definitions) -> Self {
-        Self::new(definitions.spells.clone())
+        let mut game = Self::new(definitions.spells.clone());
+        game.item_defs = definitions.items.clone();
+        game
     }
 
     /// 体力と杖を持つキャラクターとして登録する。
@@ -526,6 +536,8 @@ impl GameState {
             }
         }
 
+        self.refresh_armor();
+        self.tick_weapon_cooldowns();
         // (1) 環境ダメージ。
         let ids: Vec<EntityId> = self.vitals.iter().map(|(id, _)| id).collect();
         for &id in &ids {
@@ -542,12 +554,27 @@ impl GameState {
         let mut shooters = BTreeSet::new();
         for (&id, input) in &by_id {
             let alive = self.vitals.get(id).is_some_and(Vitals::alive);
-            let (Some(entity), Some(wand)) = (entities.get(id), self.wands.get_mut(&id)) else {
-                continue;
-            };
             if !input.fire || !alive {
                 continue;
             }
+            // 装備している武器 (仕様 20): 近接は斬る、遠距離は矢を撃つ。杖・何も持たないときは、杖で撃つ。
+            match self.equipped_weapon(id) {
+                Some((crate::items::WeaponClass::Melee, damage)) => {
+                    self.try_melee(entities, id, damage, input.aim);
+                    continue;
+                }
+                Some((crate::items::WeaponClass::Ranged, damage)) => {
+                    if let Some(pid) = self.try_shoot_ranged(world, entities, id, damage, input.aim)
+                    {
+                        shooters.insert((pid, id));
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let (Some(entity), Some(wand)) = (entities.get(id), self.wands.get_mut(&id)) else {
+                continue;
+            };
             let muzzle = center16(entity);
             match wand.cast(
                 &self.spells,
@@ -582,6 +609,14 @@ impl GameState {
         self.step_enemies(world, entities, tick, seed);
         // (5) 弾の移動と着弾。
         let hits = self.projectiles.step(world, physics, entities, &mut self.vitals);
+        // 当たった相手は、弾の向きへ弾き飛ばされる (仕様 20)。
+        for hit in &hits {
+            if let Some(target) = hit.entity
+                && hit.vx != 0
+            {
+                self.knockback(entities, target, i64::from(hit.vx.signum()), hit.damage);
+            }
+        }
         // (6) 倒した敵の撤去。
         let defeated: Vec<EntityId> = self
             .enemies
@@ -859,7 +894,7 @@ impl GameState {
                 if let Some(victim) = victim
                     && let Some(vitals) = self.vitals.get_mut(victim)
                 {
-                    vitals.damage(def.contact_damage);
+                    vitals.damage_kind(def.contact_damage, crate::vitals::DamageKind::Physical);
                     if let Some(enemy) = self.enemies.get_mut(&id) {
                         enemy.contact_cooldown = CONTACT_INTERVAL;
                     }
@@ -902,6 +937,12 @@ impl GameState {
             feed(&[0xE9, 0x01]);
             feed(&id.0.to_le_bytes());
             feed(&equipment.state_hash().to_le_bytes());
+        }
+        // 武器の間隔がなければ、これまでと同じ値 (印も流さない)。
+        for (&id, left) in &self.weapon_cooldown {
+            feed(&[0xCD, 0x01]);
+            feed(&id.0.to_le_bytes());
+            feed(&left.to_le_bytes());
         }
         for (&id, enemy) in &self.enemies {
             feed(&id.0.to_le_bytes());

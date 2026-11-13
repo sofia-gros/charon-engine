@@ -286,7 +286,7 @@ pub struct Definitions {
     enemies: Vec<EnemyDef>,
     hooks: Vec<HookDef>,
     digs: Vec<DigDef>,
-    items: Vec<ItemDef>,
+    pub(crate) items: Vec<ItemDef>,
     recipes: Vec<RecipeDef>,
 }
 

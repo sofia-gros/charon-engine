@@ -71,7 +71,25 @@ pub(super) fn build_frame(
     {
         inventory.select(usize::from(slot));
     }
-    let item = ctx.game.inventories.get(&id).and_then(|inv| inv.selected_item());
+    // ホットバーで選んでいるアイテム。持ち物にあるか、装備している (装備すると持ち物から移る) ものだけ。
+    let pinned = ctx.game.inventories.get(&id).and_then(|inv| inv.hotbar(inv.selected()));
+    let item = pinned.filter(|&i| {
+        ctx.game.inventories.get(&id).is_some_and(|inv| inv.item_count(i) > 0)
+            || ctx
+                .game
+                .equipment
+                .get(&id)
+                .is_some_and(|e| e.iter().any(|(_, equipped)| equipped == i))
+    });
+    // ホットバーで武器を選んだら、その武器を装備する (仕様 20 §1)。持ち物の中の別の武器と入れ替わる。
+    if let Some(weapon) = item
+        && matches!(defs.item_def(weapon).map(|d| &d.kind), Some(ItemKind::Weapon { .. }))
+        && ctx.game.equipment.get(&id).and_then(|e| e.get(charon_game::items::EquipSlot::Weapon))
+            != Some(weapon)
+        && let Err(err) = ctx.game.equip(id, weapon, &defs)
+    {
+        eprintln!("武器を装備できません: {err}");
+    }
     let usage = usage_of(item, &defs);
     let weapon = weapon_like(item, &defs);
     let Some(center) = center_of(ctx.entities, id) else {

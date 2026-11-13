@@ -498,7 +498,15 @@ fn draw_touch_pad(
                 line
             };
             painter.rect(rect, 4.0, fill, stroke, egui::StrokeKind::Inside);
-            if let Some(item) = inventory.hotbar_active(slot) {
+            let equipped = |i| {
+                overlay
+                    .player
+                    .and_then(|id| overlay.game.equipment.get(&id))
+                    .is_some_and(|e| e.iter().any(|(_, x)| x == i))
+            };
+            if let Some(item) =
+                inventory.hotbar(slot).filter(|&i| inventory.item_count(i) > 0 || equipped(i))
+            {
                 let (name, color) = item_label(overlay, item);
                 painter.rect_filled(rect.shrink(unit * 0.25), 3.0, color);
                 painter.text(

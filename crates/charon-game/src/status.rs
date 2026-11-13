@@ -106,7 +106,7 @@ impl StatusTable {
             self.apply(id, StatusKind::Burning, BURN_TICKS);
         }
         let Some(entry) = self.map.get_mut(&id) else { return };
-        let mut damage = 0;
+        let (mut fire, mut poison) = (0, 0);
         for (kind, left) in entry.iter_mut() {
             // 残りの tick が間隔の倍数のときに当たる (長さによらず、決まった拍で)。
             let interval = match kind {
@@ -115,7 +115,11 @@ impl StatusTable {
                 StatusKind::Wet => 0,
             };
             if interval != 0 && *left % interval == 0 {
-                damage += 1;
+                match kind {
+                    StatusKind::Burning => fire += 1,
+                    StatusKind::Poison => poison += 1,
+                    StatusKind::Wet => {}
+                }
             }
             *left -= 1;
         }
@@ -123,6 +127,7 @@ impl StatusTable {
         if entry.is_empty() {
             self.map.remove(&id);
         }
-        vitals.damage(damage);
+        vitals.damage_kind(fire, crate::vitals::DamageKind::Fire);
+        vitals.damage_kind(poison, crate::vitals::DamageKind::Poison);
     }
 }

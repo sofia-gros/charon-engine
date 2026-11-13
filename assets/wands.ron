@@ -3,4 +3,5 @@
 [
     (name: "basic", spells: ["spark"], mana_max: 100, mana_regen: 1, recharge: 0),
     (name: "bomber", spells: ["bomb"], mana_max: 60, mana_regen: 1, recharge: 20),
+    (name: "fire_wand", spells: ["fireball"], mana_max: 100, mana_regen: 1, recharge: 0),
 ]

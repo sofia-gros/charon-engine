@@ -17,6 +17,8 @@
     (name: "stone_sword", kind: Weapon(class: Melee, damage: 10)),
     (name: "wood_bow",    kind: Weapon(class: Ranged, damage: 8)),
     (name: "starter_wand", kind: Weapon(class: Wand, wand: Some("basic"))),
+    (name: "fire_wand", kind: Weapon(class: Wand, wand: Some("fire_wand"))),
+    (name: "bomb_wand", kind: Weapon(class: Wand, wand: Some("bomber"))),
 
     // ---- 防具 ----
     (name: "wood_helmet",     kind: Armor(slot: Head, defense: 2)),

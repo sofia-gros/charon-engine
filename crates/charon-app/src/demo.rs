@@ -68,10 +68,23 @@ pub(crate) fn demo_loadout() -> PlayerLoadout {
             ("block:stone".to_owned(), 30),
             ("block:wood".to_owned(), 20),
             ("heal_potion".to_owned(), 3),
+            ("fire_wand".to_owned(), 1),
+            ("wood_bow".to_owned(), 1),
+            ("stone_helmet".to_owned(), 1),
+            ("stone_chestplate".to_owned(), 1),
+            ("fire_ring".to_owned(), 1),
         ],
-        hotbar: ["wood_pickaxe", "block:stone", "block:wood", "wood_sword", "heal_potion"]
-            .map(str::to_owned)
-            .to_vec(),
+        hotbar: [
+            "wood_pickaxe",
+            "block:stone",
+            "block:wood",
+            "wood_sword",
+            "heal_potion",
+            "fire_wand",
+            "wood_bow",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
     }
 }
 

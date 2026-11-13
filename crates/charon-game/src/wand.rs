@@ -77,6 +77,7 @@ enum PayloadDef {
     None,
     Explode { radius: i64 },
     Deposit { material: String },
+    Ignite { material: String, radius: i64 },
 }
 
 #[derive(Deserialize)]
@@ -206,6 +207,17 @@ impl SpellTable {
                         })?;
                     Payload::Deposit { material: id }
                 }
+                PayloadDef::Ignite { material, radius } => {
+                    let radius = range(radius, 1, 16, "火の玉の半径は 1..=16 です")?;
+                    let id =
+                        resolve_material(materials, namespace, &material).ok_or_else(|| {
+                            SpellError::UnknownMaterial {
+                                spell: name.clone(),
+                                material: material.clone(),
+                            }
+                        })?;
+                    Payload::Ignite { material: id, radius: radius as u8 }
+                }
             };
             // 範囲は上で検査済みなので、以下の変換は切り捨てを起こさない。
             let spell = Spell {
@@ -249,6 +261,10 @@ impl SpellTable {
                 Payload::Explode { radius } => hash.bytes(&[1, radius]),
                 Payload::Deposit { material } => {
                     hash.bytes(&[2]);
+                    hash.bytes(&material.0.to_le_bytes());
+                }
+                Payload::Ignite { material, radius } => {
+                    hash.bytes(&[3, radius]);
                     hash.bytes(&material.0.to_le_bytes());
                 }
             }
