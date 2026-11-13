@@ -54,6 +54,9 @@ pub struct PlayerSave {
     pub y16: i64,
     /// 持ち物: `(材質の名前, 数)`。
     pub inventory: Vec<(String, u32)>,
+    /// 持ち物のブロック: `(材質の名前, 数)` (仕様 17 §4)。古い保存にはない項目で、なければ空。
+    #[serde(default)]
+    pub blocks: Vec<(String, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +92,12 @@ impl GameSave {
                     .map(|(material, count)| (materials.get(material).name.clone(), count))
                     .collect()
             });
+            let blocks = game.inventories.get(&id).map_or_else(Vec::new, |inventory| {
+                inventory
+                    .block_iter()
+                    .map(|(material, count)| (materials.get(material).name.clone(), count))
+                    .collect()
+            });
             PlayerSave {
                 hp: vitals.hp,
                 breath: vitals.breath,
@@ -96,6 +105,7 @@ impl GameSave {
                 x16: entity.x16,
                 y16: entity.y16,
                 inventory,
+                blocks,
             }
         });
         Self { version: GAME_SAVE_VERSION, tick, player }
@@ -136,6 +146,11 @@ impl GameSave {
                     applied.kinds += 1;
                 }
             }
+            for (name, count) in &saved.blocks {
+                if let Some(material) = world.materials().id(name) {
+                    inventory.add_block(material, *count);
+                }
+            }
         }
         applied
     }
@@ -151,7 +166,8 @@ impl GameSave {
             return Err(SaveError::Version(save.version));
         }
         if let Some(player) = &save.player
-            && player.inventory.len() > crate::inventory::KINDS_MAX
+            && (player.inventory.len() > crate::inventory::KINDS_MAX
+                || player.blocks.len() > crate::inventory::KINDS_MAX)
         {
             return Err(SaveError::Invalid("持ち物の種類が多すぎます"));
         }

@@ -198,6 +198,7 @@ fn take_u16(input: &mut &[u8]) -> Result<u16, ChunkCodecError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use charon_core::cell::FLAG_BLOCK;
     use charon_core::rng::{SALT_SHADE, hash};
     use charon_core::testkit::{box_art, world_from_ascii};
 
@@ -240,6 +241,26 @@ mod tests {
                 assert_eq!(after, expected, "seed {seed}, cell {i}");
             }
         }
+    }
+
+    /// ブロックの旗 (仕様 17 §2) は、保存・読み込みで残る (動的な旗とは違い、世界の一部)。
+    #[test]
+    fn block_flag_survives_a_chunk_roundtrip() {
+        let mut world = world_from_ascii(&box_art(62, 64), 1);
+        let materials = Arc::clone(world.materials());
+        charon_core::testkit::place_block(&mut world, 2, 2, 's');
+        charon_core::testkit::place_block(&mut world, 3, 2, '#');
+        let original = world.chunk(ChunkPos::new(0, 0)).unwrap();
+        let encoded = encode_chunk(original, &materials).unwrap();
+        let decoded =
+            decode_chunk(&encoded, &material_names(&materials), Arc::clone(&materials)).unwrap();
+        let blocks = |chunk: &Chunk| chunk.cells.iter().filter(|c| c.has(FLAG_BLOCK)).count();
+        assert_eq!(blocks(original), 128);
+        assert_eq!(blocks(&decoded), 128, "旗が残る");
+        let sand = materials.id("sand").unwrap();
+        let (x, y) = (17usize, 17usize);
+        let cell = decoded.cells[y * 64 + x];
+        assert!(cell.has(FLAG_BLOCK) && cell.material == sand);
     }
 
     #[test]

@@ -148,7 +148,7 @@ fn is_collidable(cell: Cell, materials: &MaterialTable) -> bool {
     }
     match materials.get(cell.material).phase {
         Phase::Solid => true,
-        Phase::Powder => !cell.has(FLAG_FALLING),
+        Phase::Powder => !cell.has(FLAG_FALLING) || cell.has(crate::cell::FLAG_BLOCK),
         _ => false,
     }
 }

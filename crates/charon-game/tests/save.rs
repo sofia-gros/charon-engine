@@ -106,6 +106,7 @@ fn apply_is_careful_with_dead_players_solid_positions_and_limits() {
             x16: 10 * 16,
             y16: 60 * 16, // 床の中
             inventory: vec![("stone".to_owned(), 5), ("not_a_material".to_owned(), 9)],
+            blocks: vec![],
         }),
     };
     let applied = save.apply(&mut s.game, &mut s.entities, &s.world, s.player);
@@ -140,7 +141,15 @@ fn bad_game_saves_are_rejected() {
     let flood = GameSave {
         version: GAME_SAVE_VERSION,
         tick: 0,
-        player: Some(PlayerSave { hp: 1, breath: 1, mana: 0, x16: 0, y16: 0, inventory: many }),
+        player: Some(PlayerSave {
+            hp: 1,
+            breath: 1,
+            mana: 0,
+            x16: 0,
+            y16: 0,
+            inventory: many,
+            blocks: vec![],
+        }),
     };
     let text = flood.to_ron().unwrap();
     assert!(matches!(GameSave::from_ron(&text), Err(SaveError::Invalid(_))));

@@ -5,7 +5,9 @@ use std::sync::Arc;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
-use crate::cell::{Cell, FLAG_BODY, FLAG_BURNING, FLAG_FALLING, FLAG_PARITY, MaterialId};
+use crate::cell::{
+    Cell, FLAG_BLOCK, FLAG_BODY, FLAG_BURNING, FLAG_FALLING, FLAG_PARITY, MaterialId,
+};
 use crate::coords::{CellPos, ChunkPos};
 use crate::material::{MaterialTable, Phase};
 use crate::rng::{SALT_FIRE, SALT_FIRE_DIR, SALT_REACT, SALT_REACT_DIR, chance};
@@ -134,7 +136,13 @@ fn update_cell(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
     if mat.phase == Phase::Empty {
         return;
     }
-    let movable = matches!(mat.phase, Phase::Powder | Phase::Liquid | Phase::Gas);
+    // ブロックの中の崩れの規則 (仕様 17 §2): 同じ 8×8 の中の隣に旗のないセルがあれば、旗を外す。
+    if cell.has(FLAG_BLOCK) {
+        step_block(nb, x, y);
+    }
+    let cell = nb.get(x, y);
+    let movable =
+        matches!(mat.phase, Phase::Powder | Phase::Liquid | Phase::Gas) && !cell.has(FLAG_BLOCK);
     if movable && cell.has(crate::cell::FLAG_PARITY) == nb.parity() {
         // この tick で既に動いたセルか、眠っている間に parity が古くなったセル。
         // 後者を取りこぼさないよう、次の tick まで起こしておく (仕様 02 §3)。
@@ -151,6 +159,8 @@ fn update_cell(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
     let cell = nb.get(x, y);
     let mat = nb.materials().get(cell.material);
     match mat.phase {
+        // ブロックのセルは、粉でも動かない (仕様 17 §2)。
+        Phase::Powder if cell.has(FLAG_BLOCK) => {}
         Phase::Powder => {
             nb.mark_parity(x, y);
             move_powder(nb, x, y, cell, mat);
@@ -160,6 +170,29 @@ fn update_cell(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
             move_fluid(nb, x, y, cell, mat);
         }
         Phase::Solid | Phase::Empty => {}
+    }
+}
+
+/// ブロックの中の崩れの規則 (仕様 17 §2): `FLAG_BLOCK` のセルは、**同じ 8×8 の中**の上下左右の隣に、
+/// `FLAG_BLOCK` でないセル (空を含む) があれば、旗を外して普通のセルに戻る (粉なら崩れる)。8×8 の外の隣は見ない。
+/// ローカル座標の原点はチャンクの隅 (64 の倍数) なので、`>> 3` の格子は世界の 8×8 の格子と一致する。
+fn step_block(nb: &mut Neighborhood<'_>, x: i32, y: i32) {
+    let (bx, by) = (x >> 3, y >> 3);
+    for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+        let (nx, ny) = (x + dx, y + dy);
+        if nx >> 3 != bx || ny >> 3 != by {
+            continue;
+        }
+        if !nb.get(nx, ny).has(FLAG_BLOCK) {
+            let mut cell = nb.get(x, y);
+            cell.flags &= !FLAG_BLOCK;
+            // 粉は、落ち始める (固体は、その場に残る)。
+            if nb.materials().get(cell.material).phase == Phase::Powder {
+                cell.flags |= FLAG_FALLING;
+            }
+            nb.set(x, y, cell);
+            return;
+        }
     }
 }
 

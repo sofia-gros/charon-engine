@@ -48,6 +48,9 @@ pub const FLAG_BOUNCED: u8 = 1 << 5;
 /// 滑らかな剛体が書き込んだセル (仕様 05 §11)。セルの描画は描かず、滑らかな描画のパスが描く。保存しない。
 /// シミュレーションは `FLAG_BODY` と同じに扱い、このフラグは無視する。
 pub const FLAG_SMOOTH: u8 = 1 << 6;
+/// ブロックのセル (仕様 17 §2)。8×8 セルのブロックを作る 64 セルの旗。材質が粉でも**動かない** (固体として扱う)。
+/// ブロックの中の隣に、旗のないセルができると、旗を外して普通のセルに戻る。保存する。
+pub const FLAG_BLOCK: u8 = 1 << 7;
 
 impl Cell {
     /// 読み込まれていない領域を表すセル。
@@ -57,6 +60,12 @@ impl Cell {
     /// `flag` のビットがすべて立っているか。
     pub const fn has(self, flag: u8) -> bool {
         self.flags & flag == flag
+    }
+
+    /// 通れない固体か: `Phase::Solid` の材質、または `FLAG_BLOCK` のセル (ブロックは粉でも固体、仕様 17 §2)。
+    /// 境界 (`MaterialId::BOUNDARY`) は固体の材質なので、真。
+    pub fn is_solid(self, materials: &crate::material::MaterialTable) -> bool {
+        self.has(FLAG_BLOCK) || materials.get(self.material).phase == crate::material::Phase::Solid
     }
 
     /// `flag` を立てた (`on == true`) または下ろしたセルを返す。

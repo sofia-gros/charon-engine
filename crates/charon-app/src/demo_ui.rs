@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use charon_core::cell::{FLAG_BODY, MaterialId};
 use charon_core::coords::CellPos;
-use charon_core::material::{MaterialTable, Phase};
+use charon_core::material::MaterialTable;
 use charon_core::rng::hash;
 use charon_core::world::World;
 use charon_game::EntityWorld;
@@ -197,7 +197,7 @@ pub(super) fn terrain_edges(
 ) -> Vec<CellPos> {
     let solid = |x: i32, y: i32| {
         let cell = world.get(CellPos::new(x, y));
-        !cell.has(FLAG_BODY) && world.materials().get(cell.material).phase == Phase::Solid
+        !cell.has(FLAG_BODY) && cell.is_solid(world.materials())
     };
     let mut edges = Vec::new();
     for y in min.y..=max.y {

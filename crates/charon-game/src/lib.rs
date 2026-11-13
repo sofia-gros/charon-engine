@@ -1,5 +1,6 @@
 //! 仕様 07 §2.1: セルと独立した、決定的なエンティティの格納。
 
+pub mod blocks;
 pub mod collapse;
 pub mod defs;
 pub mod dig;
@@ -259,7 +260,7 @@ fn obstacle_height(entity: &Entity, x16: i64, world: &World) -> i64 {
         let cell = world.get(CellPos::new(x, y));
         cell.material == MaterialId::BOUNDARY
             || cell.has(FLAG_BODY)
-            || world.materials().get(cell.material).phase == Phase::Solid
+            || cell.is_solid(world.materials())
     };
     let mut wall_top = feet + 1;
     for y in top..=feet {
@@ -453,7 +454,7 @@ pub(crate) fn collides(x16: i64, y16: i64, width: u8, height: u8, world: &World)
             let cell = world.get(CellPos::new(x, y));
             if cell.material == MaterialId::BOUNDARY
                 || cell.has(FLAG_BODY)
-                || world.materials().get(cell.material).phase == Phase::Solid
+                || cell.is_solid(world.materials())
             {
                 return true;
             }

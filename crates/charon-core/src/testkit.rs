@@ -127,6 +127,34 @@ pub fn place(world: &mut World, x: i32, y: i32, ch: char) {
     world.set(pos, cell);
 }
 
+/// ブロック `(bx, by)` (8×8 セル) を、材質 `ch` の `FLAG_BLOCK` つきのセルで埋める (仕様 17)。
+pub fn place_block(world: &mut World, bx: i32, by: i32, ch: char) {
+    let material = material_of(world, ch);
+    for y in by * 8..by * 8 + 8 {
+        for x in bx * 8..bx * 8 + 8 {
+            let pos = CellPos::new(x, y);
+            let cell = world
+                .make_cell(material, pos)
+                .with(crate::cell::FLAG_BLOCK, true)
+                .with(crate::cell::FLAG_FALLING, false);
+            world.set(pos, cell);
+        }
+    }
+}
+
+/// 旗 `FLAG_BLOCK` のセルの数。
+pub fn count_block_cells(world: &World, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+    let mut n = 0;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if world.get(CellPos::new(x, y)).has(crate::cell::FLAG_BLOCK) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 /// 矩形 (両端を含む) を材質で埋める。
 pub fn fill(world: &mut World, x0: i32, y0: i32, x1: i32, y1: i32, ch: char) {
     for y in y0..=y1 {

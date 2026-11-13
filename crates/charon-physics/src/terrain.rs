@@ -37,7 +37,7 @@ fn shape(chunk: &Chunk, materials: &MaterialTable) -> Option<(ColliderBuilder, f
         let collidable = !cell.has(FLAG_BODY)
             && match materials.get(cell.material).phase {
                 Phase::Solid => true,
-                Phase::Powder => !cell.has(FLAG_FALLING),
+                Phase::Powder => !cell.has(FLAG_FALLING) || cell.has(charon_core::cell::FLAG_BLOCK),
                 _ => false,
             };
         if collidable {

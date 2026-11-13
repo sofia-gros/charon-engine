@@ -2,6 +2,9 @@
 //!
 //! 材質は **名前** で保存する (材質の表の順序が変わっても読める)。持つ数は材質ごとに `STACK_MAX` まで。
 //! 整数だけで決まる。
+//!
+//! ブロック (仕様 17 §4) は、材質のセルとは別に数える (`blocks`)。材質のセル 64 個 = ブロック 1 個にクラフトできる。
+//! (M20 で、データ駆動のアイテムの仕組みに置き換える。仮の実装。)
 
 use std::collections::BTreeMap;
 
@@ -16,6 +19,8 @@ pub const KINDS_MAX: usize = 256;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Inventory {
     counts: BTreeMap<u16, u32>,
+    /// ブロックのアイテムの数 (材質ごと)。
+    blocks: BTreeMap<u16, u32>,
 }
 
 impl Inventory {
@@ -65,7 +70,56 @@ impl Inventory {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.counts.is_empty()
+        self.counts.is_empty() && self.blocks.is_empty()
+    }
+
+    /// ブロックのアイテムを `amount` 個足す (材質ごとに `STACK_MAX` まで、種類は `KINDS_MAX` まで)。入った数を返す。
+    pub fn add_block(&mut self, material: MaterialId, amount: u32) -> u32 {
+        if material == MaterialId::EMPTY || material == MaterialId::BOUNDARY || amount == 0 {
+            return 0;
+        }
+        if !self.blocks.contains_key(&material.0) && self.blocks.len() >= KINDS_MAX {
+            return 0;
+        }
+        let have = self.blocks.entry(material.0).or_insert(0);
+        let added = amount.min(STACK_MAX - *have);
+        *have += added;
+        added
+    }
+
+    /// ブロックのアイテムを `amount` 個取り出す。足りなければ何も取り出さず `false`。
+    pub fn take_block(&mut self, material: MaterialId, amount: u32) -> bool {
+        let Some(have) = self.blocks.get_mut(&material.0) else { return amount == 0 };
+        if *have < amount {
+            return false;
+        }
+        *have -= amount;
+        if *have == 0 {
+            self.blocks.remove(&material.0);
+        }
+        true
+    }
+
+    pub fn block_count(&self, material: MaterialId) -> u32 {
+        self.blocks.get(&material.0).copied().unwrap_or(0)
+    }
+
+    /// `(材質, 数)` を材質 ID の昇順で返す (ブロックのアイテム)。
+    pub fn block_iter(&self) -> impl Iterator<Item = (MaterialId, u32)> + '_ {
+        self.blocks.iter().map(|(&id, &n)| (MaterialId(id), n))
+    }
+
+    /// 材質のセル 64 個 (`BLOCK_CELLS`) を使って、その材質のブロックを 1 個作る。セルが足りない・ブロックが持ち切れない
+    /// (上限) ときは、何も変えずに `false`。作ってよい材質かは、呼ぶ側 (固体か粉体か) が決める。
+    pub fn craft_block(&mut self, material: MaterialId) -> bool {
+        const COST: u32 = crate::blocks::BLOCK_CELLS as u32;
+        if self.count(material) < COST || self.block_count(material) >= STACK_MAX {
+            return false;
+        }
+        if !self.blocks.contains_key(&material.0) && self.blocks.len() >= KINDS_MAX {
+            return false;
+        }
+        self.take(material, COST) && self.add_block(material, 1) == 1
     }
 
     /// 状態を FNV-1a 64-bit で流す (同期の照合用)。
@@ -74,6 +128,17 @@ impl Inventory {
         for (&id, &n) in &self.counts {
             for byte in id.to_le_bytes().into_iter().chain(n.to_le_bytes()) {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+        }
+        // ブロックがなければ、これまでと同じ値 (印も流さない)。
+        if !self.blocks.is_empty() {
+            for byte in [0xB1u8, 0x0C] {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+            for (&id, &n) in &self.blocks {
+                for byte in id.to_le_bytes().into_iter().chain(n.to_le_bytes()) {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                }
             }
         }
         hash
@@ -126,6 +191,34 @@ mod tests {
         assert_eq!(inv.add(MaterialId::EMPTY, 5), 0);
         assert_eq!(inv.add(MaterialId::BOUNDARY, 5), 0);
         assert!(inv.is_empty());
+    }
+
+    /// 材質のセル 64 個でブロック 1 個。足りなければ何も変えない。ブロックは別に数え、ハッシュにも入る。
+    #[test]
+    fn craft_block_needs_64_cells() {
+        let mut inv = Inventory::new();
+        let plain = inv.state_hash();
+        inv.add(SAND, 63);
+        assert!(!inv.craft_block(SAND), "63 個では作れない");
+        assert_eq!((inv.count(SAND), inv.block_count(SAND)), (63, 0));
+        inv.add(SAND, 66);
+        assert!(inv.craft_block(SAND));
+        assert_eq!((inv.count(SAND), inv.block_count(SAND)), (65, 1), "64 個を使って 1 個");
+        assert!(inv.craft_block(SAND));
+        assert_eq!((inv.count(SAND), inv.block_count(SAND)), (1, 2));
+        assert!(!inv.craft_block(SAND));
+        assert!(!inv.is_empty());
+        assert_ne!(inv.state_hash(), plain);
+        assert!(inv.take_block(SAND, 2) && !inv.take_block(SAND, 1));
+        assert_eq!(inv.block_iter().count(), 0);
+        // ブロックのアイテムだけでも、持ち物は空ではなく、なければこれまでと同じハッシュ。
+        let mut empty = Inventory::new();
+        assert_eq!(empty.state_hash(), plain);
+        assert_eq!(empty.add_block(STONE, 2), 2);
+        assert!(!empty.is_empty());
+        assert_ne!(empty.state_hash(), plain);
+        assert_eq!(empty.add_block(MaterialId::EMPTY, 1), 0);
+        assert_eq!(empty.add_block(STONE, STACK_MAX), STACK_MAX - 2, "上限");
     }
 
     #[test]

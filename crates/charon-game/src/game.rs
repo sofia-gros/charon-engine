@@ -11,6 +11,7 @@ use charon_physics::PhysicsEngine;
 
 use charon_physics::rope::{Rope, RopeEvent, RopeParams, RopePhase, tether_velocity};
 
+use crate::blocks::{self, BlockPos, BreakError, PlaceError, Placed};
 use crate::collapse::Collapse;
 use crate::defs::{Definitions, EnemyDef, HookDef};
 use crate::dig::{Beam, Dig, Dug};
@@ -158,6 +159,24 @@ pub enum GameEvent {
     Dug(Dug),
     /// 落ちているものを拾った (仕様 10 §19)。
     Pickup(Pickup),
+    /// ブロックを置いた (仕様 17 §3)。
+    BlockPlaced(BlockPos, MaterialId),
+    /// ブロックを壊した (仕様 17 §4)。
+    BlockBroken(BlockPos, MaterialId),
+}
+
+/// ブロックの設置・破壊の失敗。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BuildError {
+    /// 持ち物がない・ブロックのアイテムがない。
+    NoBlock,
+    /// ブロックを持ち切れない (上限)。
+    InventoryFull,
+    /// 置けない (仕様 17 §3)。
+    Place(PlaceError),
+    /// 壊せない (仕様 17 §4)。
+    Break(BreakError),
 }
 
 /// 受け取られないまま溜まる出来事の上限。超えた分は捨てる (ゲームが受け取らなくても増え続けない)。
@@ -288,6 +307,67 @@ impl GameState {
             (Some(lev), Some(entity)) => lev.step(entity, held && alive),
             _ => false,
         }
+    }
+
+    /// 持ち物のブロックを 1 個使って、`at` に置く (仕様 17 §3)。置けなければ持ち物は変わらない。
+    /// 届く範囲 (距離) の確認は、呼ぶ側が決める。
+    pub fn place_block_item(
+        &mut self,
+        world: &mut World,
+        entities: &mut EntityWorld,
+        id: EntityId,
+        at: BlockPos,
+        material: MaterialId,
+    ) -> Result<Placed, BuildError> {
+        let has = self.inventories.get(&id).is_some_and(|inv| inv.block_count(material) > 0);
+        if !has {
+            return Err(BuildError::NoBlock);
+        }
+        let placed =
+            blocks::place_block(world, entities, at, material).map_err(BuildError::Place)?;
+        if let Some(inventory) = self.inventories.get_mut(&id) {
+            inventory.take_block(material, 1);
+        }
+        if self.events.len() < EVENTS_MAX {
+            self.events.push(GameEvent::BlockPlaced(at, material));
+        }
+        Ok(placed)
+    }
+
+    /// `at` の完全なブロックを壊して、持ち物にブロックのアイテムを 1 個加える (仕様 17 §4)。
+    /// 持ち切れない (上限) ときは、壊さずに失敗する。
+    pub fn break_block_item(
+        &mut self,
+        world: &mut World,
+        id: EntityId,
+        at: BlockPos,
+    ) -> Result<MaterialId, BuildError> {
+        let cells = at.cells();
+        let material = cells.first().map(|&pos| world.get(pos).material);
+        if let (Some(material), Some(inventory)) = (material, self.inventories.get(&id))
+            && inventory.block_count(material) >= crate::inventory::STACK_MAX
+        {
+            return Err(BuildError::InventoryFull);
+        }
+        let material = blocks::break_block(world, at).map_err(BuildError::Break)?;
+        if let Some(inventory) = self.inventories.get_mut(&id) {
+            inventory.add_block(material, 1);
+        }
+        if self.events.len() < EVENTS_MAX {
+            self.events.push(GameEvent::BlockBroken(at, material));
+        }
+        Ok(material)
+    }
+
+    /// 材質のセル 64 個で、その材質のブロックを 1 個作る (仕様 17 §4)。`Solid` と `Powder` の材質だけ。
+    pub fn craft_block(&mut self, world: &World, id: EntityId, material: MaterialId) -> bool {
+        if !matches!(world.materials().get(material).phase, Phase::Solid | Phase::Powder)
+            || material == MaterialId::EMPTY
+            || material == MaterialId::BOUNDARY
+        {
+            return false;
+        }
+        self.inventories.get_mut(&id).is_some_and(|inventory| inventory.craft_block(material))
     }
 
     /// 溜まっている出来事の数。

@@ -47,7 +47,7 @@ impl Collapse {
         if cell.material == MaterialId::BOUNDARY {
             return None;
         }
-        Some(world.materials().get(cell.material).phase == Phase::Solid && !cell.has(FLAG_BODY))
+        Some(cell.is_solid(world.materials()) && !cell.has(FLAG_BODY))
     }
 
     /// 掘った位置のまわりの固体のかたまりを調べ、支えのないものを落とし始める。
