@@ -62,9 +62,11 @@ jobs:
       - run: cargo apk build --release -p charon-sandbox --lib
       - name: apk の名前をそろえる
         run: |
-          apk=$(find target -name '*.apk' | head -n 1)
-          test -n "$apk"
-          cp "$apk" "charon-demo-${{ github.ref_name }}-android-arm64.apk"
+          # `target/release/apk` には、署名・整列済みの `charon-sandbox.apk` と、途中の `*-unaligned.apk` (未署名) がある。
+          # 署名済みのほうだけを使う。
+          ls -l target/release/apk/
+          cp target/release/apk/charon-sandbox.apk "charon-demo-${{ github.ref_name }}-android-arm64.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "charon-demo-${{ github.ref_name }}-android-arm64.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: android
