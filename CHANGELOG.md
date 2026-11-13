@@ -2,7 +2,7 @@
 
 互換性の方針は [docs/API_POLICY.md](docs/API_POLICY.md)。`0.x` の間は、安定の範囲 (`charon_app::prelude`) を壊す変更はマイナーの版で行い、ここに書く。
 
-## 0.0.7 (予定)
+## 0.0.7
 
 ### 追加 (ブロック、仕様 17)
 
