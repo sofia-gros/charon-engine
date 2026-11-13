@@ -386,6 +386,12 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             enemy_sprites: demo_enemy_images(),
             settings_path: Some(config.settings.clone()),
             logic: Some(crate::api::GameLogic::new(DemoGame)),
+            sounds: Some({
+                // MOD の `assets/sounds/*.wav|ogg` があれば、生成した効果音の代わりに使う (仕様 15)。
+                let mut assets = crate::assets::Assets::new();
+                assets.add_root(config.mod_dir.join("assets"));
+                crate::audio::SoundBank::from_assets(&mut assets, crate::audio::RATE)
+            }),
         },
         brush: demo_materials.rainbow_sand,
     })

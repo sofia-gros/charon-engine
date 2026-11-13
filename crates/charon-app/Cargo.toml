@@ -22,6 +22,8 @@ charon-render = { version = "0.1.0", path = "../charon-render", default-features
 charon-world = { version = "0.1.0", path = "../charon-world", default-features = false }
 egui = { version = "0.37.0", features = ["default_fonts"] }
 egui-wgpu = "0.37.0"
+lewton = "0.10.2"
+png = "0.18.1"
 pollster = "1.0.1"
 ron = "0.12.3"
 serde = { version = "1.0.229", features = ["derive"] }

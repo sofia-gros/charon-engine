@@ -83,6 +83,32 @@ impl SoundBank {
     }
 }
 
+impl SoundBank {
+    /// 置き場の `jump` / `shoot` / `anchor` / `pickup` / `dig` (拡張子 `.wav` か `.ogg`、`sounds/` の下) を読み、
+    /// なければ、または読めなければ (報告して) 生成した音にする。
+    pub fn from_assets(assets: &mut crate::assets::Assets, rate: u32) -> Self {
+        let fallback = Self::procedural(rate);
+        let mut load = |name: &str, default: Sound| {
+            for ext in ["wav", "ogg"] {
+                let file = format!("sounds/{name}.{ext}");
+                match assets.sound(&file) {
+                    Ok(sound) => return sound,
+                    Err(crate::assets::AssetError::File(_)) => {}
+                    Err(err) => eprintln!("{file} を読めません: {err}"),
+                }
+            }
+            default
+        };
+        Self {
+            jump: load("jump", fallback.jump.clone()),
+            shoot: load("shoot", fallback.shoot.clone()),
+            anchor: load("anchor", fallback.anchor.clone()),
+            pickup: load("pickup", fallback.pickup.clone()),
+            dig: load("dig", fallback.dig.clone()),
+        }
+    }
+}
+
 /// ミキサーを、音声デバイスの別スレッドと共有する。ロックが毒になっていても (別スレッドが落ちても) 使い続ける。
 type SharedMixer = Arc<Mutex<Mixer>>;
 
@@ -421,6 +447,21 @@ mod tests {
             assert!((lo..=hi).contains(&seconds), "{name}: {seconds}");
             assert!(sound.samples.iter().any(|v| v.abs() > 0.1), "{name} は無音ではない");
         }
+    }
+
+    /// 効果音は、置き場のファイルがあればそれ、なければ・壊れていれば生成した音になる。
+    #[test]
+    fn sound_bank_falls_back_to_generated_sounds() {
+        let base = std::env::temp_dir().join(format!("charon-bank-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("sounds")).unwrap();
+        std::fs::write(base.join("sounds").join("jump.ogg"), b"OggS broken").unwrap();
+        let mut assets = crate::assets::Assets::new();
+        assets.add_root(&base);
+        let bank = SoundBank::from_assets(&mut assets, RATE);
+        let plain = SoundBank::procedural(RATE);
+        assert_eq!(bank.jump.samples.len(), plain.jump.samples.len(), "壊れたファイルは生成した音");
+        assert_eq!(bank.dig.samples.len(), plain.dig.samples.len(), "ないものは生成した音");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

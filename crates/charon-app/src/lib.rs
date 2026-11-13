@@ -2,6 +2,7 @@
 
 mod animation;
 pub mod api;
+pub mod assets;
 pub mod audio;
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
@@ -231,6 +232,8 @@ pub struct AppOptions {
     pub settings_path: Option<std::path::PathBuf>,
     /// ゲームのロジック (仕様 14)。毎 tick 呼ばれる。
     pub logic: Option<api::GameLogic>,
+    /// 効果音。`None` なら生成した音 (仕様 12、15)。
+    pub sounds: Option<audio::SoundBank>,
 }
 
 /// ゲームがエンジンに渡す敵の生成の指定 (仕様 10 §8.5)。
@@ -319,6 +322,9 @@ pub fn run_with_streaming_options(
     app.options = options;
     app.reset_game();
     app.load_settings();
+    if let Some(bank) = app.options.sounds.clone() {
+        app.audio.set_bank(bank);
+    }
     // 音声デバイスは起動時に 1 回だけ開く。開けなくても (デバイスなし等) 無音で続ける。
     if let Err(why) = app.audio.start_device() {
         eprintln!("音声を無効にします: {why}");
