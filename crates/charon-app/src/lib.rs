@@ -27,6 +27,10 @@ mod timestep;
 mod touch_pad;
 mod ui;
 
+/// 2 本指でずらしたカメラが、プレイヤーの追従へもどり始めるまでの秒と、もどる速さ (1 秒あたり)。
+const CAM_RECENTER_DELAY: f32 = 3.0;
+const CAM_RECENTER_RATE: f32 = 3.0;
+
 /// ゲームを作る人が使う名前をまとめたもの (仕様 14 §5)。`use charon_app::prelude::*;` で足りる。
 /// ここに載せた名前は、互換性の方針 (`docs/API_POLICY.md`) の「安定」の対象。
 pub mod prelude {
@@ -587,6 +591,44 @@ impl App {
         }
     }
 
+    /// `USE` ボタンの描画モード: 選んでいる材質 (または建築) を、ポインターのある場所へ置く (仕様 10 §11)。
+    /// 借りている項目を個別に受け取るので、描画の途中でも呼べる。
+    #[allow(clippy::too_many_arguments)]
+    fn touch_place(
+        world: &mut World,
+        background: &mut BackgroundWorld,
+        operations: &mut Vec<BrushOp>,
+        controls: &ui::Controls,
+        player: &charon_game::Entity,
+        offset: [f32; 2],
+        zoom: f32,
+        origin: [f32; 2],
+    ) {
+        let cx = (player.x16.div_euclid(16) + i64::from(player.width) / 2) as f32 + 0.5 + offset[0];
+        let cy =
+            (player.y16.div_euclid(16) + i64::from(player.height) / 2) as f32 + 0.5 + offset[1];
+        let event =
+            PointerEvent::Move { id: 0, pos: [(cx - origin[0]) * zoom, (cy - origin[1]) * zoom] };
+        let (selected, radius) = (controls.selected, controls.brush_radius);
+        if let Some(layer) = controls.build_layer {
+            if let Err(err) =
+                apply_build_pointer(world, background, layer, selected, event, zoom, origin)
+            {
+                eprintln!("建築に失敗: {err}");
+            }
+        } else {
+            operations.extend(apply_pointer(
+                world,
+                selected,
+                controls.rainbow,
+                event,
+                zoom,
+                origin,
+                radius,
+            ));
+        }
+    }
+
     /// 世界を作り直したときに、体力・杖・弾を初期状態へ戻す。
     // 呼び出し元 (リプレイ・世界の作り直し) は native 専用。Web では使わない。
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -619,7 +661,7 @@ impl App {
     }
 
     /// true なら剛体がポインターを使ったため、ブラシは置かない。
-    fn handle_grab(&mut self, event: PointerEvent, zoom: u32, origin: [f32; 2]) -> bool {
+    fn handle_grab(&mut self, event: PointerEvent, zoom: f32, origin: [f32; 2]) -> bool {
         let (id, pointer) = match event {
             PointerEvent::Down { id, pos } | PointerEvent::Move { id, pos } => (id, Some(pos)),
             PointerEvent::Up { id, .. } => (id, None),
@@ -628,8 +670,8 @@ impl App {
             if grab.id == id {
                 if let Some(pos) = pointer {
                     if pos[0].is_finite() && pos[1].is_finite() {
-                        let x = origin[0] + pos[0] / zoom.max(1) as f32;
-                        let y = origin[1] + pos[1] / zoom.max(1) as f32;
+                        let x = origin[0] + pos[0] / zoom.max(1.0);
+                        let y = origin[1] + pos[1] / zoom.max(1.0);
                         self.physics.drag_body(grab.body, [x + grab.offset[0], y + grab.offset[1]]);
                     }
                 } else {
@@ -643,8 +685,8 @@ impl App {
         if !self.physics_initialized || !pos[0].is_finite() || !pos[1].is_finite() {
             return false;
         }
-        let x = origin[0] + pos[0] / zoom.max(1) as f32;
-        let y = origin[1] + pos[1] / zoom.max(1) as f32;
+        let x = origin[0] + pos[0] / zoom.max(1.0);
+        let y = origin[1] + pos[1] / zoom.max(1.0);
         let cell = CellPos::new(x.floor() as i32, y.floor() as i32);
         let Some(index) = self.physics.bodies.iter().position(|body| body.stamped.contains(&cell))
         else {
@@ -902,7 +944,7 @@ impl App {
         let now = Instant::now();
         let elapsed = self.previous.replace(now).map_or_default(|previous| now - previous);
         let (zoom, mut origin, paused, step_once, light_quality) = self.gui.as_ref().map_or(
-            (4, [0.0, 0.0], false, false, charon_render::LightQuality::High),
+            (4.0, [0.0, 0.0], false, false, charon_render::LightQuality::High),
             |gui| {
                 let controls = &gui.controls;
                 (
@@ -921,7 +963,21 @@ impl App {
                 let delta = self.keys.camera_delta();
                 origin = [origin[0] + delta[0] as f32, origin[1] + delta[1] as f32];
             } else if let Some(player) = self.player.and_then(|id| self.entities.get(id)) {
-                let target = follow_origin(player, [size.width, size.height], zoom);
+                let mut target = follow_origin(player, [size.width, size.height], zoom);
+                // 2 本指のスワイプで動かしたずれ (仕様 10 §11)。しばらく操作しなければ、少しずつもどす。
+                if let Some(gui) = self.gui.as_mut() {
+                    let (dt, controls) = (elapsed.as_secs_f32(), &mut gui.controls);
+                    controls.cam_idle += dt;
+                    if controls.cam_idle > CAM_RECENTER_DELAY && !self.gestures.active() {
+                        let k = 1.0 - (-CAM_RECENTER_RATE * dt.min(0.25)).exp();
+                        controls.cam_offset[0] -= controls.cam_offset[0] * k;
+                        controls.cam_offset[1] -= controls.cam_offset[1] * k;
+                    }
+                    let view = [size.width as f32, size.height as f32];
+                    gesture::clamp_offset(&mut controls.cam_offset, view, zoom);
+                    target[0] += controls.cam_offset[0];
+                    target[1] += controls.cam_offset[1];
+                }
                 origin = self.camera_fx.step(target, elapsed.as_secs_f32(), true);
             } else {
                 self.camera_fx.reset();
@@ -929,6 +985,13 @@ impl App {
             if let Some(gui) = self.gui.as_mut() {
                 gui.controls.origin = origin;
             }
+            // 画面のポインターの描画のために、プレイヤーの画面の位置を知らせる。
+            let player_screen = self.player.and_then(|id| self.entities.get(id)).map(|p| {
+                let cx = (p.x16.div_euclid(16) + i64::from(p.width) / 2) as f32 + 0.5;
+                let cy = (p.y16.div_euclid(16) + i64::from(p.height) / 2) as f32 + 0.5;
+                [(cx - origin[0]) * zoom, (cy - origin[1]) * zoom]
+            });
+            self.touch_pad.set_view(zoom, player_screen);
         }
         // キー割り当ては、メニューで変えられる。入力に反映する (仕様 10 §14)。
         if let Some(gui) = self.gui.as_ref()
@@ -981,7 +1044,28 @@ impl App {
         if self.options.follow_player && !self.free_camera {
             // ゲームパッドのボタン: 向きは、狙いのスティックがあればそれ、なければ歩いている向きの少し上。
             let (button_fire, button_tool) = self.keys.pad_buttons();
-            let (fire, tool) = (pad.fire || button_fire, pad.tool || button_tool);
+            // `USE` (画面右下) は、武器モードでは武器、描画モードではブラシを、ポインターの方へ使う。
+            let fire = pad.fire || button_fire || (pad.use_item && !paint);
+            let tool = pad.tool || button_tool;
+            if pad.use_item
+                && paint
+                && let (Some(gui), Some(player), Some(offset)) = (
+                    self.gui.as_ref(),
+                    self.player.and_then(|id| self.entities.get(id)),
+                    self.touch_pad.pointer_offset(),
+                )
+            {
+                Self::touch_place(
+                    &mut self.world,
+                    &mut self.background,
+                    &mut self.operations,
+                    &gui.controls,
+                    player,
+                    offset,
+                    zoom,
+                    origin,
+                );
+            }
             action.fire |= fire && !paint;
             action.tool |= tool;
             let dig = pad.dig || self.keys.dig_held() || self.dig_down;
@@ -1093,8 +1177,8 @@ impl App {
             );
         }
         let view = gpu.frame_view(&frame.texture);
-        let scene_width = window.inner_size().width.div_ceil(zoom.max(1));
-        let scene_height = window.inner_size().height.div_ceil(zoom.max(1));
+        let scene_width = (window.inner_size().width as f32 / zoom.max(1.0)).ceil() as u32;
+        let scene_height = (window.inner_size().height as f32 / zoom.max(1.0)).ceil() as u32;
         let visible =
             visible_chunks(&self.world, &self.background, origin, [scene_width, scene_height]);
         let mut background = BackgroundAdapter(&mut self.background);
@@ -1229,7 +1313,7 @@ pub fn build_passes_with(
     ambient: f32,
     deep: Option<DeepBackgroundParams>,
 ) -> Result<(PassList, Option<DeepBackgroundClock>), String> {
-    let mut passes = PassList::new(gpu, width, height, 4);
+    let mut passes = PassList::new(gpu, width, height, 4.0);
     let layer_count = (width.div_ceil(64) + 1) * (height.div_ceil(64) + 1);
     let cells = CellPass::new(gpu, materials, PassList::scene_format(), layer_count)
         .map_err(|err| err.to_string())?;
@@ -1300,15 +1384,15 @@ fn visible_chunks(
 /// 画面中心のチャンクと、四隅まで含む読み込み半径。
 fn camera_range(
     size: winit::dpi::PhysicalSize<u32>,
-    zoom: u32,
+    zoom: f32,
     origin: [f32; 2],
 ) -> (ChunkPos, i32) {
-    let zoom = zoom.max(1);
+    let zoom = charon_render::clean_zoom(zoom);
     let center = CellPos::new(
-        (origin[0] + size.width as f32 / (2 * zoom) as f32).floor() as i32,
-        (origin[1] + size.height as f32 / (2 * zoom) as f32).floor() as i32,
+        (origin[0] + size.width as f32 / (2.0 * zoom)).floor() as i32,
+        (origin[1] + size.height as f32 / (2.0 * zoom)).floor() as i32,
     );
-    let radius = (size.width.max(size.height) / zoom).div_ceil(128) as i32 + 2;
+    let radius = ((size.width.max(size.height) as f32 / zoom / 128.0).ceil() as i32) + 2;
     (center.chunk(), radius)
 }
 
@@ -1319,7 +1403,7 @@ fn apply_pointer(
     material: MaterialId,
     rainbow: Option<MaterialId>,
     event: PointerEvent,
-    zoom: u32,
+    zoom: f32,
     origin: [f32; 2],
     radius: u32,
 ) -> Vec<BrushOp> {
@@ -1330,7 +1414,7 @@ fn apply_pointer(
     if !pos[0].is_finite() || !pos[1].is_finite() {
         return Vec::new();
     }
-    let zoom = zoom.max(1) as f32;
+    let zoom = zoom.max(1.0);
     let center = CellPos::new(
         (origin[0] + pos[0] / zoom).floor() as i32,
         (origin[1] + pos[1] / zoom).floor() as i32,
@@ -1366,7 +1450,7 @@ fn apply_build_pointer(
     layer: Layer,
     material: MaterialId,
     event: PointerEvent,
-    zoom: u32,
+    zoom: f32,
     origin: [f32; 2],
 ) -> Result<(), charon_world::building::BuildError> {
     let pos = match event {
@@ -1376,7 +1460,7 @@ fn apply_build_pointer(
     if !pos[0].is_finite() || !pos[1].is_finite() {
         return Ok(());
     }
-    let zoom = zoom.max(1) as f32;
+    let zoom = zoom.max(1.0);
     let cell = CellPos::new(
         (origin[0] + pos[0] / zoom).floor() as i32,
         (origin[1] + pos[1] / zoom).floor() as i32,
@@ -1651,21 +1735,41 @@ impl ApplicationHandler for App {
                 self.tool_down = false;
             }
         }
-        let gesture = if pad_owned {
+        let mut gesture = if pad_owned {
             false
         } else if let (WindowEvent::Touch(touch), Some(gui)) = (&event, self.gui.as_mut()) {
+            let view = window.inner_size();
             self.gestures.update(
                 touch.id,
                 touch.phase,
                 [touch.location.x as f32, touch.location.y as f32],
                 &mut gui.controls,
+                self.options.follow_player,
+                [view.width as f32, view.height as f32],
             )
         } else {
             false
         };
+        // 1 本指のなぞりは、ポインターを動かす (仕様 10 §11)。2 本指になったら、ポインターは動かさずカメラ操作。
+        // プレイヤーのいるゲームでは、画面の 1 本指はブラシや武器のボタンにならない (`USE` ボタンを使う)。
+        if self.options.follow_player
+            && !pad_owned
+            && !consumed
+            && let WindowEvent::Touch(touch) = &event
+        {
+            let zoom = self.gui.as_ref().map_or(4.0, |gui| gui.controls.zoom);
+            self.touch_pad.pointer_update(
+                touch.id,
+                touch.phase,
+                [touch.location.x as f32, touch.location.y as f32],
+                zoom,
+                gesture || self.gestures.fingers() >= 2,
+            );
+            gesture = true;
+        }
         if let Some(pointer) = self.pointer.normalize(&event) {
             let (selected, zoom, origin, radius, build_layer) =
-                self.gui.as_ref().map_or((self.brush_material, 4, [0.0, 0.0], 1, None), |gui| {
+                self.gui.as_ref().map_or((self.brush_material, 4.0, [0.0, 0.0], 1, None), |gui| {
                     (
                         gui.controls.selected,
                         gui.controls.zoom,
@@ -1870,16 +1974,16 @@ mod tests {
         app.physics = physics;
         let hit = app.physics.bodies[0].stamped[0];
         let start = [hit.x as f32, hit.y as f32];
-        assert!(app.handle_grab(PointerEvent::Down { id: 0, pos: start }, 1, [0.0, 0.0]));
+        assert!(app.handle_grab(PointerEvent::Down { id: 0, pos: start }, 1.0, [0.0, 0.0]));
         assert!(app.handle_grab(
             PointerEvent::Move { id: 0, pos: [start[0] + 20.0, start[1]] },
-            1,
+            1.0,
             [0.0, 0.0]
         ));
         let rigid = &app.physics.world.bodies[app.physics.bodies[0].handle];
         assert_eq!(rigid.translation().x * CELLS_PER_METER, 68.0);
         assert_eq!(rigid.gravity_scale(), 0.0);
-        assert!(app.handle_grab(PointerEvent::Up { id: 0, pos: start }, 1, [0.0, 0.0]));
+        assert!(app.handle_grab(PointerEvent::Up { id: 0, pos: start }, 1.0, [0.0, 0.0]));
         assert!(app.grab.is_none());
         assert_eq!(app.physics.world.bodies[app.physics.bodies[0].handle].gravity_scale(), 1.0);
         app.physics.step(&mut app.world).unwrap();
@@ -1905,7 +2009,7 @@ mod tests {
             selected,
             None,
             PointerEvent::Down { id: 0, pos: [40.0, 48.0] },
-            4,
+            4.0,
             [0.0, 0.0],
             1,
         );
@@ -1916,7 +2020,7 @@ mod tests {
             selected,
             None,
             PointerEvent::Move { id: 0, pos: [40.0, 48.0] },
-            4,
+            4.0,
             [0.0, 0.0],
             1,
         );
@@ -1926,7 +2030,7 @@ mod tests {
             selected,
             None,
             PointerEvent::Up { id: 0, pos: [60.0, 60.0] },
-            4,
+            4.0,
             [0.0, 0.0],
             1,
         );

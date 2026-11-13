@@ -349,37 +349,53 @@ fn draw_touch_pad(context: &egui::Context, pad: &crate::touch_pad::TouchPad) {
     let line = egui::Stroke::new(2.0, egui::Color32::from_white_alpha(110));
     let fill = egui::Color32::from_white_alpha(28);
     let knob = egui::Color32::from_white_alpha(120);
-    // スティック: 触れているときは、触れた場所を中心にして、指の位置に丸を描く。
-    for (touch, home, label) in
-        [(pad.stick_touch(), layout.stick_home, "MOVE"), (pad.aim_touch(), layout.aim_home, "AIM")]
-    {
-        let center = touch.map_or(home, |(start, _)| start);
-        painter.circle(at(center), radius, fill, line);
-        if touch.is_none() {
-            painter.text(
-                at(center),
-                egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(unit * 0.6),
-                egui::Color32::from_white_alpha(150),
+    // 移動パッド (左下の 1/4、浮動): 触れているときは、触れた場所を中心にして、指の位置に丸を描く。
+    // 触れていないときは、領域の目印だけを薄く描く。
+    let touch = pad.stick_touch();
+    let center = touch.map_or(layout.stick_home(), |(start, _)| start);
+    painter.circle(at(center), radius, fill, line);
+    if touch.is_none() {
+        painter.text(
+            at(center),
+            egui::Align2::CENTER_CENTER,
+            "MOVE",
+            egui::FontId::proportional(unit * 0.6),
+            egui::Color32::from_white_alpha(150),
+        );
+    }
+    if let Some((start, now)) = touch {
+        let (dx, dy) = (now[0] - start[0], now[1] - start[1]);
+        let length = dx.hypot(dy).max(1.0);
+        let reach = length.min(layout.radius());
+        let tip = [start[0] + dx / length * reach, start[1] + dy / length * reach];
+        painter.circle_filled(at(tip), unit * 0.9, knob);
+    }
+    // ポインター (Terraria のカーソル): プレイヤーの周りの円の中を、1 本指のなぞりで動く。
+    if let Some(p) = pad.pointer_screen() {
+        let color = if pad.pointer_active() {
+            egui::Color32::from_rgb(255, 230, 120)
+        } else {
+            egui::Color32::from_white_alpha(210)
+        };
+        let stroke = egui::Stroke::new(2.0, color);
+        let (c, r) = (at(p), unit * 0.55);
+        painter.circle_stroke(c, r, stroke);
+        for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+            painter.line_segment(
+                [c + egui::vec2(dx, dy) * r * 0.5, c + egui::vec2(dx, dy) * r * 1.5],
+                stroke,
             );
         }
-        if let Some((start, now)) = touch {
-            let (dx, dy) = (now[0] - start[0], now[1] - start[1]);
-            let length = dx.hypot(dy).max(1.0);
-            let reach = length.min(layout.radius());
-            let tip = [start[0] + dx / length * reach, start[1] + dy / length * reach];
-            painter.circle_filled(at(tip), unit * 0.9, knob);
-        }
     }
-    for (center, label, held) in [
-        (layout.jump, "JUMP", pad.held("jump")),
-        (layout.hook, "HOOK", pad.held("hook")),
-        (layout.dig, "DIG", pad.held("dig")),
-        (layout.paint, "PAINT", pad.held("paint")),
+    for (center, label, held, size) in [
+        (layout.use_button, "USE", pad.held("use"), 1.5),
+        (layout.jump, "JUMP", pad.held("jump"), 1.0),
+        (layout.hook, "HOOK", pad.held("hook"), 1.0),
+        (layout.dig, "DIG", pad.held("dig"), 1.0),
+        (layout.paint, "PAINT", pad.held("paint"), 1.0),
     ] {
         let color = if held { knob } else { fill };
-        painter.circle(at(center), unit, color, line);
+        painter.circle(at(center), unit * size, color, line);
         painter.text(
             at(center),
             egui::Align2::CENTER_CENTER,
@@ -471,7 +487,7 @@ impl DemoUi {
                         controls.paused = true;
                     }
                 });
-                ui.add(egui::Slider::new(&mut controls.zoom, 1..=8).text("Zoom"));
+                ui.add(egui::Slider::new(&mut controls.zoom, 1.0..=8.0).text("Zoom"));
                 ui.add(egui::Slider::new(&mut controls.ui_scale, 0.5..=3.0).text("UI scale"));
                 ui.add(
                     egui::Slider::new(&mut controls.sprite_scale, 0.25..=3.0)
@@ -738,7 +754,7 @@ impl DemoUi {
             egui::Order::Background,
             egui::Id::unique("charon demo overlay"),
         ));
-        let scale = controls.zoom as f32 / context.pixels_per_point();
+        let scale = controls.zoom / context.pixels_per_point();
         let screen = |x: f32, y: f32| {
             egui::pos2((x - controls.origin[0]) * scale, (y - controls.origin[1]) * scale)
         };
@@ -861,11 +877,11 @@ fn sparkline(ui: &mut egui::Ui, values: &[f32], color: egui::Color32) {
 }
 
 /// ポインターの画面位置 (ピクセル) をセルにする。有限でなければ `None`。
-pub(super) fn pointer_cell(pos: [f32; 2], zoom: u32, origin: [f32; 2]) -> Option<CellPos> {
+pub(super) fn pointer_cell(pos: [f32; 2], zoom: f32, origin: [f32; 2]) -> Option<CellPos> {
     if !pos[0].is_finite() || !pos[1].is_finite() {
         return None;
     }
-    let zoom = zoom.max(1) as f32;
+    let zoom = zoom.max(1.0);
     Some(CellPos::new(
         (origin[0] + pos[0] / zoom).floor() as i32,
         (origin[1] + pos[1] / zoom).floor() as i32,
@@ -1099,10 +1115,10 @@ mod tests {
 
     #[test]
     fn pointer_cell_handles_zoom_and_invalid_input() {
-        assert_eq!(pointer_cell([40.0, 48.0], 4, [0.0, 0.0]), Some(CellPos::new(10, 12)));
-        assert_eq!(pointer_cell([0.0, 0.0], 4, [-8.0, 3.5]), Some(CellPos::new(-8, 3)));
-        assert_eq!(pointer_cell([f32::NAN, 0.0], 4, [0.0, 0.0]), None);
-        assert_eq!(pointer_cell([1.0, 1.0], 0, [0.0, 0.0]), Some(CellPos::new(1, 1)));
+        assert_eq!(pointer_cell([40.0, 48.0], 4.0, [0.0, 0.0]), Some(CellPos::new(10, 12)));
+        assert_eq!(pointer_cell([0.0, 0.0], 4.0, [-8.0, 3.5]), Some(CellPos::new(-8, 3)));
+        assert_eq!(pointer_cell([f32::NAN, 0.0], 4.0, [0.0, 0.0]), None);
+        assert_eq!(pointer_cell([1.0, 1.0], 0.0, [0.0, 0.0]), Some(CellPos::new(1, 1)));
     }
 
     /// ポーズのメニューと持ち物の画面 (仕様 10 §14): 開くと図形が増え、閉じたままなら増えない。

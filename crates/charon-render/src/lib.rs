@@ -24,7 +24,8 @@ pub use entity_pass::{EntityPass, EntitySprite};
 pub use layers::LayerAllocator;
 pub use light_pass::LightPass;
 pub use passes::{
-    BackgroundPass, FrameContext, FullscreenPass, LightQuality, PassList, RenderPass,
+    BackgroundPass, FrameContext, FullscreenPass, LightQuality, PassList, RenderPass, ZOOM_MAX,
+    ZOOM_MIN, clean_zoom,
 };
 pub use smooth_body::{SmoothBodyPass, SmoothBodySprite};
 pub use sprite::{Sprite, SpriteFilter, SpritePass};
@@ -293,7 +294,7 @@ mod tests {
         .unwrap();
         let ctx = GpuContext { instance, adapter, device, queue, surface: None, config: None };
         let materials = charon_core::material::MaterialTable::builtin().unwrap();
-        let mut passes = PassList::new(&ctx, 256, 256, 4);
+        let mut passes = PassList::new(&ctx, 256, 256, 4.0);
         passes.add(BackgroundPass::new(wgpu::Color::WHITE));
         passes.add(CellPass::new(&ctx, &materials, PassList::scene_format(), 4).unwrap());
         passes.add(BackgroundLayerPass::new(&ctx, &materials, 4).unwrap());

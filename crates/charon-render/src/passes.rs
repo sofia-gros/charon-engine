@@ -69,7 +69,7 @@ pub struct PassList {
     light_divisor: u32,
     viewport: [u32; 2],
     scene_size: [u32; 2],
-    zoom: u32,
+    zoom: f32,
 }
 
 impl std::fmt::Debug for PassList {
@@ -84,8 +84,8 @@ impl std::fmt::Debug for PassList {
 }
 
 impl PassList {
-    pub fn new(ctx: &GpuContext, width: u32, height: u32, zoom: u32) -> Self {
-        let zoom = zoom.max(1);
+    pub fn new(ctx: &GpuContext, width: u32, height: u32, zoom: f32) -> Self {
+        let zoom = clean_zoom(zoom);
         let scene_size = scene_dimensions(width, height, zoom);
         let (scene, scene_view) = make_scene(ctx, scene_size);
         let (post_scene, post_view) = make_post_scene(ctx, [width.max(1), height.max(1)]);
@@ -121,8 +121,9 @@ impl PassList {
         self.quality = quality;
     }
 
-    pub fn set_zoom(&mut self, ctx: &GpuContext, zoom: u32) {
-        self.zoom = zoom.max(1);
+    /// 拡大率 (画素 / セル)。小数でよい (ピンチで滑らかに変える)。0 以下・有限でない値は 1、範囲は `ZOOM_MIN..=ZOOM_MAX`。
+    pub fn set_zoom(&mut self, ctx: &GpuContext, zoom: f32) {
+        self.zoom = clean_zoom(zoom);
         self.resize(ctx, self.viewport[0], self.viewport[1]);
     }
 
@@ -270,8 +271,20 @@ impl PassList {
     }
 }
 
-fn scene_dimensions(width: u32, height: u32, zoom: u32) -> [u32; 2] {
-    [width.div_ceil(zoom).max(1), height.div_ceil(zoom).max(1)]
+/// 拡大率の範囲。
+pub const ZOOM_MIN: f32 = 1.0;
+pub const ZOOM_MAX: f32 = 8.0;
+
+/// 有限で正の値だけを範囲に収め、それ以外は 1 にする。
+pub fn clean_zoom(zoom: f32) -> f32 {
+    if zoom.is_finite() && zoom > 0.0 { zoom.clamp(ZOOM_MIN, ZOOM_MAX) } else { 1.0 }
+}
+
+/// 画面の大きさ (画素) を `zoom` で割った、シーンの大きさ (セル)。切り上げて、画面を覆う。
+fn scene_dimensions(width: u32, height: u32, zoom: f32) -> [u32; 2] {
+    let zoom = clean_zoom(zoom);
+    let cells = |pixels: u32| ((pixels as f32 / zoom).ceil() as u32).max(1);
+    [cells(width), cells(height)]
 }
 
 fn light_format(ctx: &GpuContext) -> wgpu::TextureFormat {
@@ -514,8 +527,27 @@ mod tests {
 
     #[test]
     fn scene_uses_cell_resolution() {
-        assert_eq!(scene_dimensions(1024, 768, 4), [256, 192]);
-        assert_eq!(scene_dimensions(101, 65, 4), [26, 17]);
-        assert_eq!(scene_dimensions(0, 0, 4), [1, 1]);
+        assert_eq!(scene_dimensions(1024, 768, 4.0), [256, 192]);
+        assert_eq!(scene_dimensions(101, 65, 4.0), [26, 17]);
+        assert_eq!(scene_dimensions(0, 0, 4.0), [1, 1]);
+    }
+
+    /// 拡大率は小数でよい (ピンチで滑らかに変える): シーンは `ceil(画面 ÷ 拡大率)` セルで、画面を覆う。
+    #[test]
+    fn zoom_can_be_fractional_and_is_cleaned() {
+        assert_eq!(scene_dimensions(1000, 600, 2.5), [400, 240]);
+        assert_eq!(scene_dimensions(1001, 601, 2.5), [401, 241]);
+        for zoom in [1.0_f32, 1.37, 2.5, 4.99, 7.7, 8.0] {
+            let [w, h] = scene_dimensions(1600, 900, zoom);
+            assert!(w as f32 * zoom >= 1600.0 && h as f32 * zoom >= 900.0, "zoom {zoom}");
+            assert!((w as f32 - 1.0) * zoom < 1600.0, "切り上げすぎない: zoom {zoom}");
+        }
+        assert_eq!(clean_zoom(f32::NAN), 1.0);
+        assert_eq!(clean_zoom(f32::INFINITY), 1.0);
+        assert_eq!(clean_zoom(0.0), 1.0);
+        assert_eq!(clean_zoom(-3.0), 1.0);
+        assert_eq!(clean_zoom(0.3), ZOOM_MIN);
+        assert_eq!(clean_zoom(99.0), ZOOM_MAX);
+        assert_eq!(clean_zoom(3.25), 3.25, "範囲の中は小数のまま");
     }
 }

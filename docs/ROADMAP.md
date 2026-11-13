@@ -336,6 +336,16 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 | T17.7 | API の安定: `prelude`、`non_exhaustive`、[API_POLICY](API_POLICY.md)、[CHANGELOG](../CHANGELOG.md) | `tests/prelude.rs` 2 個 |
 | T17.8 | 性能: 液体・気体の有無の確認を 1 回にする ([08 §7](spec/08-performance.md))。砂の場面が約 5〜9% 速い。8 ms 目標は未達 | 既存のテスト (`golden_hashes` ほか) が同じ値で通る、[BENCHMARKS](BENCHMARKS.md) |
 
+## M18 スマホのタッチ操作の作り直し
+
+2026-11-13 の依頼。Terraria と同じ操作 (移動パッド・ポインター・ボタンでポインターの方へ使う)。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T18.1 | 左下 1/4 の浮動の移動パッド、1 本指のポインター (プレイヤーの周りの円)、右下の `USE`・`HOOK`・`DIG` ボタン、2 本指のスワイプでカメラ (指と逆向き)、ピンチで滑らかなズーム (拡大率を `f32` に) ([10 §11](spec/10-noita-like-game.md)) | `touch_pad` の 8 個、`gesture` の 3 個、`zoom_can_be_fractional_and_is_cleaned`、`demo_renders_touch_pad` ([`M18-touch-controls.png`](screenshots/M18-touch-controls.png)) |
+
+Android 実機での操作は未確認。
+
 未着手 (次の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み、BGM・空間音、フォント、経路探索、性能の次の候補 (08 §6 の (b)(c))。
 
 ---

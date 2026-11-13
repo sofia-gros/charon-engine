@@ -79,7 +79,7 @@ impl ApplicationHandler for Demo {
                     return;
                 }
             };
-            let mut passes = PassList::new(&gpu, config.width, config.height, 4);
+            let mut passes = PassList::new(&gpu, config.width, config.height, 4.0);
             passes.add(BackgroundPass::new(wgpu::Color { r: 0.08, g: 0.10, b: 0.14, a: 1.0 }));
             passes.add(cells);
             passes.add(FullscreenPass::new(&gpu, include_str!("../src/present.wgsl")));

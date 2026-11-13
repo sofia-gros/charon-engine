@@ -169,7 +169,7 @@ fn rainbow_scene(pack: &ModPack) -> (Scene, CellPos) {
             MaterialId::EMPTY,
             Some(first),
             PointerEvent::Down { id: 0, pos },
-            ZOOM,
+            ZOOM as f32,
             origin,
             3,
         );
@@ -273,7 +273,7 @@ fn render_world(gpu: &GpuContext, scene: &mut Scene, center: CellPos) -> (wgpu::
     if let Some(clock) = &clock {
         clock.set_tick(scene.tick);
     }
-    passes.set_zoom(gpu, ZOOM);
+    passes.set_zoom(gpu, ZOOM as f32);
     passes.set_light_quality(scene.light);
     let chunks = scene.world.chunk_positions();
     scene.generator.populate_background(SEED, &chunks, &mut scene.background, &mut scene.populated);
@@ -339,7 +339,7 @@ fn render_ui(
     demo.show_chunks = debug;
     let mut controls = Controls::new(scene.generator.materials.rainbow_sand);
     controls.rainbow = Some(scene.generator.materials.rainbow_sand);
-    controls.zoom = ZOOM;
+    controls.zoom = ZOOM as f32;
     controls.pause_menu = scene.menu;
     controls.inventory_open = scene.menu;
     controls.origin = Scene::origin(center);
@@ -656,6 +656,28 @@ fn demo_renders_touch_pad() {
     }
     capture("touch_pad", "ui", &with);
     let _ = world_pixels;
+    // 使っている最中: 浮動の移動パッド、ポインター、押した `USE` (仕様 10 §11)。
+    let mut active = crate::touch_pad::TouchPad::default();
+    active.set_viewport([WIDTH as f32, HEIGHT as f32]);
+    active.show();
+    let stick = [layout.unit * 3.0, HEIGHT as f32 * 0.5 + layout.unit * 3.0];
+    assert!(active.update(1, winit::event::TouchPhase::Started, stick));
+    active.update(1, winit::event::TouchPhase::Moved, [stick[0] + layout.unit * 2.0, stick[1]]);
+    assert!(active.update(2, winit::event::TouchPhase::Started, layout.use_button));
+    let player = [WIDTH as f32 * 0.5, HEIGHT as f32 * 0.5];
+    active.set_view(4.0, Some(player));
+    active.pointer_update(3, winit::event::TouchPhase::Started, [500.0, 200.0], 4.0, false);
+    active.pointer_update(3, winit::event::TouchPhase::Moved, [620.0, 160.0], 4.0, false);
+    let tip = active.pointer_screen().expect("ポインターが動いた");
+    assert_eq!(tip, [player[0] + 30.0 * 4.0, player[1] - 10.0 * 4.0], "120 画素 ÷ 4 = 30 セル");
+    scene.pad = Some(active);
+    let (texture, _) = render_world(&gpu, &mut scene, center);
+    let used = render_ui(&gpu, &scene, center, &texture, false);
+    let ring = [tip[0] + layout.unit * 0.55, tip[1]];
+    assert!(luma(&used, ring) > luma(&without, ring), "ポインターが描かれる");
+    let use_ring = [layout.use_button[0] + layout.unit * 1.3, layout.use_button[1]];
+    assert!(luma(&used, use_ring) > luma(&with, use_ring), "押した USE は明るくなる");
+    capture("touch_controls", "ui", &used);
 }
 
 /// スプライトの拡大率 (仕様 06 §10): 同じ 32x64 の画像を、拡大率を 2 倍にすると面積が約 4 倍になる。

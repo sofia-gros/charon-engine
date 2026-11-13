@@ -23,7 +23,11 @@ pub(super) struct Controls {
     pub(super) paused: bool,
     pub(super) step_once: bool,
     pub(super) origin: [f32; 2],
-    pub(super) zoom: u32,
+    pub(super) zoom: f32,
+    /// プレイヤーを追うときの、プレイヤーからのカメラのずれ (セル、2 本指のスワイプで動く、仕様 10 §11)。
+    pub(super) cam_offset: [f32; 2],
+    /// 2 本指の操作から経った秒。長いと、ずれは少しずつもどる。
+    pub(super) cam_idle: f32,
     pub(super) light_quality: LightQuality,
     pub(super) show_debug: bool,
     /// 画面の部品 (パネル・仮想パッド) の大きさの倍率。
@@ -63,7 +67,9 @@ impl Controls {
             paused: false,
             step_once: false,
             origin: [0.0, 0.0],
-            zoom: 4,
+            zoom: 4.0,
+            cam_offset: [0.0, 0.0],
+            cam_idle: 0.0,
             light_quality: LightQuality::High,
             show_debug: false,
             ui_scale: 1.0,
@@ -204,7 +210,7 @@ impl Gui {
                         controls.paused = true;
                     }
                 });
-                ui.add(egui::Slider::new(&mut controls.zoom, 1..=8).text("Zoom"));
+                ui.add(egui::Slider::new(&mut controls.zoom, 1.0..=8.0).text("Zoom"));
                 ui.add(egui::Slider::new(&mut controls.ui_scale, 0.5..=3.0).text("UI scale"));
                 ui.horizontal(|ui| {
                     ui.label("Light");
@@ -319,7 +325,7 @@ fn draw_debug(context: &egui::Context, world: &World, controls: &Controls) {
         egui::Order::Foreground,
         egui::Id::unique("charon debug bounds"),
     ));
-    let scale = controls.zoom as f32 / context.pixels_per_point();
+    let scale = controls.zoom / context.pixels_per_point();
     let screen = |x: f32, y: f32| {
         egui::pos2((x - controls.origin[0]) * scale, (y - controls.origin[1]) * scale)
     };

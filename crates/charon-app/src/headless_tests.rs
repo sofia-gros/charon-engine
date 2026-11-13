@@ -75,7 +75,7 @@ fn headless_windows_pointer_save_reload() {
             sand,
             None,
             PointerEvent::Down { id: 0, pos: [48.0, 40.0] },
-            4,
+            4.0,
             [0.0, 0.0],
             1,
         );
@@ -88,7 +88,7 @@ fn headless_windows_pointer_save_reload() {
             Layer::Background,
             wood,
             PointerEvent::Down { id: 0, pos: [80.0, 48.0] },
-            4,
+            4.0,
             [0.0, 0.0],
         )
         .unwrap();
@@ -152,7 +152,7 @@ fn rainbow_brush_colors_by_x() {
         MaterialId::EMPTY, // 虹色のときは選択中の材質を使わない。
         Some(first),
         PointerEvent::Down { id: 0, pos: [32.0, 32.0] },
-        1,
+        1.0,
         [0.0, 0.0],
         12,
     );

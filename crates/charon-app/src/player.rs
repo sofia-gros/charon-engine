@@ -158,9 +158,10 @@ impl KeyState {
 }
 
 /// プレイヤーの中心がシーンの中央になるカメラの原点 (セル、整数に切り捨て)。
-pub fn follow_origin(entity: &Entity, viewport: [u32; 2], zoom: u32) -> [f32; 2] {
-    let zoom = zoom.max(1);
-    let scene = [i64::from(viewport[0].div_ceil(zoom)), i64::from(viewport[1].div_ceil(zoom))];
+pub fn follow_origin(entity: &Entity, viewport: [u32; 2], zoom: f32) -> [f32; 2] {
+    let zoom = charon_render::clean_zoom(zoom);
+    let cells = |pixels: u32| (pixels as f32 / zoom).ceil() as i64;
+    let scene = [cells(viewport[0]), cells(viewport[1])];
     let center_x = entity.x16.div_euclid(16) + i64::from(entity.width) / 2;
     let center_y = entity.y16.div_euclid(16) + i64::from(entity.height) / 2;
     [(center_x - scene[0] / 2) as f32, (center_y - scene[1] / 2) as f32]
@@ -276,10 +277,11 @@ mod tests {
         let id = entities.spawn(640, 3968, 8, 16).unwrap();
         let player = entities.get(id).unwrap().clone();
         for (viewport, zoom) in
-            [([1024, 768], 4), ([1920, 1016], 4), ([800, 600], 1), ([333, 111], 3)]
+            [([1024, 768], 4.0), ([1920, 1016], 4.0), ([800, 600], 1.0), ([333, 111], 3.0)]
         {
             let origin = follow_origin(&player, viewport, zoom);
-            let scene = [viewport[0].div_ceil(zoom) / 2, viewport[1].div_ceil(zoom) / 2];
+            let cells = |pixels: u32| (pixels as f32 / zoom).ceil() as u32;
+            let scene = [cells(viewport[0]) / 2, cells(viewport[1]) / 2];
             // プレイヤーの中心 (44, 256) がシーンの中央に来る。
             assert_eq!(
                 [origin[0] + scene[0] as f32, origin[1] + scene[1] as f32],
@@ -290,7 +292,7 @@ mod tests {
         // 負座標でも切り捨てが一貫する: x = -2、y = -3 のセル、中心は (2, 5)。
         let id = entities.spawn(-24, -40, 8, 16).unwrap();
         let negative = entities.get(id).unwrap().clone();
-        assert_eq!(follow_origin(&negative, [64, 64], 1), [2.0 - 32.0, 5.0 - 32.0]);
+        assert_eq!(follow_origin(&negative, [64, 64], 1.0), [2.0 - 32.0, 5.0 - 32.0]);
     }
 
     /// キー割り当て (仕様 10 §14): 割り当てを変えると、新しいキーが効き、古いキーは効かなくなる。押している間に入れ替えても、

@@ -397,19 +397,25 @@ pub struct Rope { /* 点列、前の点列、phase、rest (静止長)、先端�
 
 Android (とタッチ画面のデスクトップ) で `charon-demo` を遊ぶための操作。ゲーム (`AppOptions::follow_player`) が有効なときだけ働く。エンジンの入力 `PlayerInput`・`GameInput` は変わらない。
 
-### 11.1 仮想スティックとボタン (`charon-app::touch_pad`)
+### 11.1 タッチ操作 (Terraria 型、`charon-app::touch_pad`・`gesture`、M18)
 
-画面の大きさ `(w, h)` から `unit = max(min(w, h) × 0.07, 20)` ピクセルを決め、次を置く。
+画面の大きさ `(w, h)` から `unit = max(min(w, h) × 0.07, 20) × UI の倍率` ピクセルを決める。画面を 4 分割して考える。
 
 | 部品 | 位置 | 操作 |
 |---|---|---|
-| 移動スティック | 左下 (`x < 0.4w`、`y > 0.4h`)。半径 `3 × unit` | 横にずらすと歩く (ずれ > 半径の 0.3)。**上へスワイプ** (ずれ < −半径の 0.7) するとジャンプ |
-| 狙いスティック | 右下 (`0.45w ≤ x < w − 3.6 unit`、`y > 0.4h`) | 触れている間は**武器を撃つ**。ずらした向き (ずれ > 半径の 0.25) へ狙う。向きは `(dx, dy)` を長さ 1000 にそろえた整数 |
-| `JUMP` | 右端の下 `(w − 1.7 unit, h − 1.8 unit)` | 押している間ジャンプ |
-| `HOOK` | その上 `(…, h − 4.5 unit)` | 押している間**右手の道具** (ワイヤーフック)。向きは最後の狙い (一度もなければ右上 `(1000, −400)`) |
-| `PAINT` | さらに上 `(…, h − 7.2 unit)` | 押すたびに、左手 (武器) と描画 (ブラシ) を切り替える (`B` キーと同じ) |
+| **移動パッド** (浮動) | **左下の 1/4** (`x < 0.5w`、`y ≥ 0.5h`)。半径 `3 × unit` | どこに触れても、触れた場所が中心になる。横にずらすと歩く (ずれ > 半径の 0.3)。上へずらす (ずれ < −半径の 0.7) とジャンプ。離すと止まる |
+| **ポインター** | パッドとボタンの**外**を **1 本指**でなぞる | プレイヤーを中心にした円の中を動く。動く量は「指のずれ (画素) ÷ 拡大率」セルで、触れたときの位置から続く (トラックパッドのように相対)。円の半径は `0.45 × min(w, h) ÷ 拡大率` セルで、遠くまでなぞっても円の縁で止まる。指を離しても残る。画面に十字の丸で描く |
+| **カメラ** | パッドとボタンの外を **2 本指**でスワイプ | 指と**逆向き**にカメラが動く (右から左へスワイプ → カメラはプレイヤーの右側へ)。プレイヤーからのずれ (`Controls::cam_offset`) として持ち、`0.45 × min(w, h) ÷ 拡大率` セルの円の中に収める。2 本指の操作から `CAM_RECENTER_DELAY` (3 秒) たつと、毎秒の割合 `CAM_RECENTER_RATE` (3) でプレイヤーの追従へもどる。2 本指になったら、1 本指のポインターはその前の位置にもどる |
+| **ピンチ** | 同じ 2 本指 | 指の距離の比で、拡大率が**滑らかに** (整数に丸めず) 変わる。範囲は `ZOOM_MIN` (1) 〜 `ZOOM_MAX` (8)。描画のシーンの大きさは `ceil(画面 ÷ 拡大率)` セル |
+| `USE` | 右下の隅 `(w − 2.2 unit, h − 2.2 unit)`、半径 `1.5 unit` | 押している間、**ポインターのある方へ使う**。武器モードでは武器を撃ち、描画モード (`PAINT` で切り替え) では選んでいる材質 (建築なら建築) をポインターの場所へ置く |
+| `HOOK` | `(w − 2.0 unit, h − 5.6 unit)` | 押している間**右手の道具** (ワイヤーフック) を、ポインターのある方へ |
+| `DIG` | `(w − 5.2 unit, h − 5.2 unit)` | 押している間**掘る道具**を、ポインターのある方へ |
+| `JUMP` | `(w − 5.6 unit, h − 1.8 unit)` | 押している間ジャンプ (浮遊の装備があれば、押している間浮かぶ) |
+| `PAINT` | `(w − 2.0 unit, h − 8.8 unit)` | 押すたびに、武器と描画 (ブラシ) を切り替える (`B` キーと同じ) |
 
-スティックは、触れた場所を中心にして、指の位置に丸を描く。部品に触れた指は、2 本指のカメラ操作 (`TouchGestures`) とブラシに渡さない。部品の外のタッチは、これまでどおり (2 本指でカメラ、1 本指でブラシ・剛体のつかみ)。部品は、最初のタッチ (Android では最初から) で出す。半透明で描き、`MOVE`・`AIM`・`JUMP`・`HOOK`・`PAINT` の文字を添える。
+- 狙う向きは、プレイヤーからポインターへの `(dx, dy)` を長さ 1000 にそろえた整数。ポインターが近すぎる (0.5 セル未満)・まだ動かしていないときは、右上 `(1000, −400)`。
+- ポインターが無いときは描かない。パッドとボタンに触れた指は、カメラとポインターに渡さない。部品は、最初のタッチ (Android では最初から) で出し、半透明で `MOVE`・`USE`・`JUMP`・`HOOK`・`DIG`・`PAINT` の文字を添える。
+- プレイヤーのいるゲーム (`follow_player`) では、画面の 1 本指はブラシや武器のボタンにならない (`USE` を使う)。マウスは従来どおり (左ボタン = 武器またはブラシ、右ボタン = 道具、中ボタン = 掘る道具)。プレイヤーのいない画面 (サンドボックス) では、2 本指のスワイプが `origin` を、ピンチが拡大率を変え、1 本指はブラシ。
 
 ### 11.2 ゲームパッド
 
@@ -420,14 +426,21 @@ Android (とタッチ画面のデスクトップ) で `charon-demo` を遊ぶた
 
 | テスト | 確認 |
 |---|---|
-| `stick_walks_and_swipe_up_jumps` | 移動スティックで歩き、上へスワイプするとジャンプし、離すと止まる |
-| `aim_stick_fires_toward_the_drag` | 狙いスティックに触れている間は撃ち、ずらした向きへ狙い、`HOOK` は最後の狙いの向きへ撃つ |
-| `buttons_hold_and_paint_toggles_once` | `JUMP` は押している間、`PAINT` の切り替えは 1 度だけ |
-| `touches_outside_the_pad_are_left_to_the_camera_and_brush` | 部品の外のタッチは部品のものにならない |
+| `floating_stick_walks_and_swipe_up_jumps` | 移動パッドは触れた場所が中心で、歩き、上へずらすとジャンプし、離すと止まる |
+| `the_stick_zone_is_the_lower_left_quarter` | パッドの領域は左下の 1/4 だけ。右半分・上半分は部品ではない |
+| `the_pointer_moves_relative_to_the_drag_inside_a_circle_and_stays` | ポインターは、指のずれ ÷ 拡大率だけ動き、円の縁で止まり、離しても残り、次のなぞりはそこから続く |
+| `a_second_finger_cancels_the_pointer_and_bad_values_are_ignored` | 2 本指になったらポインターは前の位置にもどる。NaN・不正な拡大率は無視 |
+| `buttons_use_toward_the_pointer_and_paint_toggles_once` | `USE`・`HOOK`・`DIG` はポインターの向きへ。まだなら既定の向き。`PAINT` の切り替えは 1 度だけ |
+| `aim_and_screen_position_follow_the_pointer` | 向きと、描画用の画面の位置 |
+| `scale_resizes_the_pad` | UI の倍率でパッドとボタンの大きさが変わる |
+| `buttons_sit_in_the_lower_right_without_overlapping` | ボタンは右下に並び、画面内で、重ならない (3 つの画面の大きさ) |
+| `two_finger_pan_moves_the_camera_opposite_and_pinch_zooms_smoothly` | 2 本指で指と逆向きにカメラが動く。ピンチで拡大率が整数でなく滑らかに変わり、範囲で止まる |
+| `following_pans_the_offset_inside_a_circle` | 追従中は `cam_offset` が動き (`origin` は動かない)、円の中で止まり、タイマーが 0 に戻る |
+| `one_finger_and_bad_positions_do_nothing` | 1 本指ではカメラは動かない。不正な座標は無視 |
 | `android_gamepad_buttons_map_to_actions` | Android のボタンが武器・道具・切り替えになり、知らないボタンは無視する |
 | `sticks_and_buttons_map_to_actions` | デスクトップのゲームパッドのスティック・十字キー・ボタンが歩く・ジャンプ・武器・道具・切り替えになり、触れなければ何もしない |
 | `right_stick_aims_with_screen_down_positive` | 右スティックの上が画面の上 (y 負) になり、小さな傾きでは狙いを変えない |
-| `demo_renders_touch_pad` | RTX 4060 のオフスクリーン描画で、仮想パッドが重ね描きに出る ([`M13-touch-pad.png`](../screenshots/M13-touch-pad.png)) |
+| `demo_renders_touch_pad` | RTX 4060 のオフスクリーン描画で、パッド・ポインター・押した `USE` が重ね描きに出る ([`M18-touch-controls.png`](../screenshots/M18-touch-controls.png)) |
 
 Android 実機での確認は未実施。
 
