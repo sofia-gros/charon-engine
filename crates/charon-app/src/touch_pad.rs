@@ -26,6 +26,8 @@ pub(crate) struct PadOutput {
     pub aim: Option<(i32, i32)>,
     /// このフレームに、武器 / ブラシの切り替えが押された。
     pub toggle_paint: bool,
+    /// ズームのボタン: 1 = 拡大、-1 = 縮小 (押している間)。
+    pub zoom: i8,
 }
 
 impl PadOutput {
@@ -40,6 +42,7 @@ impl PadOutput {
             use_item: self.use_item || other.use_item,
             aim: other.aim.or(self.aim),
             toggle_paint: self.toggle_paint || other.toggle_paint,
+            zoom: if other.zoom != 0 { other.zoom } else { self.zoom },
         }
     }
 }
@@ -63,6 +66,8 @@ enum Owner {
     Dig,
     Paint,
     Use,
+    ZoomIn,
+    ZoomOut,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -111,6 +116,9 @@ pub(crate) struct Layout {
     pub hook: [f32; 2],
     pub dig: [f32; 2],
     pub paint: [f32; 2],
+    /// ズームのボタン (拡大・縮小)。半径は `0.8 unit`。
+    pub zoom_in: [f32; 2],
+    pub zoom_out: [f32; 2],
 }
 
 impl Layout {
@@ -128,6 +136,8 @@ impl Layout {
             hook: [w - 2.0 * unit, h - 5.6 * unit],
             dig: [w - 5.2 * unit, h - 5.2 * unit],
             paint: [w - 2.0 * unit, h - 8.8 * unit],
+            zoom_in: [w - 8.6 * unit, h - 5.2 * unit],
+            zoom_out: [w - 8.6 * unit, h - 1.8 * unit],
         }
     }
 
@@ -159,6 +169,12 @@ impl Layout {
         }
         if near(self.paint, 1.3) {
             return Some(Owner::Paint);
+        }
+        if near(self.zoom_in, 1.1) {
+            return Some(Owner::ZoomIn);
+        }
+        if near(self.zoom_out, 1.1) {
+            return Some(Owner::ZoomOut);
         }
         let [left, top, right, bottom] = self.stick_zone;
         (pos[0] >= left && pos[0] < right && pos[1] >= top && pos[1] <= bottom)
@@ -246,11 +262,10 @@ impl TouchPad {
         }
         match phase {
             TouchPhase::Started => {
-                if self.pointer_touch.is_none() {
-                    self.visible = true;
-                    let base = self.pointer.unwrap_or([0.0, 0.0]);
-                    self.pointer_touch = Some(PointerTouch { id, start: pos, base });
-                }
+                // 新しく触れた指が、ポインターの指になる (前の指が離れたイベントを取りこぼしていても詰まらない)。
+                self.visible = true;
+                let base = self.pointer.unwrap_or([0.0, 0.0]);
+                self.pointer_touch = Some(PointerTouch { id, start: pos, base });
             }
             TouchPhase::Moved => {
                 let Some(touch) = self.pointer_touch.filter(|t| t.id == id) else { return };
@@ -290,6 +305,9 @@ impl TouchPad {
                 if owner == Owner::Paint {
                     self.toggle = true;
                 }
+                // 同じ部品に新しく触れたら、前の指は古いもの (離したイベントを取りこぼした) とみなして捨てる。
+                // 3 本以上の指でイベントが失われても、ボタンや歩きが押されたままにならない。
+                self.touches.retain(|_, t| t.owner != owner);
                 self.touches.insert(id, Touch { owner, start: pos, now: pos });
                 true
             }
@@ -322,9 +340,16 @@ impl TouchPad {
             "jump" => Owner::Jump,
             "hook" => Owner::Hook,
             "dig" => Owner::Dig,
+            "zoom_in" => Owner::ZoomIn,
+            "zoom_out" => Owner::ZoomOut,
             _ => Owner::Paint,
         };
         self.touches.values().any(|t| t.owner == owner)
+    }
+
+    /// ズームのボタンの向き: 拡大のボタンだけなら 1、縮小だけなら -1、どちらでもない・両方なら 0。
+    pub(crate) fn zoom_direction(&self) -> i8 {
+        i8::from(self.held("zoom_in")) - i8::from(self.held("zoom_out"))
     }
 
     /// 今の操作。切り替えは 1 度だけ返す。
@@ -346,13 +371,14 @@ impl TouchPad {
                 Owner::Hook => out.tool = true,
                 Owner::Dig => out.dig = true,
                 Owner::Use => out.use_item = true,
-                Owner::Paint => {}
+                Owner::ZoomIn | Owner::ZoomOut | Owner::Paint => {}
             }
         }
         if out.use_item || out.tool || out.dig {
             out.aim = Some(self.aim());
         }
         out.toggle_paint = std::mem::take(&mut self.toggle);
+        out.zoom = self.zoom_direction();
         out
     }
 }
@@ -482,6 +508,63 @@ mod tests {
         assert!(!pad.output().jump);
     }
 
+    /// ズームのボタン: 押している間、拡大 (+1)・縮小 (-1)。離すと止まる。
+    #[test]
+    fn zoom_buttons_hold_and_release() {
+        let mut pad = pad();
+        let layout = pad.layout();
+        assert_eq!(pad.output().zoom, 0);
+        assert!(pad.update(1, TouchPhase::Started, layout.zoom_in));
+        assert_eq!(pad.output().zoom, 1);
+        assert!(pad.held("zoom_in") && !pad.held("zoom_out"));
+        assert!(pad.update(2, TouchPhase::Started, layout.zoom_out));
+        assert_eq!(pad.output().zoom, 0, "両方押したら、打ち消し合う");
+        pad.update(1, TouchPhase::Ended, layout.zoom_in);
+        assert_eq!((pad.output().zoom, pad.zoom_direction()), (-1, -1), "縮小だけ");
+        pad.update(2, TouchPhase::Ended, layout.zoom_out);
+        assert_eq!(pad.output().zoom, 0);
+    }
+
+    /// 離したイベントを取りこぼしても (3 本以上の指で起こる)、同じ部品にもう一度触れれば古い指は捨てられ、
+    /// 押されたままにならない。移動パッドが固まって歩かなくなることもない。
+    #[test]
+    fn lost_release_events_do_not_leave_buttons_or_the_stick_stuck() {
+        let mut pad = pad();
+        let layout = pad.layout();
+        // `JUMP` を押したまま、離したイベントが届かない。
+        assert!(pad.update(1, TouchPhase::Started, layout.jump));
+        assert!(pad.output().jump);
+        // 別の指でもう一度 `JUMP` に触れて、離す: 古い指は捨てられ、ジャンプは止まる。
+        assert!(pad.update(7, TouchPhase::Started, layout.jump));
+        assert!(pad.update(7, TouchPhase::Ended, layout.jump));
+        assert!(!pad.output().jump, "押されたままにならない");
+        // 移動パッド: 古い指が右へずれたまま残っても、新しく触れれば置き換わる。
+        let r = layout.radius();
+        pad.update(2, TouchPhase::Started, [300.0, 600.0]);
+        pad.update(2, TouchPhase::Moved, [300.0 + r, 600.0]);
+        assert_eq!(pad.output().horizontal, 1);
+        pad.update(8, TouchPhase::Started, [200.0, 700.0]);
+        assert_eq!(pad.output().horizontal, 0, "新しい指が中心になり、古い指は捨てられる");
+        pad.update(8, TouchPhase::Moved, [200.0 - r, 700.0]);
+        assert_eq!(pad.output().horizontal, -1);
+        // ポインターの指も、新しく触れた指に置き換わる。
+        pad.pointer_update(3, TouchPhase::Started, [1000.0, 300.0], 4.0, false);
+        pad.pointer_update(4, TouchPhase::Started, [1100.0, 300.0], 4.0, false);
+        pad.pointer_update(4, TouchPhase::Moved, [1140.0, 300.0], 4.0, false);
+        assert_eq!(pad.pointer_offset(), Some([10.0, 0.0]));
+        pad.pointer_update(3, TouchPhase::Moved, [1500.0, 300.0], 4.0, false);
+        assert_eq!(pad.pointer_offset(), Some([10.0, 0.0]), "古い指の動きは無視する");
+        // 3 本の指が、順に別の部品に触れ、順に離れる: すべてもとにもどる。
+        pad.release_all();
+        for (id, at) in [(10, layout.use_button), (11, layout.hook), (12, [300.0, 600.0])] {
+            assert!(pad.update(id, TouchPhase::Started, at));
+        }
+        for (id, at) in [(11, layout.hook), (12, [300.0, 600.0]), (10, layout.use_button)] {
+            assert!(pad.update(id, TouchPhase::Ended, at));
+        }
+        assert_eq!(pad.output(), PadOutput::default());
+    }
+
     /// ポインターが真上・真下・近すぎるときの向きと、描画用の位置。
     #[test]
     fn aim_and_screen_position_follow_the_pointer() {
@@ -523,7 +606,15 @@ mod tests {
     fn buttons_sit_in_the_lower_right_without_overlapping() {
         for view in [[1600.0, 900.0], [800.0, 400.0], [2400.0, 1080.0]] {
             let layout = Layout::new(view, 1.0);
-            let buttons = [layout.use_button, layout.jump, layout.hook, layout.dig, layout.paint];
+            let buttons = [
+                layout.use_button,
+                layout.jump,
+                layout.hook,
+                layout.dig,
+                layout.paint,
+                layout.zoom_in,
+                layout.zoom_out,
+            ];
             for (i, a) in buttons.iter().enumerate() {
                 assert!(a[0] > view[0] * 0.5 && a[1] > 0.0 && a[0] < view[0] && a[1] < view[1]);
                 for b in &buttons[i + 1..] {

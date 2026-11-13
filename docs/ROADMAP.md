@@ -342,9 +342,11 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 
 | タスク | 作るもの | 完了条件 |
 |---|---|---|
-| T18.1 | 左下 1/4 の浮動の移動パッド、1 本指のポインター (プレイヤーの周りの円)、右下の `USE`・`HOOK`・`DIG` ボタン、2 本指のスワイプでカメラ (指と逆向き)、ピンチで滑らかなズーム (拡大率を `f32` に) ([10 §11](spec/10-noita-like-game.md)) | `touch_pad` の 8 個、`gesture` の 3 個、`zoom_can_be_fractional_and_is_cleaned`、`demo_renders_touch_pad` ([`M18-touch-controls.png`](screenshots/M18-touch-controls.png)) |
+| T18.1 | 左下 1/4 の浮動の移動パッド、1 本指のポインター (プレイヤーの周りの円)、右下の `USE`・`HOOK`・`DIG` ボタン、滑らかなズーム (拡大率を `f32` に。2 本指のスワイプ・ピンチは T18.2 で廃止) ([10 §11](spec/10-noita-like-game.md)) | `touch_pad` の 8 個、`gesture` の 3 個、`zoom_can_be_fractional_and_is_cleaned`、`demo_renders_touch_pad` ([`M18-touch-controls.png`](screenshots/M18-touch-controls.png)) |
 
-Android 実機での操作は未確認。
+| T18.2 | 実機 (Android) の確認からの修正: ピンチ・スワイプのカメラを廃止してズームのボタン (`+` `-`) とカメラの遅れて追う追従に、ジャンプは短押し = ジャンプ・長押し = ホバー (`LevitationDef::delay`)、HUD は右上の小さなバーだけ、パネルは左端のタブに格納、**3 本ほどの指で固まる不具合の修正** (離すイベントは UI が消費しても必ず部品に渡す、同じ部品に触れ直すと古い指を捨てる) ([10 §11・§18](spec/10-noita-like-game.md)) | `zoom_buttons_hold_and_release`、`lost_release_events_do_not_leave_buttons_or_the_stick_stuck`、`panels_dock_to_the_left_and_open_by_touch`、`a_short_press_is_a_plain_jump`、`holding_past_the_delay_hovers_until_the_fuel_runs_out` |
+
+Android 実機での再確認はこれから (T18.2 の修正は実機で確かめていない)。
 
 未着手 (次の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み、BGM・空間音、フォント、経路探索、性能の次の候補 (08 §6 の (b)(c))。
 

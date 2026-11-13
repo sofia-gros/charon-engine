@@ -27,9 +27,8 @@ mod timestep;
 mod touch_pad;
 mod ui;
 
-/// 2 本指でずらしたカメラが、プレイヤーの追従へもどり始めるまでの秒と、もどる速さ (1 秒あたり)。
-const CAM_RECENTER_DELAY: f32 = 3.0;
-const CAM_RECENTER_RATE: f32 = 3.0;
+/// ズームのボタンを押している間の、拡大率が変わる速さ (1 秒あたりの自然対数)。0.9 なら約 2.5 倍 / 秒。
+const ZOOM_BUTTON_RATE: f32 = 0.9;
 
 /// ゲームを作る人が使う名前をまとめたもの (仕様 14 §5)。`use charon_app::prelude::*;` で足りる。
 /// ここに載せた名前は、互換性の方針 (`docs/API_POLICY.md`) の「安定」の対象。
@@ -943,6 +942,17 @@ impl App {
         }
         let now = Instant::now();
         let elapsed = self.previous.replace(now).map_or_default(|previous| now - previous);
+        // ズームのボタン (仕様 10 §11): 押している間、拡大率が滑らかに変わる。
+        let zoom_dir = i32::from(self.touch_pad.zoom_direction());
+        if self.options.follow_player
+            && zoom_dir != 0
+            && let Some(gui) = self.gui.as_mut()
+        {
+            let dt = elapsed.as_secs_f32().min(0.25);
+            gui.controls.zoom = charon_render::clean_zoom(
+                gui.controls.zoom * (zoom_dir as f32 * ZOOM_BUTTON_RATE * dt).exp(),
+            );
+        }
         let (zoom, mut origin, paused, step_once, light_quality) = self.gui.as_ref().map_or(
             (4.0, [0.0, 0.0], false, false, charon_render::LightQuality::High),
             |gui| {
@@ -963,21 +973,8 @@ impl App {
                 let delta = self.keys.camera_delta();
                 origin = [origin[0] + delta[0] as f32, origin[1] + delta[1] as f32];
             } else if let Some(player) = self.player.and_then(|id| self.entities.get(id)) {
-                let mut target = follow_origin(player, [size.width, size.height], zoom);
-                // 2 本指のスワイプで動かしたずれ (仕様 10 §11)。しばらく操作しなければ、少しずつもどす。
-                if let Some(gui) = self.gui.as_mut() {
-                    let (dt, controls) = (elapsed.as_secs_f32(), &mut gui.controls);
-                    controls.cam_idle += dt;
-                    if controls.cam_idle > CAM_RECENTER_DELAY && !self.gestures.active() {
-                        let k = 1.0 - (-CAM_RECENTER_RATE * dt.min(0.25)).exp();
-                        controls.cam_offset[0] -= controls.cam_offset[0] * k;
-                        controls.cam_offset[1] -= controls.cam_offset[1] * k;
-                    }
-                    let view = [size.width as f32, size.height as f32];
-                    gesture::clamp_offset(&mut controls.cam_offset, view, zoom);
-                    target[0] += controls.cam_offset[0];
-                    target[1] += controls.cam_offset[1];
-                }
+                // プレイヤーが画面の中心に来るように、少し遅れて追う (仕様 10 §11)。
+                let target = follow_origin(player, [size.width, size.height], zoom);
                 origin = self.camera_fx.step(target, elapsed.as_secs_f32(), true);
             } else {
                 self.camera_fx.reset();
@@ -1676,11 +1673,21 @@ impl ApplicationHandler for App {
             }
         }
         let consumed = self.gui.as_mut().is_some_and(|gui| gui.on_event(&window, &event));
+        let gui_consumed = consumed;
         // 画面のスティック・ボタンのタッチは、カメラ操作やブラシに渡さない (仕様 10 §10)。
+        // 新しく触れた指だけは、UI (パネル) が使っていれば部品に渡さない。動かす・離すイベントは、UI が消費しても
+        // 必ず部品に渡す (渡さないと、離したイベントを取りこぼして、ボタンが押されたままになる)。
         let pad_owned = match &event {
-            WindowEvent::Touch(touch) if self.options.follow_player && !consumed => self
-                .touch_pad
-                .update(touch.id, touch.phase, [touch.location.x as f32, touch.location.y as f32]),
+            WindowEvent::Touch(touch)
+                if self.options.follow_player
+                    && (!gui_consumed || touch.phase != winit::event::TouchPhase::Started) =>
+            {
+                self.touch_pad.update(
+                    touch.id,
+                    touch.phase,
+                    [touch.location.x as f32, touch.location.y as f32],
+                )
+            }
             _ => false,
         };
         let consumed = consumed || pad_owned;
@@ -1735,37 +1742,25 @@ impl ApplicationHandler for App {
                 self.tool_down = false;
             }
         }
-        let mut gesture = if pad_owned {
-            false
-        } else if let (WindowEvent::Touch(touch), Some(gui)) = (&event, self.gui.as_mut()) {
-            let view = window.inner_size();
-            self.gestures.update(
-                touch.id,
-                touch.phase,
-                [touch.location.x as f32, touch.location.y as f32],
-                &mut gui.controls,
-                self.options.follow_player,
-                [view.width as f32, view.height as f32],
-            )
-        } else {
-            false
-        };
-        // 1 本指のなぞりは、ポインターを動かす (仕様 10 §11)。2 本指になったら、ポインターは動かさずカメラ操作。
-        // プレイヤーのいるゲームでは、画面の 1 本指はブラシや武器のボタンにならない (`USE` ボタンを使う)。
-        if self.options.follow_player
+        let mut gesture = false;
+        if let WindowEvent::Touch(touch) = &event
             && !pad_owned
-            && !consumed
-            && let WindowEvent::Touch(touch) = &event
         {
-            let zoom = self.gui.as_ref().map_or(4.0, |gui| gui.controls.zoom);
-            self.touch_pad.pointer_update(
-                touch.id,
-                touch.phase,
-                [touch.location.x as f32, touch.location.y as f32],
-                zoom,
-                gesture || self.gestures.fingers() >= 2,
-            );
-            gesture = true;
+            let at = [touch.location.x as f32, touch.location.y as f32];
+            if self.options.follow_player {
+                // 1 本指のなぞりは、ポインターを動かす (仕様 10 §11)。ピンチやスワイプのカメラ操作はない
+                // (ズームはボタン、カメラはプレイヤーを少し遅れて追う)。プレイヤーのいるゲームでは、画面の
+                // 1 本指はブラシや武器のボタンにならない (`USE` ボタンを使う)。新しく触れた指は、UI が使っていれば
+                // 渡さない。動かす・離すは、UI が消費しても渡す (取りこぼすとポインターの指が詰まる)。
+                if !gui_consumed || touch.phase != winit::event::TouchPhase::Started {
+                    let zoom = self.gui.as_ref().map_or(4.0, |gui| gui.controls.zoom);
+                    self.touch_pad.pointer_update(touch.id, touch.phase, at, zoom, false);
+                    gesture = true;
+                }
+            } else if let Some(gui) = self.gui.as_mut() {
+                // プレイヤーのいない画面 (サンドボックス): 2 本指のスワイプとピンチでカメラとズーム。
+                gesture = self.gestures.update(touch.id, touch.phase, at, &mut gui.controls);
+            }
         }
         if let Some(pointer) = self.pointer.normalize(&event) {
             let (selected, zoom, origin, radius, build_layer) =

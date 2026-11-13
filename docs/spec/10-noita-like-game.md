@@ -405,17 +405,25 @@ Android (とタッチ画面のデスクトップ) で `charon-demo` を遊ぶた
 |---|---|---|
 | **移動パッド** (浮動) | **左下の 1/4** (`x < 0.5w`、`y ≥ 0.5h`)。半径 `3 × unit` | どこに触れても、触れた場所が中心になる。横にずらすと歩く (ずれ > 半径の 0.3)。上へずらす (ずれ < −半径の 0.7) とジャンプ。離すと止まる |
 | **ポインター** | パッドとボタンの**外**を **1 本指**でなぞる | プレイヤーを中心にした円の中を動く。動く量は「指のずれ (画素) ÷ 拡大率」セルで、触れたときの位置から続く (トラックパッドのように相対)。円の半径は `0.45 × min(w, h) ÷ 拡大率` セルで、遠くまでなぞっても円の縁で止まる。指を離しても残る。画面に十字の丸で描く |
-| **カメラ** | パッドとボタンの外を **2 本指**でスワイプ | 指と**逆向き**にカメラが動く (右から左へスワイプ → カメラはプレイヤーの右側へ)。プレイヤーからのずれ (`Controls::cam_offset`) として持ち、`0.45 × min(w, h) ÷ 拡大率` セルの円の中に収める。2 本指の操作から `CAM_RECENTER_DELAY` (3 秒) たつと、毎秒の割合 `CAM_RECENTER_RATE` (3) でプレイヤーの追従へもどる。2 本指になったら、1 本指のポインターはその前の位置にもどる |
-| **ピンチ** | 同じ 2 本指 | 指の距離の比で、拡大率が**滑らかに** (整数に丸めず) 変わる。範囲は `ZOOM_MIN` (1) 〜 `ZOOM_MAX` (8)。描画のシーンの大きさは `ceil(画面 ÷ 拡大率)` セル |
+| **カメラ** | (操作なし) | プレイヤーが画面の中心に来るように、**少し遅れて**追う (指数の追従、`FOLLOW_RATE` = 5 / 秒 = 時定数 0.2 秒)。2 本指のスワイプ・ピンチのカメラ操作は**ない** (M18 の途中で廃止) |
+| **ズーム** | `+` `(w − 8.6 unit, h − 5.2 unit)`・`-` `(w − 8.6 unit, h − 1.8 unit)`、半径 `0.8 unit` | 押している間、拡大率が**滑らかに**変わる (毎秒 `exp(±0.9)` 倍 = 約 2.5 倍)。範囲は `ZOOM_MIN` (1) 〜 `ZOOM_MAX` (8)。両方押したら打ち消し合う。描画のシーンの大きさは `ceil(画面 ÷ 拡大率)` セル |
 | `USE` | 右下の隅 `(w − 2.2 unit, h − 2.2 unit)`、半径 `1.5 unit` | 押している間、**ポインターのある方へ使う**。武器モードでは武器を撃ち、描画モード (`PAINT` で切り替え) では選んでいる材質 (建築なら建築) をポインターの場所へ置く |
 | `HOOK` | `(w − 2.0 unit, h − 5.6 unit)` | 押している間**右手の道具** (ワイヤーフック) を、ポインターのある方へ |
 | `DIG` | `(w − 5.2 unit, h − 5.2 unit)` | 押している間**掘る道具**を、ポインターのある方へ |
-| `JUMP` | `(w − 5.6 unit, h − 1.8 unit)` | 押している間ジャンプ (浮遊の装備があれば、押している間浮かぶ) |
+| `JUMP` | `(w − 5.6 unit, h − 1.8 unit)` | **短く押す = ふつうのジャンプ、長押し = ホバー** (浮遊の装備があるとき、§18) |
 | `PAINT` | `(w − 2.0 unit, h − 8.8 unit)` | 押すたびに、武器と描画 (ブラシ) を切り替える (`B` キーと同じ) |
 
 - 狙う向きは、プレイヤーからポインターへの `(dx, dy)` を長さ 1000 にそろえた整数。ポインターが近すぎる (0.5 セル未満)・まだ動かしていないときは、右上 `(1000, −400)`。
 - ポインターが無いときは描かない。パッドとボタンに触れた指は、カメラとポインターに渡さない。部品は、最初のタッチ (Android では最初から) で出し、半透明で `MOVE`・`USE`・`JUMP`・`HOOK`・`DIG`・`PAINT` の文字を添える。
-- プレイヤーのいるゲーム (`follow_player`) では、画面の 1 本指はブラシや武器のボタンにならない (`USE` を使う)。マウスは従来どおり (左ボタン = 武器またはブラシ、右ボタン = 道具、中ボタン = 掘る道具)。プレイヤーのいない画面 (サンドボックス) では、2 本指のスワイプが `origin` を、ピンチが拡大率を変え、1 本指はブラシ。
+- プレイヤーのいるゲーム (`follow_player`) では、画面の 1 本指はブラシや武器のボタンにならない (`USE` を使う)。マウスは従来どおり (左ボタン = 武器またはブラシ、右ボタン = 道具、中ボタン = 掘る道具)。プレイヤーのいない画面 (サンドボックス) では、2 本指のスワイプが `origin` を (指と逆向きに)、ピンチが拡大率を (滑らかに) 変え、1 本指はブラシ (`charon-app::gesture`)。
+- **複数の指の扱い (3 本以上でも固まらない)**: 新しく触れた指だけを、UI (パネル) が使っていれば部品に渡さない。**動かす・離す・取り消すイベントは、UI が消費しても必ず部品とポインターに渡す** (渡さないと、離したイベントを取りこぼして、ボタンが押されたままになる)。さらに、同じ部品 (移動パッド・各ボタン) に新しく触れたら、前の指は古いもの (離しを取りこぼした) とみなして捨てる。ポインターの指も、新しく触れた指に置き換わる。ウィンドウがフォーカスを失ったら、すべての指を離した状態にもどす。
+
+### 11.1.1 画面の部品 (HUD とパネル、M18)
+
+- **HUD**: 画面の**右上**に、背景も文字もない小さなバーだけを出す (幅 90・高さ 7 の点)。上から体力 (赤)・マナ (青)・燃料 (黄、浮遊の装備があるとき)・息 (水色、減っているときだけ)。状態異常は、バーの下に 6 点の四角 (燃える = 橙、濡れる = 水色、毒 = 緑)。上の端は、Android のステータスバーを避けて 40 点下げる。文字の情報 (体力などの数、道具、持ち物、状態異常、次の呪文) は、`Debug` パネルの中に出す。
+- **パネル** (`Debug`・`Main Menu`・`Draw`・`Clipboard`・`Registries`): タイトルの `x` で閉じると、画面の**左端に縦に並ぶ細いタブ** (`|> Dbg`・`|> Menu`・`|> Draw`・`|> Clip`・`|> Reg`) になり、タブに触れると開く。最初の状態は、タッチの画面 (仮想パッドが出る) ではすべて閉じて、デスクトップでは `Main Menu` と `Draw` が開く。
+- FPS・計測のグラフ・「Development Build」の表示は、デスクトップか、`Debug` パネルを開いたときだけ出す (タッチの画面ではボタンと重なるため)。
+
 
 ### 11.2 ゲームパッド
 
@@ -434,9 +442,12 @@ Android (とタッチ画面のデスクトップ) で `charon-demo` を遊ぶた
 | `aim_and_screen_position_follow_the_pointer` | 向きと、描画用の画面の位置 |
 | `scale_resizes_the_pad` | UI の倍率でパッドとボタンの大きさが変わる |
 | `buttons_sit_in_the_lower_right_without_overlapping` | ボタンは右下に並び、画面内で、重ならない (3 つの画面の大きさ) |
-| `two_finger_pan_moves_the_camera_opposite_and_pinch_zooms_smoothly` | 2 本指で指と逆向きにカメラが動く。ピンチで拡大率が整数でなく滑らかに変わり、範囲で止まる |
-| `following_pans_the_offset_inside_a_circle` | 追従中は `cam_offset` が動き (`origin` は動かない)、円の中で止まり、タイマーが 0 に戻る |
+| `two_finger_pan_moves_the_camera_opposite_and_pinch_zooms_smoothly` | (サンドボックス) 2 本指で指と逆向きにカメラが動く。ピンチで拡大率が整数でなく滑らかに変わり、範囲で止まる |
 | `one_finger_and_bad_positions_do_nothing` | 1 本指ではカメラは動かない。不正な座標は無視 |
+| `zoom_buttons_hold_and_release` | `+` `-` は押している間だけ。両方押したら打ち消し合う |
+| `lost_release_events_do_not_leave_buttons_or_the_stick_stuck` | 離しを取りこぼしても、同じ部品に触れ直せば古い指が捨てられ、ボタン・歩き・ポインターが固まらない |
+| `panels_dock_to_the_left_and_open_by_touch` | タッチの画面ではパネルが閉じて左端のタブになり、タブに触れると開く。デスクトップは `Main Menu` と `Draw` が開く |
+| `following_converges_without_overshooting` 他 (`camera.rs` の 4 個) | カメラは少し遅れて追う (時定数 0.2 秒)、フレームレートによらない |
 | `android_gamepad_buttons_map_to_actions` | Android のボタンが武器・道具・切り替えになり、知らないボタンは無視する |
 | `sticks_and_buttons_map_to_actions` | デスクトップのゲームパッドのスティック・十字キー・ボタンが歩く・ジャンプ・武器・道具・切り替えになり、触れなければ何もしない |
 | `right_stick_aims_with_screen_down_positive` | 右スティックの上が画面の上 (y 負) になり、小さな傾きでは狙いを変えない |
@@ -580,21 +591,24 @@ Android 実機での確認は未実施。
 | `durations_are_clamped_and_extended_and_death_clears` | 上限、0、延長、倒れたら消える |
 | `statuses_are_deterministic` | 同じ手順で同じ結果 |
 
-## 18. 浮遊 (T17.5、`charon_game::levitation`)
+## 18. 浮遊 (ホバー、T17.5、M18 で長押しに変更、`charon_game::levitation`)
 
-ジャンプのボタンを押している間、燃料を使って上へ進む (Noita の浮遊)。整数だけ。`GameState::levitation` に `Levitation` を持たせる (`equip_levitation(id, LevitationDef)`、燃料は満タンで始まる)。デモのプレイヤーは `PlayerLoadout::levitation` で持つ。
+ジャンプのボタンを**長押し**すると、燃料を使って空中にとどまる (ホバー)。**短く押すだけなら、ふつうのジャンプ**。整数だけ。`GameState::levitation` に `Levitation` を持たせる (`equip_levitation(id, LevitationDef)`、燃料は満タンで始まる)。デモのプレイヤーは `PlayerLoadout::levitation` で持つ。
 
-- `LevitationDef { fuel_max, thrust, rise_max, recharge }`。既定は 180 tick (約 3 秒)・`thrust` 8・`rise_max` 40・`recharge` 3。`thrust` と `rise_max` は 0..=96 に収める。
-- `step_levitation(entities, id, held)` を、移動 (`step_players`) のあと、ゲーム状態の `step` の前に呼ぶ。空中で押していて燃料があれば、`vy` から `thrust` を引き (`-rise_max` まで)、燃料を 1 減らす。接地している間は燃料が `recharge` ずつ戻る (`fuel_max` まで)。押していない・燃料がない・装備がない・倒れているときは何もしない。
-- 同期 (Lockstep) のパケットは変えない。ジャンプのボタンは `PlayerInput::jump` で、すでに同期されている。
-- 注意: ふつうのジャンプ (初速 96、重力 4) でも約 70 セル上がる。浮遊は、そのあとも上がり続けられることと、燃料の管理が価値。
-- デモの画面に燃料の棒 (Fuel) を出す。
+- `LevitationDef { fuel_max, delay, thrust, rise_max, recharge }`。既定は 180 tick (約 3 秒)・`delay` 12 (0.2 秒)・`thrust` 8・`rise_max` 6・`recharge` 3。`thrust` と `rise_max` は 0..=96 に収める。
+- `step_levitation(entities, id, held)` を、移動 (`step_players`) のあと、ゲーム状態の `step` の前に呼ぶ。`Levitation` は押し続けた tick (`held_ticks`、離すと 0) を数える。
+- **ホバーする条件**: 押し続けた tick が `delay` を超え、空中で、燃料があり、上向きの速さが `rise_max` に届いていないとき。そのとき `vy` から `thrust` を引き (`-rise_max` まで)、燃料を 1 減らす。**すでに `rise_max` より速く上がっている間 (ジャンプの最中) は何もせず、燃料も減らさない**。ジャンプが頂点に近づいて遅くなると、落ちずにとどまり、ゆっくり (約 7 セル / 秒) 上がる。燃料が尽きたら落ちる。
+- 接地している間は燃料が `recharge` ずつ戻る (`fuel_max` まで)。装備がない・倒れている・押していないときは何もしない。
+- 同期 (Lockstep) のパケットは変えない。ジャンプのボタンは `PlayerInput::jump` で、すでに同期されている (押し続けた tick は状態として持つので、同期した入力から同じに決まる)。
+- 注意: ふつうのジャンプ (初速 96、重力 4) でも約 70 セル上がる。ホバーはその頂点で効く。
+- デモの HUD には燃料の黄色いバーを出す (§11.1.1)。
 
 | テスト | 確認 |
 |---|---|
-| `holding_the_button_rises_higher_than_a_jump_until_the_fuel_runs_out` | 押し続けるとふつうのジャンプの 2 倍以上高く上がり、燃料が尽きると落ちる |
-| `fuel_recharges_on_the_ground_and_only_burns_when_held` | 押さなければ減らない、接地で満タンまで戻る |
-| `no_equipment_or_dead_players_cannot_levitate_and_values_are_clamped` | 装備なし・倒れていると浮かない、値を範囲に収める |
+| `a_short_press_is_a_plain_jump` | `delay` 以下の押し方は、装備なしと**まったく同じ軌跡**で、燃料も減らない |
+| `holding_past_the_delay_hovers_until_the_fuel_runs_out` | 長押しは空中にいる長さが 40 tick 以上のび、ふつうの頂点より高くなる。燃料が尽きると落ちる |
+| `fuel_burns_only_while_hovering_and_recharges_on_the_ground` | ジャンプの最中は減らず、ホバーで減る。離すと落ち、接地で満タンまで戻る |
+| `no_equipment_or_dead_players_cannot_levitate_and_values_are_clamped` | 装備なし・倒れていると浮かない、値を範囲に収める、押し続けた tick を数える |
 | `levitation_is_deterministic` | 同じ手順で同じ軌跡 |
 
 ## 19. 落ちているもの (ドロップ、T17.6、`charon_game::drops`)

@@ -12,7 +12,8 @@ pub struct CameraFx {
 }
 
 /// 追従の速さ (1 秒あたり)。大きいほどきびきび追う。
-pub const FOLLOW_RATE: f32 = 14.0;
+/// プレイヤーが少し遅れて追われる感じになる値 (時定数 0.2 秒)。
+pub const FOLLOW_RATE: f32 = 5.0;
 /// これ以上離れたら、なめらかに追わずに一度で移る (リスポーン・ワープ)。
 pub const SNAP_DISTANCE: f32 = 320.0;
 /// 揺れの最大の振れ幅 (セル)。

@@ -24,10 +24,6 @@ pub(super) struct Controls {
     pub(super) step_once: bool,
     pub(super) origin: [f32; 2],
     pub(super) zoom: f32,
-    /// プレイヤーを追うときの、プレイヤーからのカメラのずれ (セル、2 本指のスワイプで動く、仕様 10 §11)。
-    pub(super) cam_offset: [f32; 2],
-    /// 2 本指の操作から経った秒。長いと、ずれは少しずつもどる。
-    pub(super) cam_idle: f32,
     pub(super) light_quality: LightQuality,
     pub(super) show_debug: bool,
     /// 画面の部品 (パネル・仮想パッド) の大きさの倍率。
@@ -68,8 +64,6 @@ impl Controls {
             step_once: false,
             origin: [0.0, 0.0],
             zoom: 4.0,
-            cam_offset: [0.0, 0.0],
-            cam_idle: 0.0,
             light_quality: LightQuality::High,
             show_debug: false,
             ui_scale: 1.0,

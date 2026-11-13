@@ -393,6 +393,8 @@ fn draw_touch_pad(context: &egui::Context, pad: &crate::touch_pad::TouchPad) {
         (layout.hook, "HOOK", pad.held("hook"), 1.0),
         (layout.dig, "DIG", pad.held("dig"), 1.0),
         (layout.paint, "PAINT", pad.held("paint"), 1.0),
+        (layout.zoom_in, "+", pad.held("zoom_in"), 0.8),
+        (layout.zoom_out, "-", pad.held("zoom_out"), 0.8),
     ] {
         let color = if held { knob } else { fill };
         painter.circle(at(center), unit * size, color, line);
@@ -420,7 +422,21 @@ pub(super) struct DemoUi {
     pub(super) paste_armed: bool,
     swatches: Vec<Swatch>,
     status: String,
+    /// 5 つのパネル (`PANELS`) が開いているか。閉じたものは、画面の左端の細いタブ (`|▸`) になり、触れると開く。
+    pub(super) panels: [bool; PANELS.len()],
+    /// 最初のフレームで、開閉の初期値を決めたか。
+    panels_ready: bool,
 }
+
+/// パネルの名前 (開閉の添字の順)。左端のタブにも、この短い名前を出す。
+const PANELS: [(&str, &str); 5] = [
+    ("Debug", "Dbg"),
+    ("Main Menu", "Menu"),
+    ("Draw", "Draw"),
+    ("Clipboard", "Clip"),
+    ("Registries", "Reg"),
+];
+const PANEL_DEBUG: usize = 0;
 
 impl DemoUi {
     pub(super) fn new(materials: &MaterialTable) -> Self {
@@ -435,6 +451,8 @@ impl DemoUi {
             paste_armed: false,
             swatches: swatches(materials),
             status: String::new(),
+            panels: [false; PANELS.len()],
+            panels_ready: false,
         }
     }
 
@@ -449,7 +467,20 @@ impl DemoUi {
     ) -> Option<DemoAction> {
         self.history.push(stats);
         let mut action = None;
-        draw_wand_panel(context, overlay);
+        // パネルの開閉の初期値: タッチの画面 (仮想パッドが出る) では、画面を隠さないようにすべて閉じる。
+        // デスクトップでは、`Main Menu` と `Draw` を開く。
+        if !self.panels_ready {
+            self.panels_ready = true;
+            self.panels = if overlay.pad.is_some() {
+                [false; PANELS.len()]
+            } else {
+                [false, true, true, false, false]
+            };
+        }
+        let mut open = self.panels;
+        // 計測 (FPS・グラフ・版の表示) は、デスクトップか、`Debug` パネルを開いたときだけ。タッチの画面では邪魔になる。
+        let show_stats = overlay.pad.is_none() || open[PANEL_DEBUG];
+        draw_hud_bars(context, overlay);
         if controls.inventory_open {
             draw_inventory(context, overlay, controls);
         }
@@ -462,20 +493,23 @@ impl DemoUi {
             draw_touch_pad(context, pad);
         }
 
-        egui::Area::new(egui::Id::unique("charon fps")).fixed_pos(egui::pos2(2.0, 1.0)).show(
-            context,
-            |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{:.0} FPS", stats.fps()))
-                        .size(9.0)
-                        .color(egui::Color32::from_rgb(230, 70, 70)),
-                );
-            },
-        );
+        if show_stats {
+            egui::Area::new(egui::Id::unique("charon fps")).fixed_pos(egui::pos2(2.0, 1.0)).show(
+                context,
+                |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{:.0} FPS", stats.fps()))
+                            .size(9.0)
+                            .color(egui::Color32::from_rgb(230, 70, 70)),
+                    );
+                },
+            );
+        }
 
         egui::Window::new("Debug")
-            .default_pos([6.0, 14.0])
-            .default_open(false)
+            .default_pos([40.0, 14.0])
+            .open(&mut open[0])
+            .collapsible(false)
             .resizable(false)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
@@ -514,11 +548,14 @@ impl DemoUi {
                     overlay.world.awake_chunks()
                 ));
                 ui.label("F: free camera · Ctrl+drag: select");
+                ui.separator();
+                player_info(ui, overlay);
             });
 
         egui::Window::new("Main Menu")
             .default_pos([92.0, 14.0])
-            .default_open(true)
+            .open(&mut open[1])
+            .collapsible(false)
             .resizable(false)
             .show(context, |ui| {
                 if ui.button("Singleplayer").clicked() {
@@ -534,7 +571,8 @@ impl DemoUi {
 
         egui::Window::new("Draw")
             .default_pos([204.0, 14.0])
-            .default_open(true)
+            .open(&mut open[2])
+            .collapsible(false)
             .resizable(false)
             .show(context, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
@@ -611,7 +649,8 @@ impl DemoUi {
 
         egui::Window::new("Clipboard")
             .default_pos([566.0, 14.0])
-            .default_open(false)
+            .open(&mut open[3])
+            .collapsible(false)
             .resizable(false)
             .show(context, |ui| {
                 match (&self.clip, self.selection) {
@@ -662,7 +701,8 @@ impl DemoUi {
 
         egui::Window::new("Registries")
             .default_pos([670.0, 14.0])
-            .default_open(false)
+            .open(&mut open[4])
+            .collapsible(false)
             .resizable(false)
             .show(context, |ui| {
                 let materials = overlay.world.materials();
@@ -687,20 +727,26 @@ impl DemoUi {
                 });
             });
 
-        self.draw_performance(context);
+        // 閉じたパネルは、画面の左端の細いタブになる。触れると開く。
+        self.panels = open;
+        draw_dock(context, &mut self.panels);
 
-        egui::Area::new(egui::Id::unique("charon build"))
-            .anchor(egui::Align2::LEFT_BOTTOM, [4.0, -4.0])
-            .show(context, |ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Development Build\nCharon Engine v{}",
-                        charon_core::VERSION
-                    ))
-                    .size(9.0)
-                    .color(egui::Color32::from_gray(190)),
-                );
-            });
+        if show_stats {
+            self.draw_performance(context);
+
+            egui::Area::new(egui::Id::unique("charon build"))
+                .anchor(egui::Align2::LEFT_BOTTOM, [4.0, -4.0])
+                .show(context, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Development Build\nCharon Engine v{}",
+                            charon_core::VERSION
+                        ))
+                        .size(9.0)
+                        .color(egui::Color32::from_gray(190)),
+                    );
+                });
+        }
 
         self.draw_overlays(context, controls, overlay);
         action
@@ -888,8 +934,77 @@ pub(super) fn pointer_cell(pos: [f32; 2], zoom: f32, origin: [f32; 2]) -> Option
     ))
 }
 
-/// 仕様 10 §6.3: 体力・息・マナのバー、次の呪文の名前、飛んでいる弾の数。杖を持つプレイヤーがいるときだけ。
-fn draw_wand_panel(context: &egui::Context, overlay: &Overlay<'_>) {
+/// 画面の右上の、小さなバーだけの表示 (背景・文字なし)。上から体力 (赤)・マナ (青)・燃料 (黄)、息は減っているときだけ (水色)。
+/// 状態異常は、バーの下に小さな四角 (燃える = 橙、濡れる = 水色、毒 = 緑) で出す。杖を持つプレイヤーがいるときだけ。
+/// 文字の情報 (道具・持ち物・次の呪文など) は、`Debug` パネルの `player_info` に出す。
+fn draw_hud_bars(context: &egui::Context, overlay: &Overlay<'_>) {
+    use charon_game::status::StatusKind;
+    let Some(id) = overlay.player else { return };
+    let (Some(vitals), Some(wand)) = (overlay.game.vitals.get(id), overlay.game.wands.get(&id))
+    else {
+        return;
+    };
+    let fraction =
+        |value: f32, max: f32| if max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
+    let mut bars = vec![
+        (fraction(vitals.hp as f32, vitals.max_hp as f32), egui::Color32::from_rgb(210, 60, 60)),
+        (fraction(wand.mana as f32, wand.mana_max as f32), egui::Color32::from_rgb(90, 110, 240)),
+    ];
+    if let Some(lev) = overlay.game.levitation.get(&id) {
+        bars.push((
+            fraction(f32::from(lev.fuel), f32::from(lev.def.fuel_max)),
+            egui::Color32::from_rgb(230, 180, 60),
+        ));
+    }
+    if vitals.breath < charon_game::vitals::BREATH_MAX {
+        bars.push((
+            fraction(f32::from(vitals.breath), f32::from(charon_game::vitals::BREATH_MAX)),
+            egui::Color32::from_rgb(90, 200, 230),
+        ));
+    }
+    let chips: Vec<egui::Color32> = [
+        (StatusKind::Burning, egui::Color32::from_rgb(240, 130, 40)),
+        (StatusKind::Wet, egui::Color32::from_rgb(90, 170, 240)),
+        (StatusKind::Poison, egui::Color32::from_rgb(110, 210, 90)),
+    ]
+    .into_iter()
+    .filter(|(kind, _)| overlay.game.statuses.has(id, *kind))
+    .map(|(_, color)| color)
+    .collect();
+    egui::Area::new(egui::Id::unique("charon hud"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 40.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(context, |ui| {
+            let (width, height, gap) = (90.0, 7.0, 3.0);
+            let total =
+                bars.len() as f32 * (height + gap) + if chips.is_empty() { 0.0 } else { 9.0 };
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, total), egui::Sense::hover());
+            let painter = ui.painter();
+            for (row, (value, color)) in bars.iter().enumerate() {
+                let top = rect.top() + row as f32 * (height + gap);
+                let track = egui::Rect::from_min_size(
+                    egui::pos2(rect.left(), top),
+                    egui::vec2(width, height),
+                );
+                painter.rect_filled(track, 2.0, egui::Color32::from_black_alpha(110));
+                let fill = egui::Rect::from_min_size(track.min, egui::vec2(width * value, height));
+                painter.rect_filled(fill, 2.0, *color);
+            }
+            let chip_top = rect.top() + bars.len() as f32 * (height + gap);
+            for (i, color) in chips.iter().enumerate() {
+                let at = egui::pos2(rect.right() - 6.0 - i as f32 * 9.0, chip_top + 3.0);
+                painter.rect_filled(
+                    egui::Rect::from_center_size(at, egui::vec2(6.0, 6.0)),
+                    1.0,
+                    *color,
+                );
+            }
+        });
+}
+
+/// `Debug` パネルに出す、プレイヤーの文字の情報: 体力・息・マナの数、道具、持ち物、状態異常、次の呪文。
+fn player_info(ui: &mut egui::Ui, overlay: &Overlay<'_>) {
     let Some(id) = overlay.player else { return };
     let (Some(vitals), Some(wand)) = (overlay.game.vitals.get(id), overlay.game.wands.get(&id))
     else {
@@ -900,104 +1015,89 @@ fn draw_wand_panel(context: &egui::Context, overlay: &Overlay<'_>) {
         .get(wand.cursor())
         .and_then(|&spell| overlay.game.spells.get(spell))
         .map_or("-", |spell| spell.name.as_str());
-    let fraction =
-        |value: f32, max: f32| if max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
-    egui::Area::new(egui::Id::unique("charon wand"))
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 6.0))
+    ui.label(format!(
+        "HP {}/{} · Breath {} · Mana {}/{}",
+        vitals.hp,
+        vitals.max_hp,
+        vitals.breath / 60,
+        wand.mana,
+        wand.mana_max
+    ));
+    if let Some(lev) = overlay.game.levitation.get(&id) {
+        ui.label(format!("Fuel (hold jump to hover): {}", lev.fuel / 60));
+    }
+    if let Some(hook) = overlay.game.hooks.get(&id) {
+        let state = match hook.rope().map(|r| r.phase()) {
+            Some(charon_physics::rope::RopePhase::Flying) => "flying",
+            Some(charon_physics::rope::RopePhase::Anchored) => "anchored",
+            None if hook.cooldown() > 0 => "cooling",
+            None => "ready",
+        };
+        ui.label(format!("Tool (right): {} · {state}", hook.def.name));
+    }
+    if let Some(inventory) = overlay.game.inventories.get(&id) {
+        // 持ち物 (仕様 10 §13): 多い順に 4 種類まで。
+        let mut items: Vec<(u32, &str)> = inventory
+            .iter()
+            .map(|(material, count)| (count, overlay.world.materials().get(material).name.as_str()))
+            .collect();
+        items.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        let shown: Vec<String> =
+            items.iter().take(4).map(|(count, name)| format!("{name} {count}")).collect();
+        let text = if shown.is_empty() { "-".to_owned() } else { shown.join(" · ") };
+        ui.label(format!("Items (dig): {text}"));
+    }
+    // 状態異常 (仕様 10 §17)。
+    {
+        use charon_game::status::StatusKind;
+        let active: Vec<&str> = [
+            (StatusKind::Burning, "burning"),
+            (StatusKind::Wet, "wet"),
+            (StatusKind::Poison, "poison"),
+        ]
+        .into_iter()
+        .filter(|(kind, _)| overlay.game.statuses.has(id, *kind))
+        .map(|(_, name)| name)
+        .collect();
+        if !active.is_empty() {
+            ui.label(format!("Status: {}", active.join(" · ")));
+        }
+    }
+    ui.label(format!(
+        "Weapon (left) next: {next} · Shots: {} · Enemies: {}{}",
+        overlay.game.projectiles.len(),
+        overlay.game.enemies.len(),
+        if vitals.alive() { "" } else { " · DEAD" }
+    ));
+}
+
+/// 閉じたパネルを、画面の左端に縦に並べた細いタブ (`|▸ 名前`) にする。触れると、そのパネルが開く (仕様 10 §14)。
+/// 開いているパネルは、タイトルの `x` で閉じる (= このタブになる)。
+fn draw_dock(context: &egui::Context, open: &mut [bool; PANELS.len()]) {
+    if open.iter().all(|&o| o) {
+        return;
+    }
+    egui::Area::new(egui::Id::unique("charon dock"))
+        .anchor(egui::Align2::LEFT_TOP, egui::vec2(0.0, 44.0))
         .order(egui::Order::Foreground)
         .show(context, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                let bar = |ui: &mut egui::Ui,
-                           label: &str,
-                           f: f32,
-                           color: egui::Color32,
-                           text: String| {
-                    ui.horizontal(|ui| {
-                        ui.label(label);
-                        ui.add(
-                            egui::ProgressBar::new(f).fill(color).desired_width(140.0).text(text),
-                        );
-                    });
-                };
-                bar(
-                    ui,
-                    "HP",
-                    fraction(vitals.hp as f32, vitals.max_hp as f32),
-                    egui::Color32::from_rgb(200, 60, 60),
-                    format!("{}/{}", vitals.hp, vitals.max_hp),
-                );
-                bar(
-                    ui,
-                    "Breath",
-                    fraction(f32::from(vitals.breath), f32::from(charon_game::vitals::BREATH_MAX)),
-                    egui::Color32::from_rgb(70, 140, 220),
-                    format!("{}", vitals.breath / 60),
-                );
-                bar(
-                    ui,
-                    "Mana",
-                    fraction(wand.mana as f32, wand.mana_max as f32),
-                    egui::Color32::from_rgb(90, 90, 230),
-                    format!("{}/{}", wand.mana, wand.mana_max),
-                );
-                if let Some(lev) = overlay.game.levitation.get(&id) {
-                    bar(
-                        ui,
-                        "Fuel",
-                        fraction(f32::from(lev.fuel), f32::from(lev.def.fuel_max)),
-                        egui::Color32::from_rgb(220, 170, 60),
-                        format!("{}", lev.fuel / 60),
-                    );
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
+            for (index, (_, short)) in PANELS.iter().enumerate() {
+                if open[index] {
+                    continue;
                 }
-                if let Some(hook) = overlay.game.hooks.get(&id) {
-                    let state = match hook.rope().map(|r| r.phase()) {
-                        Some(charon_physics::rope::RopePhase::Flying) => "flying",
-                        Some(charon_physics::rope::RopePhase::Anchored) => "anchored",
-                        None if hook.cooldown() > 0 => "cooling",
-                        None => "ready",
-                    };
-                    ui.label(format!("Tool (right): {} · {state}", hook.def.name));
+                let tab = egui::Button::new(
+                    egui::RichText::new(format!("|> {short}"))
+                        .size(11.0)
+                        .color(egui::Color32::from_white_alpha(230)),
+                )
+                .fill(egui::Color32::from_black_alpha(120))
+                .corner_radius(egui::CornerRadius { nw: 0, ne: 6, sw: 0, se: 6 })
+                .min_size(egui::vec2(44.0, 30.0));
+                if ui.add(tab).clicked() {
+                    open[index] = true;
                 }
-                if let Some(inventory) = overlay.game.inventories.get(&id) {
-                    // 持ち物 (仕様 10 §13): 多い順に 4 種類まで。
-                    let mut items: Vec<(u32, &str)> = inventory
-                        .iter()
-                        .map(|(material, count)| {
-                            (count, overlay.world.materials().get(material).name.as_str())
-                        })
-                        .collect();
-                    items.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
-                    let shown: Vec<String> = items
-                        .iter()
-                        .take(4)
-                        .map(|(count, name)| format!("{name} {count}"))
-                        .collect();
-                    let text = if shown.is_empty() { "-".to_owned() } else { shown.join(" · ") };
-                    ui.label(format!("Items (dig): {text}"));
-                }
-                // 状態異常 (仕様 10 §17)。
-                {
-                    use charon_game::status::StatusKind;
-                    let active: Vec<&str> = [
-                        (StatusKind::Burning, "burning"),
-                        (StatusKind::Wet, "wet"),
-                        (StatusKind::Poison, "poison"),
-                    ]
-                    .into_iter()
-                    .filter(|(kind, _)| overlay.game.statuses.has(id, *kind))
-                    .map(|(_, name)| name)
-                    .collect();
-                    if !active.is_empty() {
-                        ui.label(format!("Status: {}", active.join(" · ")));
-                    }
-                }
-                ui.label(format!(
-                    "Weapon (left) next: {next} · Shots: {} · Enemies: {}{}",
-                    overlay.game.projectiles.len(),
-                    overlay.game.enemies.len(),
-                    if vitals.alive() { "" } else { " · DEAD" }
-                ));
-            });
+            }
         });
 }
 
@@ -1179,6 +1279,85 @@ mod tests {
         assert!(inventory > closed, "持ち物の画面が出る ({closed} → {inventory})");
         assert!(pause > closed + 10, "ポーズのメニューが出る ({closed} → {pause})");
         assert_ne!(rebinding, 0);
+    }
+
+    /// パネル (仕様 10 §14): タッチの画面では最初はすべて閉じて、左端の細いタブになり、触れると開く。
+    /// デスクトップでは `Main Menu` と `Draw` が開いている。
+    #[test]
+    fn panels_dock_to_the_left_and_open_by_touch() {
+        let world = world_from_ascii(&box_art(40, 20), 1);
+        let physics = PhysicsEngine::new();
+        let entities = EntityWorld::new();
+        let game = charon_game::game::GameState::new(Default::default());
+        let pad = crate::touch_pad::TouchPad::default();
+        let overlay = |pad| Overlay {
+            world: &world,
+            physics: &physics,
+            entities: &entities,
+            game: &game,
+            player: None,
+            pad,
+        };
+        let frames =
+            |demo: &mut DemoUi, overlay: &Overlay<'_>, taps: &[(u32, egui::Pos2, bool)]| {
+                let mut controls = Controls::new(material_of(&world, 's'));
+                let context = egui::Context::default();
+                let mut last = 0;
+                for frame in 0..6u32 {
+                    let mut events = Vec::new();
+                    for &(at, pos, pressed) in taps {
+                        if at == frame {
+                            events.push(egui::Event::PointerMoved(pos));
+                            events.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            });
+                        }
+                    }
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1024.0, 768.0),
+                        )),
+                        time: Some(f64::from(frame) / 60.0),
+                        events,
+                        ..Default::default()
+                    };
+                    let mut output = context.run_pass(input, |context| {
+                        demo.draw(
+                            context,
+                            &mut controls,
+                            overlay,
+                            FrameStats { frame_ms: 2.0, tick_ms: 1.0, phys_ms: 0.1 },
+                            0,
+                        );
+                    });
+                    last = output.shapes.len();
+                    output.textures_delta.clear();
+                }
+                last
+            };
+        // デスクトップ (パッドなし): `Main Menu` と `Draw` が開いている。
+        let mut desktop = DemoUi::new(world.materials());
+        frames(&mut desktop, &overlay(None), &[]);
+        assert_eq!(desktop.panels, [false, true, true, false, false]);
+        // タッチ (パッドあり): すべて閉じている。
+        let mut touch = DemoUi::new(world.materials());
+        let closed_shapes = frames(&mut touch, &overlay(Some(&pad)), &[]);
+        assert_eq!(touch.panels, [false; 5], "画面を隠さない");
+        // 左端の最初のタブ (`Dbg`、アンカー (0, 44)、最小 44×30) に触れると、`Debug` が開く。
+        let tab = egui::pos2(20.0, 44.0 + 15.0);
+        let release = [(2, tab, true), (3, tab, false)];
+        let opened_shapes = frames(&mut touch, &overlay(Some(&pad)), &release);
+        assert_eq!(touch.panels, [true, false, false, false, false], "触れたタブのパネルが開く");
+        assert_ne!(closed_shapes, opened_shapes, "パネルが描かれる");
+        // タブの外 (右の方) に触れても開かない。
+        let mut other = DemoUi::new(world.materials());
+        let far = egui::pos2(700.0, 400.0);
+        frames(&mut other, &overlay(Some(&pad)), &[(2, far, true), (3, far, false)]);
+        assert_eq!(other.panels, [false; 5]);
     }
 
     #[test]

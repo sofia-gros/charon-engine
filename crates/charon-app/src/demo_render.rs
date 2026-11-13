@@ -541,15 +541,18 @@ fn demo_renders_wand_panel() {
     let ui_pixels = render_ui(&gpu, &scene, center, &texture, true);
     capture("wand", "world", &world_pixels);
     capture("wand", "ui", &ui_pixels);
-    let top = (600, 0, 1000, 130);
+    // 小さなバーだけの HUD は、画面の右上 (仕様 10 §11.1.1)。
+    let top = (1480, 30, 1600, 100);
     let red = |r: i32, g: i32, b: i32| r > 170 && g < 90 && b < 90;
     let blue = |r: i32, g: i32, b: i32| b > 190 && r < 140 && g < 140;
     let (hp_ui, hp_world) = (count_in(&ui_pixels, top, red), count_in(&world_pixels, top, red));
     let (mana_ui, mana_world) =
         (count_in(&ui_pixels, top, blue), count_in(&world_pixels, top, blue));
     println!("wand panel: 赤 {hp_ui} (世界 {hp_world})、青 {mana_ui} (世界 {mana_world})");
-    assert!(hp_ui > hp_world + 100, "体力のバーが描かれる ({hp_ui} / {hp_world})");
-    assert!(mana_ui > mana_world + 100, "マナのバーが描かれる ({mana_ui} / {mana_world})");
+    // 体力は 65%: 幅 90 の 65% (約 58) × 高さ 7 画素。マナは満タン (90 × 7)。
+    assert!(hp_ui > hp_world + 300, "体力のバーが描かれる ({hp_ui} / {hp_world})");
+    assert!(mana_ui > mana_world + 500, "マナのバーが描かれる ({mana_ui} / {mana_world})");
+    assert!(mana_ui > hp_ui, "体力は 65% なので、満タンのマナより短い");
 }
 
 /// 仕様 10 §9.5: ワイヤーが描かれ、`Wand` パネルに道具 (`Tool (right)`) の行が出る。
@@ -653,6 +656,10 @@ fn demo_renders_touch_pad() {
     for (name, p) in [("jump", layout.jump), ("hook", layout.hook), ("paint", layout.paint)] {
         let ring = [p[0] + layout.unit * 0.8, p[1]];
         assert!(luma(&with, ring) > luma(&without, ring), "{name} のボタンが描かれる");
+    }
+    for (name, p) in [("zoom_in", layout.zoom_in), ("zoom_out", layout.zoom_out)] {
+        let inside = [p[0] + layout.unit * 0.6, p[1]];
+        assert!(luma(&with, inside) > luma(&without, inside), "{name} のボタンが描かれる");
     }
     capture("touch_pad", "ui", &with);
     let _ = world_pixels;
