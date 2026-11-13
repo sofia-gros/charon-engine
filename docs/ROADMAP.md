@@ -348,6 +348,8 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 
 | T18.3 | 更新距離の設定 (コールドフリーズの距離、0 = 自動): `Streamer::set_sim_distance` / `active_radius`、`Controls::sim_distance`、`settings.ron` の `sim_distance`、Debug とポーズのスライダー ([02 §9.4](spec/02-simulation.md))。溶岩が眠らないことの実測 | `active_radius_follows_the_setting_and_clamps`、`chunks_outside_the_sim_distance_are_frozen_and_resume_in_range`、`sim_distance_roundtrips_clamps_and_is_optional_in_old_files`、`smoke_decays_by_itself_and_the_world_falls_asleep` |
 
+| T18.4 | 移動の操作性: 段差の自動乗り越え (`STEP_UP_CELLS` = 4、壁の高さで判定)、コヨーテタイム (6 tick)、ジャンプの先行入力 (5 tick) ([10 §8.4.1](spec/10-noita-like-game.md)) | `tests/movement.rs` の 9 個 |
+
 Android 実機での再確認はこれから (T18.2 の修正は実機で確かめていない)。
 
 未着手 (次の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み、BGM・空間音、フォント、経路探索、性能の次の候補 (08 §6 の (b)(c))。

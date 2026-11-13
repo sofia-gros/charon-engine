@@ -293,6 +293,31 @@ pub struct GameState {
 
 `step_entity(entity, input, walk_speed, jump_speed, world)` は `step_player` の移動を、速さを引数にしたもの: `vx = horizontal * walk_speed`、接地中にジャンプなら `vy = -jump_speed`。`step_player` は `step_entity(.., 32, 96, ..)`。衝突の判定は仕様 07 §2.2 のまま。
 
+#### 8.4.1 操作性のための 3 つの助け (T18.4)
+
+地形は 1 セル (= 1 画素) の凹凸だらけなので、段差で止まったり、ジャンプが「ぎりぎりで効かない」と、操作しにくい。`step_entity` に次の 3 つを入れる。どれも整数だけで、プレイヤーも敵も同じ (敵も 1 セルの段で止まらなくなる)。`Entity` に `coyote`・`jump_buffer` (どちらも `u8`) が増え、`EntityWorld::state_hash` に入る (同期の検査で食い違いを見つけられる)。
+
+1. **段差の自動乗り越え** (`STEP_UP_CELLS` = 4): 横へ進もうとして固体にぶつかったとき、**この tick の初めに接地していて、跳ばなかった**なら、次の手順で持ち上げて進む。
+   - ぶつかっているセルそれぞれから、真上へ続く固体の列の天辺を探し、**壁の高さ** (足の行から天辺まで) を求める。`STEP_UP_CELLS` を超える壁は、乗り越えない (ぶつかったまま止まる)。楕円の下は丸いので、1/16 セルずつ進むたびに少し持ち上げることを繰り返すと高い壁も登れてしまうため、持ち上げる量ではなく**壁そのものの高さ**で決める。
+   - 乗り越えてよいときは、ぶつからなくなる**最小の高さ** (1/16 セル単位、最大 `STEP_UP_CELLS × 16`) だけ持ち上げて、そのまま進む。持ち上げた先に頭が入る空間がなければ (低い天井)、ぶつかったまま止まる。最小の高さなので、持ち上げた先で足場にぴったり着き、接地は保たれる (次の tick も続けて登れる)。
+   - 空中 (この tick の初めに接地していない) では乗り越えない。
+2. **コヨーテタイム** (`COYOTE_TICKS` = 6): 接地をやめてからも、接地をやめた tick を入れて 6 tick の間はジャンプできる (`coyote` が、接地中は 6、空中では 1 tick ごとに 1 減る)。ジャンプした直後は 0 で、二段ジャンプにはならない。
+3. **ジャンプの先行入力** (`JUMP_BUFFER_TICKS` = 5): 空中で押したジャンプは `jump_buffer` に 5 tick 覚え、着地したら跳ぶ (着地の 4 tick 前までに押したジャンプが効く)。押し続けているときは、従来どおり着地ですぐ跳ぶ。
+
+浮遊 (§18) の「長押しでホバー」は、押し続けた tick を数えるので、短く押したジャンプと混ざらない。
+
+| テスト | 確認 |
+|---|---|
+| `small_steps_are_climbed_automatically_and_walls_are_not` | 高さ 1〜4 の段を歩くだけで越えて、段の上にぴったり立つ。高さ 5・8・20 の壁は越えられない |
+| `a_staircase_of_single_cell_steps_is_climbed_without_stopping` | 1 セルずつ高くなる 12 段の階段を、1 tick も止まらずに登り切る |
+| `steps_are_not_climbed_in_the_air` | 接地していないと、1 セルの段でも持ち上がらない。接地していれば越える |
+| `steps_under_a_low_ceiling_are_not_climbed` | 頭が入る空間がない段は越えない |
+| `jumping_works_for_a_few_ticks_after_walking_off_a_ledge` | 足場の端から歩き出したあと、猶予の tick 数の間だけジャンプできる |
+| `coyote_time_does_not_allow_a_double_jump` | 跳んだ直後に、もう一度は跳べない |
+| `a_jump_pressed_just_before_landing_fires_on_landing` | 着地の 4 tick 前までに押したジャンプは着地で効き、それより前では効かない |
+| `the_new_movement_state_is_part_of_the_state_hash` | `coyote`・`jump_buffer` が状態のハッシュに入る |
+| `movement_with_steps_is_deterministic` | 段差・ジャンプを含めて、同じ入力なら同じ軌跡 |
+
 ### 8.5 ゲーム側から使う
 
 `AppOptions::enemies: Vec<EnemySpawn>` (`EnemySpawn { name: String, cell: [i32; 2] }`) をゲームが渡す。エンジンの実行部分は、周囲のチャンクが読み込まれたら `spawn_enemy` を呼ぶ (プレイヤーの生成と同じ条件)。失敗は報告して、その敵だけ諦める。デモは `demo.rs` で部屋に `walker` と `shooter` を置く。`Wand` パネルに敵の数を出す。

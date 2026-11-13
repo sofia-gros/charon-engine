@@ -40,6 +40,10 @@ pub struct Entity {
     pub grounded: bool,
     /// 外力による横向きの速度 (1/16 セル / tick)。ワイヤーの引っ張りなど (仕様 10 §9.2)。
     pub ext_vx: i16,
+    /// 足場を離れてから、まだジャンプできる残りの tick (コヨーテタイム、仕様 10 §8.4)。接地中は `COYOTE_TICKS`。
+    pub coyote: u8,
+    /// ジャンプを押してから、着地したら跳ぶ残りの tick (ジャンプの先行入力、仕様 10 §8.4)。
+    pub jump_buffer: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,7 +105,19 @@ impl EntityWorld {
         let id = EntityId(self.next_id);
         self.entities.insert(
             id,
-            Entity { id, x16, y16, vx: 0, vy: 0, width, height, grounded: false, ext_vx: 0 },
+            Entity {
+                id,
+                x16,
+                y16,
+                vx: 0,
+                vy: 0,
+                width,
+                height,
+                grounded: false,
+                ext_vx: 0,
+                coyote: 0,
+                jump_buffer: 0,
+            },
         );
         self.next_id = next_id;
         Ok(id)
@@ -140,6 +156,7 @@ impl EntityWorld {
                 .chain(entity.vy.to_le_bytes())
                 .chain([entity.width, entity.height, u8::from(entity.grounded)])
                 .chain(entity.ext_vx.to_le_bytes())
+                .chain([entity.coyote, entity.jump_buffer])
             {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
             }
@@ -221,7 +238,67 @@ pub fn step_player(entity: &mut Entity, input: PlayerInput, world: &World) {
     step_entity(entity, input, PLAYER_WALK_SPEED, PLAYER_JUMP_SPEED, world);
 }
 
+/// 接地中の自動の段差乗り越えで、持ち上げてよい高さ (セル)。プレイヤー (高さ 10) の 4 割。
+pub const STEP_UP_CELLS: i64 = 4;
+/// 足場を離れてからも、ジャンプできる tick (コヨーテタイム、0.1 秒)。
+pub const COYOTE_TICKS: u8 = 6;
+/// ジャンプを押してから、着地したら跳ぶ tick (ジャンプの先行入力、約 0.08 秒)。
+pub const JUMP_BUFFER_TICKS: u8 = 5;
+
+/// `x16` へ進んだとき、楕円にぶつかる固体の**壁の高さ** (セル): ぶつかる各セルから真上へ続く固体の列の天辺から、足の行まで。
+/// ぶつからなければ 0。楕円の下は丸いので、1/16 セルずつ進むたびに少しだけ持ち上げることを繰り返すと、高い壁も登れてしまう。
+/// それを防ぐため、乗り越えてよいかは、持ち上げる量ではなく、壁そのものの高さで決める。
+fn obstacle_height(entity: &Entity, x16: i64, world: &World) -> i64 {
+    let (width, height, y16) = (entity.width, entity.height, entity.y16);
+    let left = x16.div_euclid(16);
+    let top = y16.div_euclid(16);
+    let right = (x16 + i64::from(width) * 16 - 1).div_euclid(16);
+    let feet = (y16 + i64::from(height) * 16 - 1).div_euclid(16);
+    let solid = |x: i64, y: i64| -> bool {
+        let (Ok(x), Ok(y)) = (i32::try_from(x), i32::try_from(y)) else { return true };
+        let cell = world.get(CellPos::new(x, y));
+        cell.material == MaterialId::BOUNDARY
+            || cell.has(FLAG_BODY)
+            || world.materials().get(cell.material).phase == Phase::Solid
+    };
+    let mut wall_top = feet + 1;
+    for y in top..=feet {
+        for x in left..=right {
+            if !in_ellipse(x16, y16, width, height, x, y) || !solid(x, y) {
+                continue;
+            }
+            let mut t = y;
+            // 乗り越えられる高さを超えたと分かればよいので、少し上までだけ調べる。
+            for _ in 0..=STEP_UP_CELLS + 1 {
+                if solid(x, t - 1) {
+                    t -= 1;
+                } else {
+                    break;
+                }
+            }
+            wall_top = wall_top.min(t);
+        }
+    }
+    feet - wall_top + 1
+}
+
+/// `next_x` へ進むとき、固体にぶつからないために持ち上げる最小の高さ (1/16 セル)。`STEP_UP_CELLS` より高い段、
+/// または持ち上げた先に頭が入る空間がなければ `None`。
+fn step_lift(entity: &Entity, next_x: i64, world: &World) -> Option<i64> {
+    if obstacle_height(entity, next_x, world) > STEP_UP_CELLS {
+        return None;
+    }
+    (1..=STEP_UP_CELLS * 16)
+        .find(|&lift| !collides(next_x, entity.y16 - lift, entity.width, entity.height, world))
+}
+
 /// `step_player` の移動を、速さを引数にしたもの (仕様 10 §8.4)。`walk_speed`・`jump_speed` は 0..=96。
+///
+/// 操作性のための 3 つの助け (仕様 10 §8.4、どれも整数だけで、同期 (Lockstep) に影響しない):
+/// 1. **段差の自動乗り越え**: 接地中に横へ進んで固体にぶつかったとき、`STEP_UP_CELLS` までの段なら、ぶつからない最小の
+///    高さだけ持ち上げて進む (持ち上げた先で足場にぴったり着くので、接地は保たれる)。
+/// 2. **コヨーテタイム**: 接地をやめてから `COYOTE_TICKS` の間は、ジャンプできる (ジャンプした直後は 0)。
+/// 3. **ジャンプの先行入力**: 空中で押したジャンプは `JUMP_BUFFER_TICKS` の間覚えておき、着地したら跳ぶ。
 pub fn step_entity(
     entity: &mut Entity,
     input: PlayerInput,
@@ -233,16 +310,30 @@ pub fn step_entity(
     entity.vx = (i16::from(input.horizontal.clamp(-1, 1)) * walk_speed.clamp(0, 96)
         + entity.ext_vx)
         .clamp(-512, 512);
-    if entity.grounded && input.jump {
+    let wants_jump = input.jump || entity.jump_buffer > 0;
+    if wants_jump && (entity.grounded || entity.coyote > 0) {
         entity.vy = -jump_speed.clamp(0, 96);
         entity.grounded = false;
+        entity.coyote = 0;
+        entity.jump_buffer = 0;
+    } else if input.jump {
+        entity.jump_buffer = JUMP_BUFFER_TICKS;
+    } else {
+        entity.jump_buffer = entity.jump_buffer.saturating_sub(1);
     }
     entity.vy = (entity.vy + 4).min(96);
 
+    // 段差の乗り越えは、この tick の初めに接地していて、跳ばなかったときだけ。
+    let can_step_up = entity.grounded;
     let step_x = entity.vx.signum() as i64;
     for _ in 0..entity.vx.unsigned_abs() {
         let next_x = entity.x16 + step_x;
         if collides(next_x, entity.y16, entity.width, entity.height, world) {
+            if can_step_up && let Some(lift) = step_lift(entity, next_x, world) {
+                entity.x16 = next_x;
+                entity.y16 -= lift;
+                continue;
+            }
             entity.vx = 0;
             entity.ext_vx = 0;
             break;
@@ -263,6 +354,7 @@ pub fn step_entity(
     if entity.vy == 0 && !entity.grounded {
         entity.grounded = collides(entity.x16, entity.y16 + 1, entity.width, entity.height, world);
     }
+    entity.coyote = if entity.grounded { COYOTE_TICKS } else { entity.coyote.saturating_sub(1) };
     // 外力の速度は、接地中は速く、空中はゆっくり減る (0 方向へ丸める)。
     entity.ext_vx = if entity.grounded { entity.ext_vx * 3 / 4 } else { entity.ext_vx * 15 / 16 };
 }

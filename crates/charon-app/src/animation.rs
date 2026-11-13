@@ -210,6 +210,8 @@ mod tests {
             height: 10,
             grounded,
             ext_vx: 0,
+            coyote: 0,
+            jump_buffer: 0,
         }
     }
 
