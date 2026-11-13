@@ -20,6 +20,10 @@
 - **保存**: `PlayerSave` に `items`・`hotbar`・`selected`・`equipment` (古い保存にはなくてよい)。名前で保存し、知らない名前は読み飛ばす。`GameSave::with_items` / `apply_items`。
 - **壊れるもの**: `PlayerSave` の項目が増えた (構造体を直接書いている場合は `items: vec![]` ほかを足す)。持ち物の種類の上限 (256) は、セル・ブロック・定義の合計になった。`DefinitionFiles` / `ModSource` に `items`・`recipes` が増えた。
 
+### 追加 (範囲の外の液体の落下、M27、仕様 02 §9.5)
+
+- 更新範囲の外 (コールドフリーズ) の読み込み済みチャンクでも、**液体は大雑把に下へ落ち続ける** (Terraria と同じ)。4 tick ごとに、真下の空きを最大 8 セル先まで一気に落とす。広がる・混ざる・反応するは、範囲に入ってから。セルの数・決定性は保つ。M26 のリリースの前に入れた。
+
 ### 追加 (仕上げ、M26、仕様 23)
 
 - **死亡と復活**: 倒れて 3 秒で、出発点で満タンで復活する (持ち物はそのまま)。`GameState::step_respawn`・`death_ticks`、`GameEvent::Respawned`。画面に `You died`。

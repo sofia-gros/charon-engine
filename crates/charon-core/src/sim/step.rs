@@ -20,6 +20,11 @@ pub fn chunk_phase(pos: ChunkPos) -> u8 {
     (pos.x.rem_euclid(3) + 3 * pos.y.rem_euclid(3)) as u8
 }
 
+/// 更新範囲の外で、液体を大雑把に落とす間隔 (tick)。
+const COARSE_INTERVAL: u64 = 4;
+/// 1 回に落とす最大の高さ (セル)。
+const COARSE_FALL: i32 = 8;
+
 impl World {
     /// 1 tick 進める。`parallel` feature が有効なら、同じフェーズのチャンクを並列に処理する。
     pub fn step(&mut self) {
@@ -50,7 +55,65 @@ impl World {
             }
         }
 
+        if active.is_some() {
+            self.coarse_flow();
+        }
         self.tick += 1;
+    }
+
+    /// 更新範囲の外の読み込み済みチャンクで、液体を大雑把に下へ落とす (仕様 02 §9.5)。
+    /// 範囲の外はセルの更新を止めているが、水が下へ下へと落ち続けられるように、`COARSE_INTERVAL` tick ごと (チャンクごとに
+    /// ずらす) に、液体のセルを、真下の続く空きセルの `COARSE_FALL` 個先まで一気に落とす。広がる・混ざる・反応は、範囲に入ってから。
+    /// セルの数は変わらず、`swap` だけを使う。整数だけで決まる。
+    fn coarse_flow(&mut self) {
+        use crate::cell::{FLAG_BLOCK, FLAG_BODY};
+        use crate::material::Phase;
+        let Some((center, radius)) = self.active else { return };
+        let tick = self.tick;
+        let mut outside: Vec<ChunkPos> = self
+            .chunks
+            .keys()
+            .copied()
+            .filter(|pos| (pos.x - center.x).abs() > radius || (pos.y - center.y).abs() > radius)
+            .filter(|pos| {
+                let stagger = (pos.x.rem_euclid(COARSE_INTERVAL as i32)
+                    + pos.y.rem_euclid(COARSE_INTERVAL as i32))
+                    as u64;
+                (tick + stagger).is_multiple_of(COARSE_INTERVAL)
+            })
+            .collect();
+        // HashMap の反復順を結果に影響させない。
+        outside.sort_unstable();
+        for pos in outside {
+            let origin = pos.origin();
+            // 下の行から上へ。落ちた先のセルを、同じ回で、もう一度動かさない。
+            for ly in (0..crate::coords::CHUNK_SIZE).rev() {
+                for lx in 0..crate::coords::CHUNK_SIZE {
+                    let at = CellPos::new(origin.x + lx, origin.y + ly);
+                    let cell = self.get(at);
+                    if cell.material == MaterialId::EMPTY
+                        || cell.has(FLAG_BODY)
+                        || cell.has(FLAG_BLOCK)
+                        || self.materials.get(cell.material).phase != Phase::Liquid
+                    {
+                        continue;
+                    }
+                    let mut target = None;
+                    for step in 1..=COARSE_FALL {
+                        let below = CellPos::new(at.x, at.y + step);
+                        let b = self.get(below);
+                        if b.material == MaterialId::EMPTY && !b.has(FLAG_BODY) {
+                            target = Some(below);
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Some(target) = target {
+                        self.swap(at, target);
+                    }
+                }
+            }
+        }
     }
 
     /// 1 フェーズ分を処理する (仕様 02 §2)。

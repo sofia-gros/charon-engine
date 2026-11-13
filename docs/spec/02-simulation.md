@@ -352,6 +352,21 @@ open_for(x, y, watcher): セルが FLAG_BODY でなく、相が Empty、また�
 | `active_radius_follows_the_setting_and_clamps` | 0 は自動 (読み込み半径 − 2、最低 1)、設定した値、上限、0 にもどすと自動 |
 | `chunks_outside_the_sim_distance_are_frozen_and_resume_in_range` | 距離の外の砂は 1 セルも動かず、カメラが移って距離の中に入ると動き出す |
 | `sim_distance_roundtrips_clamps_and_is_optional_in_old_files` | `settings.ron` の保存・読み込み、上限、古いファイル |
+
+### 9.5 範囲の外の液体の大雑把な落下 (M27、リリース前に追加)
+
+コールドフリーズ (§9.4) のままだと、画面から離れた水が止まり、Terraria のように水が下へ下へと落ち続けられない。そこで、**更新範囲の外の、読み込み済みのチャンク**でだけ、液体の**落下**を大雑把に進める (描画は止まったまま、シミュレーションだけ)。
+
+- `World::step` が、`set_active_region` で範囲を決めているときだけ、範囲の外のチャンクに `coarse_flow` を行う。`COARSE_INTERVAL` = 4 tick ごと (チャンクの位置でずらす)。
+- 液体のセル (`Phase::Liquid`、剛体・ブロックのセルを除く) を、下の行から上へ調べ、**真下に続く空きセルの `COARSE_FALL` = 8 個先まで**一気に `swap` で落とす。固体・ほかの液体・剛体・境界・読み込んでいないチャンクの手前で止まる。チャンクの境目をまたぐ。
+- **落下だけ**: 横へ広がる・混ざる・反応する・燃えるは、範囲に入ってから通常の更新で行う。セルの数は変わらない。`rng` は使わず、チャンクを座標順に処理するので決定的 (並列 feature の有無にもよらない)。
+- 範囲に入ったチャンクは、`swap` が付けた dirty から通常の更新を再開する。
+
+| テスト | 確認 |
+|---|---|
+| `liquids_keep_falling_outside_the_active_region` | 範囲の外の水がチャンクをまたいで床まで落ち、数が変わらない |
+| `coarse_flow_only_falls_and_stops_on_solids` | 棚の上で止まり、横へ広がらない |
+| `coarse_flow_is_deterministic` / `without_an_active_region_the_normal_simulation_runs` | 決定性、範囲なしなら働かない |
 | `smoke_decays_by_itself_and_the_world_falls_asleep` | 煙は寿命で消えて、世界は眠る |
 
 ## 10. 必須テスト
