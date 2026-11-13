@@ -35,9 +35,9 @@ min_sdk_version = 26
 label = "Charon Demo"
 
 # リリースビルド (`cargo apk build --release`) の署名。配布用の本番の鍵ではなく、デバッグ用の鍵で署名する
-# (GitHub Actions が `~/.android/debug.keystore` を作る)。
+# (`apps/sandbox/debug.keystore`。コミットしない。GitHub Actions と docs/BUILD_ANDROID.md の手順で作る)。
 [package.metadata.android.signing.release]
-path = "$HOME/.android/debug.keystore"
+path = "debug.keystore"
 keystore_password = "android"
 
 [dependencies]

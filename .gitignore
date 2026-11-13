@@ -8,3 +8,6 @@
 __pycache__/
 *.pyc
 /apps/sandbox/web/pkg/
+
+# Android debug signing key (do not commit)
+*.keystore

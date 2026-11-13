@@ -55,8 +55,7 @@ jobs:
       # リリースビルドの署名に使うデバッグ用の鍵 (本番の配布用の鍵ではない)。
       - name: デバッグ用の鍵を作る
         run: |
-          mkdir -p "$HOME/.android"
-          keytool -genkeypair -v -keystore "$HOME/.android/debug.keystore" -storepass android \
+          keytool -genkeypair -v -keystore apps/sandbox/debug.keystore -storepass android \
             -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
       - run: cargo apk build --release -p charon-sandbox
