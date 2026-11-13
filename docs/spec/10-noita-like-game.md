@@ -583,3 +583,26 @@ Android 実機での確認は未実施。
 | `fuel_recharges_on_the_ground_and_only_burns_when_held` | 押さなければ減らない、接地で満タンまで戻る |
 | `no_equipment_or_dead_players_cannot_levitate_and_values_are_clamped` | 装備なし・倒れていると浮かない、値を範囲に収める |
 | `levitation_is_deterministic` | 同じ手順で同じ軌跡 |
+
+## 19. 落ちているもの (ドロップ、T17.6、`charon_game::drops`)
+
+`GameState::drops` (`Drops`)。材質と個数のかたまりが落ちて、持ち物のあるキャラクターが近づくと拾う。整数だけで決定的。
+
+- `spawn(material, count, x16, y16)`: 作れたら真。空・境界・0 個、または `MAX_DROPS` (256) に達しているときは作らない。
+- **落ち方**: 毎 tick `vy` が 4 増え (上限 48、1/16 セル / tick)、1/16 セルずつ進む。固体・粉体・境界の手前で止まる。固体の中に作られたら、1 tick ごとに 1 セル上へ出る。`LIFETIME` (18000 tick = 5 分) 拾われないと消える。
+- **拾い方**: 作られて `PICKUP_DELAY` (30) tick たってから、生きているキャラクターの中心が `PICKUP_RADIUS` (8) セル以内にいて、持ち物 (`inventories`) があれば、持ち物に入る。満杯なら入った分だけ拾い、残りは落ちたまま。複数が近いときは ID の小さい者が先。`GameEvent::Pickup(Pickup { who, material, count })` が出る。
+- **落とす**: `drop_item(entities, id, material, count)` は持ち物から出して、中心の位置に落とす。足りない・0 個・上限のときは何もせず `false`。落とした直後は、待ちのあとに拾い直せる。
+- **掘ったものをドロップにする**: `GameState::dig_to_drops = true` なら、掘ったセルは持ち物に直接入らず、材質ごとにまとめて、最初に掘ったセルの位置に落ちる (既定は `false` で、従来どおり直接入る)。
+- **出来事**: `GameEvent::Defeated(id, pos)` に、倒れた位置 (中心のセル) が付く。スクリプトの `on_event("defeated", x, y)`、`on_event("pickup", 個数, 0)`、命令 `spawn_drop(x, y, "材質", 個数)` (仕様 16)。
+- デモ: 敵を倒すとその場に石が 3 つ落ち (MOD のスクリプト)、拾うと音が鳴る。ドロップは 2×2 セルの点で描く。
+- 未実装: ドロップの保存 (`game.ron` には入らない)、積み重ね (まとめて 1 つにする)、装備品・アイテムの種類 (今は材質だけ)、投げる速さ。
+
+| テスト | 確認 |
+|---|---|
+| `drops_fall_and_rest_on_the_floor_and_climb_out_of_solids` | 落ちて床で止まる、埋まったら上へ出る |
+| `nearby_drops_are_picked_up_after_the_delay_far_ones_are_not` | 待ちのあとに近いものだけ拾う、出来事 |
+| `a_full_inventory_leaves_the_rest_on_the_ground` | 満杯なら残りは落ちたまま |
+| `dropping_from_the_inventory_and_picking_it_up_again` | 持ち物から落とす、足りなければ何もしない、拾い直し |
+| `dead_players_do_not_pick_up_and_limits_hold` | 倒れていると拾えない、数・不正な材質・寿命の上限 |
+| `dig_to_drops_makes_pickups_instead_of_direct_collection` | 掘ったものが、掘った数だけドロップになる |
+| `drops_are_deterministic` | 同じ手順で同じ結果 |

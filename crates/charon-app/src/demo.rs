@@ -435,7 +435,7 @@ impl crate::api::Game for DemoGame {
         use charon_game::game::GameEvent;
         for event in events {
             match event {
-                GameEvent::Defeated(_) => ctx.shake(0.5),
+                GameEvent::Defeated(..) => ctx.shake(0.5),
                 GameEvent::Hit(hit) if hit.entity.is_some() => ctx.shake(0.15),
                 _ => {}
             }

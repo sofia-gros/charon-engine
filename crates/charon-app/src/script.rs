@@ -29,6 +29,8 @@ pub enum Command {
     Give(String, u32),
     /// セルを材質に置き換える。
     SetCell(i32, i32, String),
+    /// その位置 (セル) に、材質を個数だけ落とす (拾える、仕様 10 §19)。
+    SpawnDrop(i32, i32, String, u32),
 }
 
 /// スクリプトから読める、tick の初めの写し。
@@ -126,6 +128,12 @@ impl ScriptGame {
             push(&s, Command::SetCell(clamp(x), clamp(y), material.to_string()));
         });
         let s = Arc::clone(&shared);
+        engine.register_fn("spawn_drop", move |x: i64, y: i64, material: &str, count: i64| {
+            let clamp = |v: i64| i32::try_from(v).unwrap_or(0);
+            let count = u32::try_from(count.clamp(0, 99_999)).unwrap_or(0);
+            push(&s, Command::SpawnDrop(clamp(x), clamp(y), material.to_string(), count));
+        });
+        let s = Arc::clone(&shared);
         engine.register_fn("tick", move || locked(&s).snapshot.tick);
         let s = Arc::clone(&shared);
         engine.register_fn("has_player", move || locked(&s).snapshot.player.is_some());
@@ -184,6 +192,15 @@ impl ScriptGame {
                     };
                     ctx.game.inventories.entry(id).or_default().add(material, count);
                 }
+                Command::SpawnDrop(x, y, material, count) => {
+                    let Some(material) = ctx.world.materials().id(&material) else { continue };
+                    ctx.game.drops.spawn(
+                        material,
+                        count,
+                        i64::from(x) * 16 + 8,
+                        i64::from(y) * 16 + 8,
+                    );
+                }
                 Command::SetCell(x, y, material) => {
                     let Some(material) = ctx.world.materials().id(&material) else { continue };
                     let pos = CellPos::new(x, y);
@@ -224,7 +241,8 @@ impl ScriptGame {
             for event in events {
                 let (kind, a, b) = match event {
                     GameEvent::Hit(hit) => ("hit", i64::from(hit.cell.x), i64::from(hit.cell.y)),
-                    GameEvent::Defeated(_) => ("defeated", 0, 0),
+                    GameEvent::Defeated(_, pos) => ("defeated", i64::from(pos.x), i64::from(pos.y)),
+                    GameEvent::Pickup(pickup) => ("pickup", i64::from(pickup.count), 0),
                     GameEvent::Dug(dug) => ("dug", i64::from(dug.pos.x), i64::from(dug.pos.y)),
                 };
                 self.call(name, (kind.to_string(), a, b));

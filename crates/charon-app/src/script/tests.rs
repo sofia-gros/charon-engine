@@ -92,7 +92,7 @@ fn events_reach_on_event_with_kind_and_position() {
     let mut rig = Rig::new();
     let stone = rig.world.materials().id("stone").unwrap();
     let dug = GameEvent::Dug(charon_game::dig::Dug { pos: CellPos::new(3, 4), material: stone });
-    rig.tick(&mut script, &[dug, GameEvent::Defeated(rig.player)]);
+    rig.tick(&mut script, &[dug, GameEvent::Defeated(rig.player, CellPos::new(5, 6))]);
     assert_eq!(rig.game.inventories[&rig.player].count(stone), 7);
     assert_eq!(rig.effects.shake, 1.0);
 }
@@ -131,10 +131,15 @@ fn the_demo_mod_script_works() {
     let source = include_str!("../../../../assets/mods/fse_demo/script.rhai");
     let mut script = ScriptGame::new(source).unwrap();
     let mut rig = Rig::new();
-    rig.tick(&mut script, &[GameEvent::Defeated(rig.player)]);
+    rig.tick(&mut script, &[GameEvent::Defeated(rig.player, CellPos::new(5, 6))]);
     assert_eq!(script.errors, 0);
-    assert_eq!(rig.effects.sounds, vec![SoundEvent::Pickup]);
+    assert!(rig.effects.sounds.is_empty());
     assert!(rig.effects.shake > 0.0);
+    assert_eq!(rig.game.drops.len(), 1, "倒した場所に石が落ちる");
+    let stone = rig.world.materials().id("stone").unwrap();
+    let pickup = charon_game::drops::Pickup { who: rig.player, material: stone, count: 3 };
+    rig.tick(&mut script, &[GameEvent::Pickup(pickup)]);
+    assert_eq!(rig.effects.sounds, vec![SoundEvent::Pickup], "拾ったら音");
 }
 
 #[test]

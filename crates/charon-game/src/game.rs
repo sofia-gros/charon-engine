@@ -14,6 +14,7 @@ use charon_physics::rope::{Rope, RopeEvent, RopeParams, RopePhase, tether_veloci
 use crate::collapse::Collapse;
 use crate::defs::{Definitions, EnemyDef, HookDef};
 use crate::dig::{Beam, Dig, Dug};
+use crate::drops::{Drops, MAX_DROPS, Pickup};
 use crate::inventory::Inventory;
 use crate::levitation::{Levitation, LevitationDef};
 use crate::projectile::{Hit, ProjectileWorld};
@@ -138,6 +139,10 @@ pub struct GameState {
     pub statuses: StatusTable,
     /// 浮遊 (仕様 10 §18)。
     pub levitation: BTreeMap<EntityId, Levitation>,
+    /// 落ちているもの (仕様 10 §19)。
+    pub drops: Drops,
+    /// 真なら、掘ったセルは持ち物に直接ではなく、材質ごとのドロップとして落ちる (仕様 10 §19)。
+    pub dig_to_drops: bool,
 }
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
@@ -145,10 +150,12 @@ pub struct GameState {
 pub enum GameEvent {
     /// 弾が当たった (敵・キャラクター、または地形)。
     Hit(Hit),
-    /// 敵を倒して撤去した。
-    Defeated(EntityId),
+    /// 敵を倒して撤去した (ID と、倒れた位置の中心のセル)。
+    Defeated(EntityId, CellPos),
     /// セルを掘った。
     Dug(Dug),
+    /// 落ちているものを拾った (仕様 10 §19)。
+    Pickup(Pickup),
 }
 
 /// 受け取られないまま溜まる出来事の上限。超えた分は捨てる (ゲームが受け取らなくても増え続けない)。
@@ -233,7 +240,32 @@ impl GameState {
             collapse: None,
             statuses: StatusTable::new(),
             levitation: BTreeMap::new(),
+            drops: Drops::new(),
+            dig_to_drops: false,
         }
+    }
+
+    /// 持ち物から `material` を `count` 個出して、キャラクターの頭の高さに落とす (仕様 10 §19)。
+    /// 足りない・エンティティがない・ドロップが上限なら何もせず `false`。
+    pub fn drop_item(
+        &mut self,
+        entities: &EntityWorld,
+        id: EntityId,
+        material: MaterialId,
+        count: u32,
+    ) -> bool {
+        let (Some(entity), Some(inventory)) = (entities.get(id), self.inventories.get_mut(&id))
+        else {
+            return false;
+        };
+        if count == 0 || inventory.count(material) < count || self.drops.len() >= MAX_DROPS {
+            return false;
+        }
+        let (x, y) = center16(entity);
+        if !inventory.take(material, count) {
+            return false;
+        }
+        self.drops.spawn(material, count, x, y)
     }
 
     /// 浮遊の装備を渡す (燃料は満タン)。
@@ -271,14 +303,20 @@ impl GameState {
         std::mem::take(&mut self.events)
     }
 
-    fn push_events(&mut self, report: &StepReport) {
+    fn push_events(
+        &mut self,
+        report: &StepReport,
+        defeated_at: &[(EntityId, CellPos)],
+        picked: &[Pickup],
+    ) {
         let all = report
             .hits
             .iter()
             .cloned()
             .map(GameEvent::Hit)
-            .chain(report.defeated.iter().copied().map(GameEvent::Defeated))
-            .chain(report.dug.iter().cloned().map(GameEvent::Dug));
+            .chain(defeated_at.iter().map(|&(id, pos)| GameEvent::Defeated(id, pos)))
+            .chain(report.dug.iter().cloned().map(GameEvent::Dug))
+            .chain(picked.iter().copied().map(GameEvent::Pickup));
         for event in all {
             if self.events.len() >= EVENTS_MAX {
                 break;
@@ -466,14 +504,32 @@ impl GameState {
             .copied()
             .filter(|&id| self.vitals.get(id).is_none_or(|v| !v.alive()))
             .collect();
+        let mut defeated_at = Vec::new();
         for &id in &defeated {
+            if let Some(entity) = entities.get(id) {
+                let (cx, cy) = center_cell(entity);
+                let to_i32 = |v: i64| i32::try_from(v).unwrap_or(0);
+                defeated_at.push((id, CellPos::new(to_i32(cx), to_i32(cy))));
+            }
             self.enemies.remove(&id);
             self.statuses.clear(id);
             self.vitals.remove(id);
             entities.remove(id);
         }
+        // (7) 落ちているものの移動と、持ち物のあるキャラクターが拾うこと (仕様 10 §19)。
+        let collectors: Vec<(EntityId, i64, i64)> = self
+            .inventories
+            .keys()
+            .filter(|id| self.vitals.get(**id).is_none_or(Vitals::alive))
+            .filter_map(|&id| entities.get(id).map(|e| (id, center16(e))))
+            .map(|(id, (x, y))| (id, x, y))
+            .collect();
+        let inventories = &mut self.inventories;
+        let picked = self.drops.step(world, &collectors, |who, material, count| {
+            inventories.get_mut(&who).map_or(0, |inventory| inventory.add(material, count))
+        });
         let report = StepReport { hits, defeated, dug };
-        self.push_events(&report);
+        self.push_events(&report, &defeated_at, &picked);
         Ok(report)
     }
 
@@ -493,8 +549,22 @@ impl GameState {
             let hand = center16(entity);
             if let Some(tool) = self.digs.get_mut(&id) {
                 let mine = tool.step(world, hand, input.aim, input.dig && alive);
-                // 持ち物のあるキャラクターは、掘った材質を集める (入りきらない分は消える)。
-                if let Some(inventory) = self.inventories.get_mut(&id) {
+                if self.dig_to_drops {
+                    // 材質ごとにまとめて、最初に掘ったセルの位置に落とす (仕様 10 §19)。
+                    let mut groups: BTreeMap<u16, (u32, CellPos)> = BTreeMap::new();
+                    for cell in &mine {
+                        groups.entry(cell.material.0).or_insert((0, cell.pos)).0 += 1;
+                    }
+                    for (material, (count, pos)) in groups {
+                        self.drops.spawn(
+                            MaterialId(material),
+                            count,
+                            i64::from(pos.x) * 16 + 8,
+                            i64::from(pos.y) * 16 + 8,
+                        );
+                    }
+                } else if let Some(inventory) = self.inventories.get_mut(&id) {
+                    // 持ち物のあるキャラクターは、掘った材質を集める (入りきらない分は消える)。
                     for cell in &mine {
                         inventory.add(cell.material, 1);
                     }

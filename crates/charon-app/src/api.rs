@@ -106,6 +106,7 @@ impl Context<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use charon_core::coords::CellPos;
     use charon_core::material::MaterialTable;
     use charon_game::game::GameEvent;
 
@@ -124,7 +125,7 @@ mod tests {
         fn on_tick(&mut self, ctx: &mut Context<'_>, events: &[GameEvent]) {
             self.ticks += 1;
             for event in events {
-                if matches!(event, GameEvent::Defeated(_)) {
+                if matches!(event, GameEvent::Defeated(..)) {
                     self.defeated += 1;
                     ctx.shake(0.8);
                 }
@@ -171,7 +172,7 @@ mod tests {
         let id = entities.spawn_player(10 * 16, 10 * 16, &world).unwrap();
         let mut ctx =
             Context::for_test(&mut world, &mut game, &mut entities, Some(id), &mut effects);
-        logic.run(&mut started, &mut ctx, &[GameEvent::Defeated(id)]);
+        logic.run(&mut started, &mut ctx, &[GameEvent::Defeated(id, CellPos::new(0, 0))]);
         logic.run(&mut started, &mut ctx, &[]);
         {
             let c = counter.lock().unwrap();

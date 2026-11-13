@@ -63,6 +63,13 @@ pub(crate) fn sprites(
             width: 2,
             height: 2,
         }))
+        // 落ちているもの (仕様 10 §19): 2×2 セルの点。
+        .chain(game.drops.iter().map(|d| EntitySprite {
+            x16: d.x16 - 16,
+            y16: d.y16 - 16,
+            width: 2,
+            height: 2,
+        }))
         .collect();
     for hook in game.hooks.values() {
         if let Some(rope) = hook.rope() {
