@@ -513,3 +513,15 @@ Android 実機での確認は未実施。
 | `bad_game_saves_are_rejected` | 版違い・壊れた RON・多すぎる種類を拒否する |
 | `game_save_file_io` | ないときは `None`、壊れていればエラー、書き直しても一時ファイルは残らない |
 | `demo_dig_in_scene` | デモで掘った石が持ち物に集まり、`game.ron` に写して読み戻せる |
+
+## 15. 出来事 (イベント、T16.3)
+
+ゲーム側が反応 (音・揺れ・得点・演出) を付けるための通知。シミュレーションの結果は変えない。
+
+- `GameEvent::{Hit(Hit), Defeated(EntityId), Dug(Dug)}`。`GameState::step` が、その tick の `StepReport` と同じ内容を、起きた順に溜める。
+- ゲームは `GameState::take_events()` で受け取る (受け取ると空になる)。受け取らずに溜まる数は `EVENTS_MAX` (4096) までで、超えた分は捨てる。
+- デモでは、敵を倒す (`Defeated`) と大きく、敵や自分に弾が当たる (`Hit` で `entity` あり) と小さく画面が揺れる (仕様 06 §11)。
+
+| テスト | 確認 |
+|---|---|
+| `dug_cells_arrive_as_events_once_and_the_queue_is_bounded` | 掘ったセルの数だけ `Dug` が届く、受け取ると空、溜まる数に上限がある |

@@ -127,7 +127,23 @@ pub struct GameState {
     /// 持ち物。持つキャラクターが掘ったセルは、材質ごとに数えて入る (仕様 10 §13)。
     pub inventories: BTreeMap<EntityId, Inventory>,
     pub spells: SpellTable,
+    /// 起きた出来事 (仕様 10 §15)。`step` が足し、ゲームが [`GameState::take_events`] で受け取る。
+    events: Vec<GameEvent>,
 }
+
+/// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GameEvent {
+    /// 弾が当たった (敵・キャラクター、または地形)。
+    Hit(Hit),
+    /// 敵を倒して撤去した。
+    Defeated(EntityId),
+    /// セルを掘った。
+    Dug(Dug),
+}
+
+/// 受け取られないまま溜まる出来事の上限。超えた分は捨てる (ゲームが受け取らなくても増え続けない)。
+pub const EVENTS_MAX: usize = 4096;
 
 /// 当たり判定の中心のセル (切り捨て)。
 fn center_cell(e: &Entity) -> (i64, i64) {
@@ -204,6 +220,28 @@ impl GameState {
             digs: BTreeMap::new(),
             inventories: BTreeMap::new(),
             spells,
+            events: Vec::new(),
+        }
+    }
+
+    /// 溜まった出来事を、起きた順に取り出す。
+    pub fn take_events(&mut self) -> Vec<GameEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    fn push_events(&mut self, report: &StepReport) {
+        let all = report
+            .hits
+            .iter()
+            .cloned()
+            .map(GameEvent::Hit)
+            .chain(report.defeated.iter().copied().map(GameEvent::Defeated))
+            .chain(report.dug.iter().cloned().map(GameEvent::Dug));
+        for event in all {
+            if self.events.len() >= EVENTS_MAX {
+                break;
+            }
+            self.events.push(event);
         }
     }
 
@@ -384,7 +422,9 @@ impl GameState {
             self.vitals.remove(id);
             entities.remove(id);
         }
-        Ok(StepReport { hits, defeated, dug })
+        let report = StepReport { hits, defeated, dug };
+        self.push_events(&report);
+        Ok(report)
     }
 
     /// 仕様 10 §12: 掘る道具を ID 昇順に更新する。倒れたキャラクターは使えない。

@@ -345,3 +345,29 @@ fn dig_is_deterministic() {
     };
     assert_eq!(run(), run());
 }
+
+/// 出来事 (仕様 10 §15): 掘ったセルは `GameEvent::Dug` として、起きた順に 1 回だけ受け取れる。
+/// 受け取らなくても溜まる数には上限がある。
+#[test]
+fn dug_cells_arrive_as_events_once_and_the_queue_is_bounded() {
+    use charon_game::game::{EVENTS_MAX, GameEvent};
+    let mut arena = Arena::new(1, '#', "laser");
+    assert!(arena.game.take_events().is_empty(), "掘る前は何も起きていない");
+    let mut dug_total = 0;
+    for _ in 0..120 {
+        dug_total += arena.dig().dug.len();
+    }
+    let events = arena.game.take_events();
+    let dug_events = events.iter().filter(|e| matches!(e, GameEvent::Dug(_))).count();
+    assert!(dug_total > 0);
+    assert_eq!(dug_events, dug_total, "レポートと出来事の数が一致する");
+    assert!(arena.game.take_events().is_empty(), "受け取ったら空になる");
+
+    // 受け取らずに掘り続けても、上限を超えて溜まらない。
+    let mut arena = Arena::new(2, 'w', "laser");
+    for _ in 0..3000 {
+        arena.dig();
+        arena.step(GameInput::default());
+    }
+    assert!(arena.game.take_events().len() <= EVENTS_MAX);
+}

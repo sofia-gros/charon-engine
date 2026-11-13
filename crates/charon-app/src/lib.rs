@@ -48,7 +48,7 @@ use charon_core::cell::MaterialId;
 use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::world::World;
 use charon_game::defs::Definitions;
-use charon_game::game::{GameInput, GameState};
+use charon_game::game::{GameEvent, GameInput, GameState};
 #[cfg(not(target_arch = "wasm32"))]
 use charon_game::save::GameSave;
 use charon_game::wand::SpellTable;
@@ -431,8 +431,6 @@ struct App {
     audio: audio::Audio,
     /// カメラの追従と揺れ (仕様 06 §11)。
     camera_fx: camera::CameraFx,
-    /// 前のフレームの敵の数 (倒したら揺らすため)。
-    previous_enemies: usize,
     /// 読み込んだ `game.ron` (仕様 10 §13)。プレイヤーが生まれたら、体力・マナ・位置・持ち物を戻す。
     #[cfg(not(target_arch = "wasm32"))]
     pending_game_save: Option<GameSave>,
@@ -503,7 +501,6 @@ impl App {
             settings: Settings::default(),
             audio: audio::Audio::new(),
             camera_fx: camera::CameraFx::default(),
-            previous_enemies: 0,
             #[cfg(not(target_arch = "wasm32"))]
             pending_game_save: None,
             timer: FixedTimestep::default(),
@@ -1081,11 +1078,14 @@ impl App {
                     _ => {}
                 }
             }
-            let enemies = self.game.enemies.len();
-            if enemies < self.previous_enemies {
-                self.camera_fx.shake(0.5);
+            // ゲームの出来事 (仕様 10 §15): 倒したら大きく、敵や自分に当たったら小さく揺らす。
+            for event in self.game.take_events() {
+                match event {
+                    GameEvent::Defeated(_) => self.camera_fx.shake(0.5),
+                    GameEvent::Hit(hit) if hit.entity.is_some() => self.camera_fx.shake(0.15),
+                    _ => {}
+                }
             }
-            self.previous_enemies = enemies;
             self.audio.pump();
         }
         let smooth = smooth_sprites(&self.physics);
