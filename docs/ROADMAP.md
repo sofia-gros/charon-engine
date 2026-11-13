@@ -306,6 +306,7 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 | T15.2 (= T11.5 の掘る部分) | 掘る道具 (Starbound 型のレーザー、硬さ × 力) ([10 §12](spec/10-noita-like-game.md)) | `dig_*`、`hardness_defaults_by_phase`、`lockstep_packet_v4_roundtrip`、`demo_dig_in_scene` |
 | T15.4 | ポーズのメニュー・持ち物の画面・設定 `settings.ron`・キー割り当て ([10 §14](spec/10-noita-like-game.md))。Android を横画面に固定 | `settings_roundtrip_and_clamp`、`binding_moves_a_key_from_the_old_action`、`broken_key_tables_are_repaired`、`settings_file_io`、`custom_bindings_change_which_keys_work`、`pause_menu_and_inventory_draw`、`demo_renders_pause_menu` |
 | T15.5 | 音: `charon-audio` (依存なしのミキサー・効果音の生成・WAV)、出来事から効果音、音量の設定 ([仕様 12](spec/12-audio.md))。**デバイスへの出力は未実装** (依存クレートの許可待ち) | `charon-audio` の 10 個のテスト、`events_follow_state_changes` ほか、`volumes_are_clamped` |
+| T15.6 | 通信: Lockstep の上のホスト中継 TCP `charon-game::net` ([仕様 13](spec/13-network.md))。**アプリへの組み込みは未実装** | `two_peers_stay_in_sync_over_tcp`、`mismatched_peers_are_refused`、`bad_inputs_drop_the_connection`、`malformed_frames_are_dropped`、`connection_info_roundtrips_and_rejects_garbage` |
 | T15.3 | 持ち物とゲーム状態の保存 `game.ron` ([10 §13](spec/10-noita-like-game.md)) | `add_take_and_count` ほか、`game_state_roundtrips_through_ron`、`game_save_file_io`、`dig_collects_into_the_inventory` |
 
 ---
