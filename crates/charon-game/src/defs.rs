@@ -2,9 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use charon_core::material::MaterialTable;
+use charon_core::cell::MaterialId;
+use charon_core::material::{MaterialTable, Phase};
 use serde::Deserialize;
 
+use crate::items::{ArmorSlot, ItemDef, ItemId, ItemKind, Resist, WeaponClass};
 use crate::wand::{Fnv, SpellError, SpellTable, Wand, WandError};
 
 const ENGINE_SPELLS: &str = include_str!("../../../assets/spells.ron");
@@ -12,11 +14,16 @@ const ENGINE_WANDS: &str = include_str!("../../../assets/wands.ron");
 const ENGINE_ENEMIES: &str = include_str!("../../../assets/enemies.ron");
 const ENGINE_HOOKS: &str = include_str!("../../../assets/hooks.ron");
 const ENGINE_DIGS: &str = include_str!("../../../assets/digs.ron");
+const ENGINE_ITEMS: &str = include_str!("../../../assets/items.ron");
+const ENGINE_RECIPES: &str = include_str!("../../../assets/recipes.ron");
 
 const MAX_WANDS: usize = 256;
 const MAX_ENEMIES: usize = 256;
 const MAX_HOOKS: usize = 256;
 const MAX_DIGS: usize = 256;
+/// 定義のアイテムの数の上限 (`ItemId::def` の添字は `u16`)。
+const MAX_ITEMS: usize = 1024;
+const MAX_RECIPES: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefsError {
@@ -29,6 +36,7 @@ pub enum DefsError {
     UnknownWand(String),
     UnknownHook(String),
     UnknownDig(String),
+    UnknownItem { owner: String, item: String },
     Wand(WandError),
     TooMany(&'static str),
 }
@@ -49,6 +57,9 @@ impl std::fmt::Display for DefsError {
             Self::UnknownWand(name) => write!(f, "杖 \"{name}\" は定義されていません"),
             Self::UnknownHook(name) => write!(f, "ワイヤーフック \"{name}\" は定義されていません"),
             Self::UnknownDig(name) => write!(f, "掘る道具 \"{name}\" は定義されていません"),
+            Self::UnknownItem { owner, item } => {
+                write!(f, "\"{owner}\" が未定義のアイテム \"{item}\" を参照しています")
+            }
             Self::Wand(e) => write!(f, "{e}"),
             Self::TooMany(kind) => write!(f, "{kind} が多すぎます"),
         }
@@ -178,6 +189,83 @@ struct RawEnemy {
     contact_damage: i64,
 }
 
+#[derive(Deserialize)]
+enum RawWeaponClass {
+    Melee,
+    Ranged,
+    Wand,
+}
+
+#[derive(Deserialize)]
+enum RawSlot {
+    Head,
+    Body,
+    Legs,
+    Accessory,
+}
+
+#[derive(Deserialize)]
+enum RawKind {
+    Misc,
+    Tool {
+        #[serde(default)]
+        pick: i64,
+    },
+    Weapon {
+        class: RawWeaponClass,
+        #[serde(default)]
+        damage: i64,
+        #[serde(default)]
+        wand: Option<String>,
+    },
+    Armor {
+        slot: RawSlot,
+        #[serde(default)]
+        defense: i64,
+        #[serde(default)]
+        fire: i64,
+        #[serde(default)]
+        poison: i64,
+        #[serde(default)]
+        cold: i64,
+    },
+    Consumable {
+        #[serde(default)]
+        heal: i64,
+        #[serde(default)]
+        mana: i64,
+    },
+}
+
+#[derive(Deserialize)]
+struct RawItem {
+    name: String,
+    #[serde(default)]
+    replace: bool,
+    kind: RawKind,
+}
+
+#[derive(Deserialize)]
+struct RawRecipe {
+    name: String,
+    #[serde(default)]
+    replace: bool,
+    inputs: Vec<(String, i64)>,
+    output: (String, i64),
+    #[serde(default)]
+    station: Option<String>,
+}
+
+/// レシピ (仕様 19 §4)。入力・出力・作業台は、解決済みの `ItemId`。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecipeDef {
+    pub name: String,
+    pub inputs: Vec<(ItemId, u32)>,
+    pub output: (ItemId, u32),
+    /// 近くにあるべきブロック (作業台など) のアイテム。
+    pub station: Option<ItemId>,
+}
+
 /// 1 つの層のファイル。`None` はその種類の層が空。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefinitionFiles<'a> {
@@ -186,6 +274,8 @@ pub struct DefinitionFiles<'a> {
     pub enemies: Option<&'a str>,
     pub hooks: Option<&'a str>,
     pub digs: Option<&'a str>,
+    pub items: Option<&'a str>,
+    pub recipes: Option<&'a str>,
 }
 
 /// 呪文・杖・敵の定義。層で重ねる。
@@ -196,6 +286,8 @@ pub struct Definitions {
     enemies: Vec<EnemyDef>,
     hooks: Vec<HookDef>,
     digs: Vec<DigDef>,
+    items: Vec<ItemDef>,
+    recipes: Vec<RecipeDef>,
 }
 
 fn range(
@@ -284,6 +376,8 @@ impl Definitions {
                 enemies: Some(ENGINE_ENEMIES),
                 hooks: Some(ENGINE_HOOKS),
                 digs: Some(ENGINE_DIGS),
+                items: Some(ENGINE_ITEMS),
+                recipes: Some(ENGINE_RECIPES),
             },
             materials,
             None,
@@ -313,6 +407,12 @@ impl Definitions {
         }
         if let Some(text) = files.digs {
             next.layer_digs(text, namespace)?;
+        }
+        if let Some(text) = files.items {
+            next.layer_items(text, namespace)?;
+        }
+        if let Some(text) = files.recipes {
+            next.layer_recipes(text, materials, namespace)?;
         }
         *self = next;
         Ok(())
@@ -469,6 +569,184 @@ impl Definitions {
         Ok(())
     }
 
+    fn layer_items(&mut self, text: &str, namespace: Option<&str>) -> Result<(), DefsError> {
+        let raws: Vec<RawItem> = ron::from_str(text)
+            .map_err(|e| DefsError::Parse { file: "items.ron", reason: e.to_string() })?;
+        let mut seen = BTreeSet::new();
+        for raw in raws {
+            let name = qualify("アイテム", &raw.name, raw.replace, namespace)?;
+            let kind = match raw.kind {
+                RawKind::Misc => ItemKind::Misc,
+                RawKind::Tool { pick } => ItemKind::Tool {
+                    pick: range(&name, pick, 0, 1000, "pick は 0..=1000 です")? as u16,
+                },
+                RawKind::Weapon { class, damage, wand } => {
+                    let damage =
+                        range(&name, damage, 0, 10_000, "damage は 0..=10000 です")? as u16;
+                    let class = match class {
+                        RawWeaponClass::Melee => WeaponClass::Melee,
+                        RawWeaponClass::Ranged => WeaponClass::Ranged,
+                        RawWeaponClass::Wand => WeaponClass::Wand,
+                    };
+                    let wand = match (class, wand) {
+                        (WeaponClass::Wand, Some(wand)) => {
+                            let full = namespace
+                                .map(|id| format!("{id}:{wand}"))
+                                .filter(|full| self.wands.iter().any(|w| &w.name == full))
+                                .or_else(|| {
+                                    self.wands.iter().any(|w| w.name == wand).then(|| wand.clone())
+                                })
+                                .ok_or(DefsError::UnknownWand(wand))?;
+                            Some(full)
+                        }
+                        (WeaponClass::Wand, None) => {
+                            return Err(DefsError::Invalid {
+                                owner: name,
+                                reason: "杖の武器には wand (杖の名前) が必要です",
+                            });
+                        }
+                        (_, Some(_)) => {
+                            return Err(DefsError::Invalid {
+                                owner: name,
+                                reason: "wand は杖の武器にだけ書けます",
+                            });
+                        }
+                        (_, None) => None,
+                    };
+                    ItemKind::Weapon { class, damage, wand }
+                }
+                RawKind::Armor { slot, defense, fire, poison, cold } => {
+                    let defense =
+                        range(&name, defense, 0, 1000, "defense は 0..=1000 です")? as u16;
+                    let resist = Resist {
+                        fire: range(&name, fire, 0, 100, "耐性は 0..=100 です")? as u8,
+                        poison: range(&name, poison, 0, 100, "耐性は 0..=100 です")? as u8,
+                        cold: range(&name, cold, 0, 100, "耐性は 0..=100 です")? as u8,
+                    };
+                    let slot = match slot {
+                        RawSlot::Head => ArmorSlot::Head,
+                        RawSlot::Body => ArmorSlot::Body,
+                        RawSlot::Legs => ArmorSlot::Legs,
+                        RawSlot::Accessory => ArmorSlot::Accessory,
+                    };
+                    ItemKind::Armor { slot, defense, resist }
+                }
+                RawKind::Consumable { heal, mana } => ItemKind::Consumable {
+                    heal: range(&name, heal, 0, 10_000, "heal は 0..=10000 です")? as u16,
+                    mana: range(&name, mana, 0, 10_000, "mana は 0..=10000 です")? as u16,
+                },
+            };
+            place(
+                "アイテム",
+                &mut self.items,
+                |d| &d.name,
+                &mut seen,
+                raw.replace,
+                ItemDef { name, kind },
+            )?;
+        }
+        if self.items.len() > MAX_ITEMS {
+            return Err(DefsError::TooMany("アイテム"));
+        }
+        Ok(())
+    }
+
+    fn layer_recipes(
+        &mut self,
+        text: &str,
+        materials: &MaterialTable,
+        namespace: Option<&str>,
+    ) -> Result<(), DefsError> {
+        let raws: Vec<RawRecipe> = ron::from_str(text)
+            .map_err(|e| DefsError::Parse { file: "recipes.ron", reason: e.to_string() })?;
+        let mut seen = BTreeSet::new();
+        for raw in raws {
+            let name = qualify("レシピ", &raw.name, raw.replace, namespace)?;
+            range(&name, raw.inputs.len() as i64, 1, 8, "入力は 1..=8 種類です")?;
+            let resolve = |item: &str| -> Result<ItemId, DefsError> {
+                self.resolve_item(item, materials, namespace).ok_or_else(|| {
+                    DefsError::UnknownItem { owner: name.clone(), item: item.to_owned() }
+                })
+            };
+            let mut inputs = Vec::with_capacity(raw.inputs.len());
+            for (item, count) in &raw.inputs {
+                let count = range(&name, *count, 1, 99_999, "個数は 1..=99999 です")? as u32;
+                inputs.push((resolve(item)?, count));
+            }
+            let out_count =
+                range(&name, raw.output.1, 1, 99_999, "出力の個数は 1..=99999 です")? as u32;
+            let output = (resolve(&raw.output.0)?, out_count);
+            let station = raw.station.as_deref().map(resolve).transpose()?;
+            let def = RecipeDef { name, inputs, output, station };
+            place("レシピ", &mut self.recipes, |d| &d.name, &mut seen, raw.replace, def)?;
+        }
+        if self.recipes.len() > MAX_RECIPES {
+            return Err(DefsError::TooMany("レシピ"));
+        }
+        Ok(())
+    }
+
+    /// 名前 (`cells:<材質>`・`block:<材質>`・定義の名前) を、レイヤーの名前空間も試して `ItemId` にする。
+    fn resolve_item(
+        &self,
+        name: &str,
+        materials: &MaterialTable,
+        namespace: Option<&str>,
+    ) -> Option<ItemId> {
+        if let Some(material) = name.strip_prefix("cells:") {
+            let id = materials.id(material).filter(|&id| usable(materials, id))?;
+            return Some(ItemId::cells(id));
+        }
+        if let Some(material) = name.strip_prefix("block:") {
+            let id = materials.id(material).filter(|&id| blockable(materials, id))?;
+            return Some(ItemId::block(id));
+        }
+        let index = namespace
+            .map(|id| format!("{id}:{name}"))
+            .and_then(|full| self.items.iter().position(|d| d.name == full))
+            .or_else(|| self.items.iter().position(|d| d.name == name))?;
+        u16::try_from(index).ok().map(ItemId::def)
+    }
+
+    /// 名前から `ItemId` (材質は `materials` で引く)。知らない名前は `None`。
+    pub fn item_id(&self, name: &str, materials: &MaterialTable) -> Option<ItemId> {
+        self.resolve_item(name, materials, None)
+    }
+
+    /// `ItemId` の名前 (保存・表示用)。知らないものは `None`。
+    pub fn item_name(&self, item: ItemId, materials: &MaterialTable) -> Option<String> {
+        use crate::items::ItemClass;
+        match item.class() {
+            ItemClass::Cells(m) => {
+                usable(materials, m).then(|| format!("cells:{}", materials.get(m).name))
+            }
+            ItemClass::Block(m) => {
+                blockable(materials, m).then(|| format!("block:{}", materials.get(m).name))
+            }
+            ItemClass::Def(index) => self.items.get(index).map(|d| d.name.clone()),
+        }
+    }
+
+    /// 定義のアイテム (`ItemId::def`) の定義。セル・ブロックは `None`。
+    pub fn item_def(&self, item: ItemId) -> Option<&ItemDef> {
+        match item.class() {
+            crate::items::ItemClass::Def(index) => self.items.get(index),
+            _ => None,
+        }
+    }
+
+    pub fn item_names(&self) -> impl Iterator<Item = &str> {
+        self.items.iter().map(|d| d.name.as_str())
+    }
+
+    pub fn recipes(&self) -> &[RecipeDef] {
+        &self.recipes
+    }
+
+    pub fn recipe(&self, name: &str) -> Option<&RecipeDef> {
+        self.recipes.iter().find(|r| r.name == name)
+    }
+
     pub fn dig(&self, name: &str) -> Option<&DigDef> {
         self.digs.iter().find(|d| d.name == name)
     }
@@ -569,6 +847,57 @@ impl Definitions {
             hash.bytes(&d.range.to_le_bytes());
             hash.bytes(&d.recover.to_le_bytes());
         }
+        hash.bytes(&[4]);
+        for item in &self.items {
+            hash.bytes(item.name.as_bytes());
+            hash.bytes(&[0]);
+            match &item.kind {
+                ItemKind::Misc => hash.bytes(&[0]),
+                ItemKind::Tool { pick } => {
+                    hash.bytes(&[1]);
+                    hash.bytes(&pick.to_le_bytes());
+                }
+                ItemKind::Weapon { class, damage, wand } => {
+                    hash.bytes(&[2, *class as u8]);
+                    hash.bytes(&damage.to_le_bytes());
+                    hash.bytes(wand.as_deref().unwrap_or("").as_bytes());
+                    hash.bytes(&[0]);
+                }
+                ItemKind::Armor { slot, defense, resist } => {
+                    hash.bytes(&[3, *slot as u8]);
+                    hash.bytes(&defense.to_le_bytes());
+                    hash.bytes(&[resist.fire, resist.poison, resist.cold]);
+                }
+                ItemKind::Consumable { heal, mana } => {
+                    hash.bytes(&[4]);
+                    hash.bytes(&heal.to_le_bytes());
+                    hash.bytes(&mana.to_le_bytes());
+                }
+            }
+        }
+        hash.bytes(&[5]);
+        for r in &self.recipes {
+            hash.bytes(r.name.as_bytes());
+            hash.bytes(&[0]);
+            for (item, count) in &r.inputs {
+                hash.bytes(&item.0.to_le_bytes());
+                hash.bytes(&count.to_le_bytes());
+            }
+            hash.bytes(&[1]);
+            hash.bytes(&r.output.0.0.to_le_bytes());
+            hash.bytes(&r.output.1.to_le_bytes());
+            hash.bytes(&r.station.map_or(u32::MAX, |s| s.0).to_le_bytes());
+        }
         hash.finish()
     }
+}
+
+/// セルのアイテムにできる材質 (空・境界を除く)。
+fn usable(materials: &MaterialTable, id: MaterialId) -> bool {
+    id != MaterialId::EMPTY && id != MaterialId::BOUNDARY && (id.0 as usize) < materials.len()
+}
+
+/// ブロックにできる材質 (固体・粉体、仕様 17 §2)。
+fn blockable(materials: &MaterialTable, id: MaterialId) -> bool {
+    usable(materials, id) && matches!(materials.get(id).phase, Phase::Solid | Phase::Powder)
 }

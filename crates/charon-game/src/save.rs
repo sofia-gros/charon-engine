@@ -9,7 +9,10 @@ use charon_core::material::MaterialTable;
 use charon_core::world::World;
 use serde::{Deserialize, Serialize};
 
+use crate::defs::Definitions;
 use crate::game::GameState;
+use crate::inventory::HOTBAR_SLOTS;
+use crate::items::{EquipSlot, ItemClass, ItemId};
 use crate::vitals::BREATH_MAX;
 use crate::{EntityId, EntityWorld, collides};
 
@@ -57,6 +60,18 @@ pub struct PlayerSave {
     /// 持ち物のブロック: `(材質の名前, 数)` (仕様 17 §4)。古い保存にはない項目で、なければ空。
     #[serde(default)]
     pub blocks: Vec<(String, u32)>,
+    /// 定義のアイテム: `(名前, 数)` (仕様 19 §7)。古い保存にはなく、なければ空。
+    #[serde(default)]
+    pub items: Vec<(String, u32)>,
+    /// ホットバー 10 枠のアイテムの名前。
+    #[serde(default)]
+    pub hotbar: Vec<Option<String>>,
+    /// 選んでいるホットバーの枠。
+    #[serde(default)]
+    pub selected: u8,
+    /// 装備 5 枠 (`EquipSlot::ALL` の順) のアイテムの名前。
+    #[serde(default)]
+    pub equipment: Vec<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +121,10 @@ impl GameSave {
                 y16: entity.y16,
                 inventory,
                 blocks,
+                items: Vec::new(),
+                hotbar: Vec::new(),
+                selected: 0,
+                equipment: Vec::new(),
             }
         });
         Self { version: GAME_SAVE_VERSION, tick, player }
@@ -155,6 +174,76 @@ impl GameSave {
         applied
     }
 
+    /// 定義のアイテム・ホットバー・装備を写す (仕様 19 §7)。`capture` のあとに呼ぶ。名前は定義から引く。
+    #[must_use]
+    pub fn with_items(
+        mut self,
+        game: &GameState,
+        id: EntityId,
+        defs: &Definitions,
+        materials: &MaterialTable,
+    ) -> Self {
+        let Some(player) = &mut self.player else { return self };
+        let name = |item: ItemId| defs.item_name(item, materials);
+        if let Some(inventory) = game.inventories.get(&id) {
+            player.items = inventory
+                .item_iter()
+                .filter(|(item, _)| matches!(item.class(), ItemClass::Def(_)))
+                .filter_map(|(item, count)| Some((name(item)?, count)))
+                .collect();
+            player.hotbar =
+                (0..HOTBAR_SLOTS).map(|slot| inventory.hotbar(slot).and_then(name)).collect();
+            // 選んでいる枠は 0..10 に収まる。
+            player.selected = inventory.selected() as u8;
+        }
+        if let Some(equipment) = game.equipment.get(&id) {
+            player.equipment =
+                EquipSlot::ALL.map(|slot| equipment.get(slot).and_then(name)).to_vec();
+        }
+        self
+    }
+
+    /// `with_items` で写したものを戻す。`apply` のあとに呼ぶ (ホットバーは、戻した持ち物にあるアイテムだけを指す)。
+    /// 知らない名前は読み飛ばす。戻した装備の数を返す。
+    pub fn apply_items(
+        &self,
+        game: &mut GameState,
+        id: EntityId,
+        defs: &Definitions,
+        materials: &MaterialTable,
+    ) -> usize {
+        let Some(saved) = &self.player else { return 0 };
+        let lookup = |name: &String| defs.item_id(name, materials);
+        if let Some(inventory) = game.inventories.get_mut(&id) {
+            for (name, count) in &saved.items {
+                if let Some(item) = lookup(name) {
+                    inventory.add_item(item, *count);
+                }
+            }
+            for (slot, name) in saved.hotbar.iter().take(HOTBAR_SLOTS).enumerate() {
+                if let Some(item) = name.as_ref().and_then(lookup) {
+                    inventory.pin(slot, item);
+                }
+            }
+            inventory.select(usize::from(saved.selected));
+        }
+        let mut restored = 0;
+        if !saved.equipment.is_empty() {
+            let equipment = game.equipment.entry(id).or_default();
+            for (slot, name) in EquipSlot::ALL.into_iter().zip(&saved.equipment) {
+                // 枠に合わないアイテムは戻さない。
+                let item = name.as_ref().and_then(lookup).filter(|&item| {
+                    defs.item_def(item).and_then(|def| def.equip_slot()) == Some(slot)
+                });
+                if let Some(item) = item {
+                    equipment.set(slot, Some(item));
+                    restored += 1;
+                }
+            }
+        }
+        restored
+    }
+
     pub fn to_ron(&self) -> Result<String, SaveError> {
         ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
             .map_err(|e| SaveError::Parse(e.to_string()))
@@ -167,7 +256,10 @@ impl GameSave {
         }
         if let Some(player) = &save.player
             && (player.inventory.len() > crate::inventory::KINDS_MAX
-                || player.blocks.len() > crate::inventory::KINDS_MAX)
+                || player.blocks.len() > crate::inventory::KINDS_MAX
+                || player.items.len() > crate::inventory::KINDS_MAX
+                || player.hotbar.len() > crate::inventory::HOTBAR_SLOTS
+                || player.equipment.len() > crate::items::EQUIP_SLOTS)
         {
             return Err(SaveError::Invalid("持ち物の種類が多すぎます"));
         }

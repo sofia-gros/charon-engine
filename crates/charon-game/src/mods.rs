@@ -98,6 +98,8 @@ struct Source {
     enemies: Option<String>,
     hooks: Option<String>,
     digs: Option<String>,
+    items: Option<String>,
+    recipes: Option<String>,
     script: Option<(PathBuf, String)>,
 }
 
@@ -154,6 +156,8 @@ impl ModPack {
                 enemies: read_optional(directory.path.join("enemies.ron"))?,
                 hooks: read_optional(directory.path.join("hooks.ron"))?,
                 digs: read_optional(directory.path.join("digs.ron"))?,
+                items: read_optional(directory.path.join("items.ron"))?,
+                recipes: read_optional(directory.path.join("recipes.ron"))?,
                 script: if directory.script {
                     let path = directory.path.join("script.ron");
                     Some((path.clone(), read(path)?))
@@ -189,6 +193,8 @@ impl ModPack {
                         enemies: source.enemies.as_deref(),
                         hooks: source.hooks.as_deref(),
                         digs: source.digs.as_deref(),
+                        items: source.items.as_deref(),
+                        recipes: source.recipes.as_deref(),
                     },
                     &materials,
                     Some(&source.manifest.id),

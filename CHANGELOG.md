@@ -11,6 +11,15 @@
 - `Cell::is_solid`、`Inventory` のブロックのアイテム (`add_block` ほか、仮の実装)、`PlayerSave::blocks` (古い保存にはなくてよい)。
 - **壊れるもの**: `PlayerSave` に `blocks` が増えた (構造体を直接書いている場合は `blocks: vec![]` を足す)。
 
+### 追加 (アイテム、仕様 19)
+
+- **アイテム**: `ItemId` (セル・ブロック・定義の 3 種類)。`assets/items.ron` に道具・武器・防具・消耗品の既定を持ち、MOD の `items.ron` で足す・`replace: true` で上書きできる。
+- **持ち物**: `Inventory` が `add_item` / `take_item` / `item_count` / `item_iter` を持つ。これまでの `add` / `take` / `count` (セル)・`add_block` ほか (ブロック) はそのまま使える。**ホットバー** 10 枠 (`pin` / `unpin` / `select` / `selected_item`)。
+- **クラフト**: `assets/recipes.ron` と MOD の `recipes.ron`。`GameState::craft` (作業台は、近くのブロックを呼ぶ側が渡す)。失敗したら何も変えない。
+- **装備**: 5 枠 (`Weapon`・`Head`・`Body`・`Legs`・`Accessory`)。`GameState::equip` / `unequip`、`Equipment::stats` (防御・耐性 (上限 100)・武器)。**自動装備** `loadout::auto_equip_best` (敵も使う土台)。
+- **保存**: `PlayerSave` に `items`・`hotbar`・`selected`・`equipment` (古い保存にはなくてよい)。名前で保存し、知らない名前は読み飛ばす。`GameSave::with_items` / `apply_items`。
+- **壊れるもの**: `PlayerSave` の項目が増えた (構造体を直接書いている場合は `items: vec![]` ほかを足す)。持ち物の種類の上限 (256) は、セル・ブロック・定義の合計になった。`DefinitionFiles` / `ModSource` に `items`・`recipes` が増えた。
+
 ### 変更 (移動の操作性)
 
 - **段差の自動乗り越え**: 接地中に、高さ 4 セルまでの段 (1 セルの凹凸を含む) を、歩くだけで乗り越える。高い壁は従来どおり止まる。プレイヤーも敵も同じ。

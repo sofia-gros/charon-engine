@@ -107,6 +107,10 @@ fn apply_is_careful_with_dead_players_solid_positions_and_limits() {
             y16: 60 * 16, // 床の中
             inventory: vec![("stone".to_owned(), 5), ("not_a_material".to_owned(), 9)],
             blocks: vec![],
+            items: vec![],
+            hotbar: vec![],
+            selected: 0,
+            equipment: vec![],
         }),
     };
     let applied = save.apply(&mut s.game, &mut s.entities, &s.world, s.player);
@@ -149,6 +153,10 @@ fn bad_game_saves_are_rejected() {
             y16: 0,
             inventory: many,
             blocks: vec![],
+            items: vec![],
+            hotbar: vec![],
+            selected: 0,
+            equipment: vec![],
         }),
     };
     let text = flood.to_ron().unwrap();

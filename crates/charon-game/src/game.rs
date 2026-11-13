@@ -132,6 +132,8 @@ pub struct GameState {
     pub digs: BTreeMap<EntityId, Dig>,
     /// 持ち物。持つキャラクターが掘ったセルは、材質ごとに数えて入る (仕様 10 §13)。
     pub inventories: BTreeMap<EntityId, Inventory>,
+    /// 装備 (仕様 19 §5)。
+    pub equipment: BTreeMap<EntityId, crate::items::Equipment>,
     pub spells: SpellTable,
     /// 起きた出来事 (仕様 10 §15)。`step` が足し、ゲームが [`GameState::take_events`] で受け取る。
     events: Vec<GameEvent>,
@@ -256,6 +258,7 @@ impl GameState {
             hooks: BTreeMap::new(),
             digs: BTreeMap::new(),
             inventories: BTreeMap::new(),
+            equipment: BTreeMap::new(),
             spells,
             events: Vec::new(),
             collapse: None,
@@ -893,6 +896,12 @@ impl GameState {
         for (&id, inventory) in &self.inventories {
             feed(&id.0.to_le_bytes());
             feed(&inventory.state_hash().to_le_bytes());
+        }
+        // 装備がなければ、これまでと同じ値 (印も流さない)。
+        for (&id, equipment) in self.equipment.iter().filter(|(_, e)| e.iter().next().is_some()) {
+            feed(&[0xE9, 0x01]);
+            feed(&id.0.to_le_bytes());
+            feed(&equipment.state_hash().to_le_bytes());
         }
         for (&id, enemy) in &self.enemies {
             feed(&id.0.to_le_bytes());

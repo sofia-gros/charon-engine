@@ -1,0 +1,21 @@
+// エンジンが既定で持つレシピ (仕様 19 §4)。「材質のセル 64 個 → その材質のブロック 1 個」は組み込みなので、ここには書かない。
+// 入力・出力は、アイテムの名前: `cells:<材質>`・`block:<材質>`・items.ron の名前。
+// station (任意) は、近くにあるべきブロック (作業台など) のアイテム。
+[
+    // ---- 道具 ----
+    (name: "wood_pickaxe",  inputs: [("cells:wood", 40)], output: ("wood_pickaxe", 1)),
+    (name: "stone_pickaxe", inputs: [("cells:stone", 40), ("cells:wood", 20)], output: ("stone_pickaxe", 1)),
+
+    // ---- 武器 ----
+    (name: "wood_sword",  inputs: [("cells:wood", 30)], output: ("wood_sword", 1)),
+    (name: "stone_sword", inputs: [("cells:stone", 40), ("cells:wood", 15)], output: ("stone_sword", 1)),
+    (name: "wood_bow",    inputs: [("cells:wood", 50)], output: ("wood_bow", 1)),
+
+    // ---- 防具 ----
+    (name: "wood_helmet",     inputs: [("cells:wood", 50)], output: ("wood_helmet", 1)),
+    (name: "wood_chestplate", inputs: [("cells:wood", 70)], output: ("wood_chestplate", 1)),
+    (name: "wood_greaves",    inputs: [("cells:wood", 60)], output: ("wood_greaves", 1)),
+    (name: "stone_helmet",     inputs: [("cells:stone", 60), ("cells:wood", 10)], output: ("stone_helmet", 1)),
+    (name: "stone_chestplate", inputs: [("cells:stone", 90), ("cells:wood", 10)], output: ("stone_chestplate", 1)),
+    (name: "stone_greaves",    inputs: [("cells:stone", 70), ("cells:wood", 10)], output: ("stone_greaves", 1)),
+]

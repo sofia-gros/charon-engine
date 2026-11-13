@@ -1,0 +1,34 @@
+// エンジンが既定で持つアイテム (仕様 19)。材質のセル (`cells:<材質>`) とブロック (`block:<材質>`) は、ここには書かない。
+// ゲームは MOD の items.ron で足したり、`replace: true` で上書きしたりできる。
+//
+// kind:
+//   Misc
+//   Tool(pick)                                  つるはしの力 (ブロックを壊す速さ)
+//   Weapon(class: Melee|Ranged|Wand, damage, wand: Some("杖の名前"))
+//   Armor(slot: Head|Body|Legs|Accessory, defense, fire, poison, cold)   耐性は %
+//   Consumable(heal, mana)
+[
+    // ---- 道具 ----
+    (name: "wood_pickaxe",  kind: Tool(pick: 4)),
+    (name: "stone_pickaxe", kind: Tool(pick: 8)),
+
+    // ---- 武器 ----
+    (name: "wood_sword",  kind: Weapon(class: Melee, damage: 6)),
+    (name: "stone_sword", kind: Weapon(class: Melee, damage: 10)),
+    (name: "wood_bow",    kind: Weapon(class: Ranged, damage: 8)),
+    (name: "starter_wand", kind: Weapon(class: Wand, wand: Some("basic"))),
+
+    // ---- 防具 ----
+    (name: "wood_helmet",     kind: Armor(slot: Head, defense: 2)),
+    (name: "wood_chestplate", kind: Armor(slot: Body, defense: 3)),
+    (name: "wood_greaves",    kind: Armor(slot: Legs, defense: 2)),
+    (name: "stone_helmet",     kind: Armor(slot: Head, defense: 4)),
+    (name: "stone_chestplate", kind: Armor(slot: Body, defense: 6)),
+    (name: "stone_greaves",    kind: Armor(slot: Legs, defense: 4)),
+    (name: "fire_ring",   kind: Armor(slot: Accessory, fire: 25)),
+    (name: "poison_charm", kind: Armor(slot: Accessory, poison: 25)),
+
+    // ---- 消耗品 ----
+    (name: "heal_potion", kind: Consumable(heal: 50)),
+    (name: "mana_potion", kind: Consumable(mana: 50)),
+]
