@@ -55,7 +55,7 @@ APK は参照デモ (`charon-demo`) を動かす。`android_main` がデモの M
 keytool -genkeypair -v -keystore apps/sandbox/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
 ```
 
-`v*` のタグを push すると、`.github/workflows/release.yml` が Windows 版 (`charon-demo-<タグ>-windows-x64.zip`、exe と `assets`) と Android 版 (`charon-demo-<タグ>-android-arm64.apk`) をビルドして GitHub Releases に載せる。
+リリース用の APK は `cargo apk build --release -p charon-sandbox --lib` で作る (`--lib` がないと、デスクトップの bin と cdylib が混ざって cargo-apk が失敗する)。`v*` のタグを push すると、`.github/workflows/release.yml` が Windows 版 (`charon-demo-<タグ>-windows-x64.zip`、exe と `assets`) と Android 版 (`charon-demo-<タグ>-android-arm64.apk`) をビルドして GitHub Releases に載せる。
 
 ```bash
 git tag v0.0.1

@@ -58,7 +58,8 @@ jobs:
           keytool -genkeypair -v -keystore apps/sandbox/debug.keystore -storepass android \
             -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
-      - run: cargo apk build --release -p charon-sandbox
+      # `--lib`: APK にするのは cdylib (android_main)。デスクトップの bin は含めない。
+      - run: cargo apk build --release -p charon-sandbox --lib
       - name: apk の名前をそろえる
         run: |
           apk=$(find target -name '*.apk' | head -n 1)
