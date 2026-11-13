@@ -119,7 +119,7 @@ fn lock(mixer: &SharedMixer) -> std::sync::MutexGuard<'_, Mixer> {
 /// 混ぜたステレオ (左右交互) を、デバイスのチャンネル数に並べ直す: モノラルは平均、3 チャンネル以上は左右だけで残りは無音。
 pub fn fill_channels(stereo: &[f32], channels: usize, out: &mut [f32]) {
     let channels = channels.max(1);
-    for (frame, pair) in out.chunks_mut(channels).zip(stereo.chunks_exact(2)) {
+    for (frame, pair) in out.chunks_mut(channels).zip(stereo.as_chunks::<2>().0) {
         match frame.len() {
             1 => frame[0] = (pair[0] + pair[1]) * 0.5,
             _ => {
@@ -205,7 +205,7 @@ impl Audio {
         let shared = Arc::clone(&self.mixer);
         let mut scratch: Vec<f32> = Vec::new();
         let error = |e: cpal::Error| eprintln!("音声の出力でエラー: {e}");
-        let stream_config: cpal::StreamConfig = config.clone().into();
+        let stream_config: cpal::StreamConfig = config.into();
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => device.build_output_stream(
                 stream_config,
@@ -316,6 +316,7 @@ impl Audio {
 }
 
 /// デバイスのコールバックから呼ぶ: ミキサーで混ぜて、デバイスのチャンネル数に並べる。
+#[cfg(not(target_arch = "wasm32"))]
 fn render_into(mixer: &SharedMixer, scratch: &mut Vec<f32>, channels: usize, out: &mut [f32]) {
     let frames = out.len() / channels.max(1);
     scratch.resize(frames * 2, 0.0);

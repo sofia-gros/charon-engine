@@ -30,7 +30,8 @@ pub fn web_main() -> Result<(), wasm_bindgen::JsValue> {
 
 /// APK に入れるデモの MOD (`assets/mods/fse_demo`)。起動時に内部ストレージへ書き出して読む。
 #[cfg(target_os = "android")]
-const DEMO_MOD_FILES: [(&str, &str); 5] = [
+const DEMO_MOD_FILES: [(&str, &str); 6] = [
+    ("script.rhai", include_str!("../../../assets/mods/fse_demo/script.rhai")),
     ("manifest.ron", include_str!("../../../assets/mods/fse_demo/manifest.ron")),
     ("materials.ron", include_str!("../../../assets/mods/fse_demo/materials.ron")),
     ("reactions.ron", include_str!("../../../assets/mods/fse_demo/reactions.ron")),

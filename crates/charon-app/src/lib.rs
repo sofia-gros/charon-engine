@@ -20,6 +20,7 @@ mod headless_tests;
 mod player;
 mod pointer;
 mod replay;
+pub mod script;
 pub mod settings;
 mod sim;
 mod timestep;

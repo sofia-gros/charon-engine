@@ -385,7 +385,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             player_sprite: Some(demo_character_image()),
             enemy_sprites: demo_enemy_images(),
             settings_path: Some(config.settings.clone()),
-            logic: Some(crate::api::GameLogic::new(DemoGame)),
+            logic: Some(crate::api::GameLogic::new(DemoGame::load(&config.mod_dir))),
             sounds: Some({
                 // MOD の `assets/sounds/*.wav|ogg` があれば、生成した効果音の代わりに使う (仕様 15)。
                 let mut assets = crate::assets::Assets::new();
@@ -398,10 +398,34 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
 }
 
 /// デモのゲームロジック (仕様 14): 出来事に、画面の揺れと音で反応する。エンジンの `Game` API の使用例。
-#[derive(Clone, Copy, Debug)]
-pub struct DemoGame;
+#[derive(Debug, Default)]
+pub struct DemoGame {
+    /// MOD の `script.rhai` (仕様 16)。あれば、Rust のロジックのあとに同じ出来事で呼ぶ。
+    pub script: Option<crate::script::ScriptGame>,
+}
+
+impl DemoGame {
+    /// MOD のディレクトリの `script.rhai` を読む。なければスクリプトなし、文法のエラーなら報告してスクリプトなし。
+    pub fn load(mod_dir: &std::path::Path) -> Self {
+        let path = mod_dir.join("script.rhai");
+        let Ok(source) = std::fs::read_to_string(&path) else { return Self::default() };
+        match crate::script::ScriptGame::new(&source) {
+            Ok(script) => Self { script: Some(script) },
+            Err(err) => {
+                eprintln!("{} を読めません: {err}", path.display());
+                Self::default()
+            }
+        }
+    }
+}
 
 impl crate::api::Game for DemoGame {
+    fn on_start(&mut self, ctx: &mut crate::api::Context<'_>) {
+        if let Some(script) = self.script.as_mut() {
+            script.on_start(ctx);
+        }
+    }
+
     fn on_tick(
         &mut self,
         ctx: &mut crate::api::Context<'_>,
@@ -414,6 +438,9 @@ impl crate::api::Game for DemoGame {
                 GameEvent::Hit(hit) if hit.entity.is_some() => ctx.shake(0.15),
                 _ => {}
             }
+        }
+        if let Some(script) = self.script.as_mut() {
+            script.on_tick(ctx, events);
         }
     }
 }

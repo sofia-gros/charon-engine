@@ -98,7 +98,7 @@ fn clusters_touching_the_boundary_are_supported() {
 fn huge_clusters_are_treated_as_ground() {
     let mut world = scene();
     testkit::fill(&mut world, 5, 5, 5 + 30, 5 + 20, '#');
-    assert!((31 * 21) > MAX_CLUSTER);
+    const { assert!(31 * 21 > MAX_CLUSTER) };
     let mut collapse = Collapse::new();
     collapse.notice(&world, &[CellPos::new(4, 10)]);
     assert_eq!(collapse.falling(), 0);

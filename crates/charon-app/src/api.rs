@@ -89,6 +89,20 @@ impl std::fmt::Debug for GameLogic {
     }
 }
 
+impl Context<'_> {
+    /// テストや画面なしの実行で、`Context` を作る (エンジンは内部で同じものを作る)。
+    pub fn for_test<'a>(
+        world: &'a mut World,
+        game: &'a mut GameState,
+        entities: &'a mut EntityWorld,
+        player: Option<EntityId>,
+        effects: &'a mut Effects,
+    ) -> Context<'a> {
+        let tick = world.tick();
+        Context { world, game, entities, player, tick, effects }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,19 +195,5 @@ mod tests {
         }
         assert_eq!(effects.shake, 1.0);
         assert_eq!(effects.sounds.len(), SOUNDS_MAX);
-    }
-}
-
-impl Context<'_> {
-    /// テストや画面なしの実行で、`Context` を作る (エンジンは内部で同じものを作る)。
-    pub fn for_test<'a>(
-        world: &'a mut World,
-        game: &'a mut GameState,
-        entities: &'a mut EntityWorld,
-        player: Option<EntityId>,
-        effects: &'a mut Effects,
-    ) -> Context<'a> {
-        let tick = world.tick();
-        Context { world, game, entities, player, tick, effects }
     }
 }
