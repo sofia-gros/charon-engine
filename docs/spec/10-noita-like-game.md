@@ -543,3 +543,26 @@ Android 実機での確認は未実施。
 | `huge_clusters_are_treated_as_ground` | 大きなかたまりは落ちない |
 | `falling_displaces_liquid_and_stops_on_powder` | 水の数は不変、砂の上で止まる |
 | `a_cluster_that_is_dug_stops_being_followed` | 落下中に掘られたら追わない |
+
+## 17. 状態異常 (T17.4、`charon_game::status`)
+
+`GameState::statuses` (`StatusTable`)。すべて整数で、決定的。
+
+| 状態 | 効果 |
+|---|---|
+| `Burning` | `BURN_INTERVAL` (15) tick ごとに 1 ダメージ。長さ `BURN_TICKS` (180)。 |
+| `Wet` | ダメージなし。長さ `WET_TICKS` (300)。濡れている間は燃えず、濡れると燃えているのが消える。 |
+| `Poison` | `POISON_INTERVAL` (30) tick ごとに 1 ダメージ。API でだけ付ける。 |
+
+- `apply(id, kind, ticks)`: 長さは `TICKS_MAX` (3600) に収め、すでになっていれば長い方に延ばす (縮めない)。0 は何もしない。付いたら真。
+- ダメージは「残りの tick が間隔の倍数のとき」に当たる。残りは毎 tick 1 減り、0 で消える。
+- 環境からの付与 (毎 tick、体の覆うセルを見る): 液体 (`Phase::Liquid`) があれば `Wet`、なければ、`FLAG_BURNING` または `HEAT_THRESHOLD` 以上の温度のセルがあれば `Burning`。材質の名前は使わない。
+- 倒れたキャラクターの状態は消える。順序は、環境ダメージ (§6.1 の (1)) の直後。
+- デモの画面 (HP の欄) に、いま付いている状態を出す。
+
+| テスト | 確認 |
+|---|---|
+| `burning_and_poison_deal_damage_on_a_beat_and_expire` | 間隔ごとのダメージ、時間で消える、濡れるだけではダメージなし |
+| `liquid_wets_and_extinguishes_fire_touches_ignite` | 火で燃える、液体で濡れて消える、濡れている間は燃えない、乾いたら燃える |
+| `durations_are_clamped_and_extended_and_death_clears` | 上限、0、延長、倒れたら消える |
+| `statuses_are_deterministic` | 同じ手順で同じ結果 |

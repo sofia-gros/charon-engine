@@ -950,6 +950,22 @@ fn draw_wand_panel(context: &egui::Context, overlay: &Overlay<'_>) {
                     let text = if shown.is_empty() { "-".to_owned() } else { shown.join(" · ") };
                     ui.label(format!("Items (dig): {text}"));
                 }
+                // 状態異常 (仕様 10 §17)。
+                {
+                    use charon_game::status::StatusKind;
+                    let active: Vec<&str> = [
+                        (StatusKind::Burning, "burning"),
+                        (StatusKind::Wet, "wet"),
+                        (StatusKind::Poison, "poison"),
+                    ]
+                    .into_iter()
+                    .filter(|(kind, _)| overlay.game.statuses.has(id, *kind))
+                    .map(|(_, name)| name)
+                    .collect();
+                    if !active.is_empty() {
+                        ui.label(format!("Status: {}", active.join(" · ")));
+                    }
+                }
                 ui.label(format!(
                     "Weapon (left) next: {next} · Shots: {} · Enemies: {}{}",
                     overlay.game.projectiles.len(),

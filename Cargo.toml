@@ -26,9 +26,12 @@ todo = "warn"
 # シミュレーションは最適化なしでは遅すぎて確認できないため、開発ビルドも軽く最適化する。
 [profile.dev]
 opt-level = 1
+# デバッグ情報は行番号だけ。全部入れると、依存が増えたとき Windows のリンカーが PDB の上限 (LNK1318) で失敗する。
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 [profile.release]
 codegen-units = 1

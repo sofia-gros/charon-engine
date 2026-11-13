@@ -16,6 +16,7 @@ use crate::defs::{Definitions, EnemyDef, HookDef};
 use crate::dig::{Beam, Dig, Dug};
 use crate::inventory::Inventory;
 use crate::projectile::{Hit, ProjectileWorld};
+use crate::status::StatusTable;
 use crate::vitals::{Vitals, VitalsError, VitalsTable, covered_cells, step_environment};
 use crate::wand::{CastError, CastOutcome, SpellTable, Wand, WandError};
 use crate::{Entity, EntityError, EntityId, EntityWorld, PlayerInput, collides, step_entity};
@@ -132,6 +133,8 @@ pub struct GameState {
     events: Vec<GameEvent>,
     /// 地形の崩落 (仕様 10 §16)。`Some` のとき、掘って支えを失った固体が落ちる。
     pub collapse: Option<Collapse>,
+    /// 状態異常 (仕様 10 §17)。
+    pub statuses: StatusTable,
 }
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
@@ -225,6 +228,7 @@ impl GameState {
             spells,
             events: Vec::new(),
             collapse: None,
+            statuses: StatusTable::new(),
         }
     }
 
@@ -380,6 +384,7 @@ impl GameState {
         for &id in &ids {
             if let (Some(entity), Some(vitals)) = (entities.get(id), self.vitals.get_mut(id)) {
                 step_environment(entity, vitals, world);
+                self.statuses.step(id, entity, vitals, world);
             }
         }
         // (2) 杖の回復と待ち時間。
@@ -439,6 +444,7 @@ impl GameState {
             .collect();
         for &id in &defeated {
             self.enemies.remove(&id);
+            self.statuses.clear(id);
             self.vitals.remove(id);
             entities.remove(id);
         }
