@@ -169,7 +169,7 @@ mod tests {
         }
 
         world.insert_chunk(charon_core::coords::ChunkPos::new(0, 0));
-        let id = entities.spawn_player(10 * 16, 10 * 16, &world).unwrap();
+        let id = entities.spawn_player(10 * 16, 0, &world).unwrap();
         let mut ctx =
             Context::for_test(&mut world, &mut game, &mut entities, Some(id), &mut effects);
         logic.run(&mut started, &mut ctx, &[GameEvent::Defeated(id, CellPos::new(0, 0))]);

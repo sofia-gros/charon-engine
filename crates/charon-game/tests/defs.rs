@@ -47,7 +47,7 @@ fn engine_defaults_load() {
 
     // 敵は呪文を名前の通りに参照する。
     let shooter = defs.enemy("shooter").unwrap();
-    assert_eq!((shooter.width, shooter.height, shooter.max_hp), (8, 16, 30));
+    assert_eq!((shooter.width, shooter.height, shooter.max_hp), (16, 24, 30));
     assert_eq!(shooter.attack.as_deref(), Some("spark"));
     assert_eq!(defs.enemy("walker").unwrap().attack, None);
     assert_eq!(defs.enemy("walker").unwrap().contact_damage, 5);

@@ -219,7 +219,12 @@ impl ProjectileWorld {
                 p.x16 = start_x + i64::from(p.vx);
                 p.y16 = start_y + i64::from(p.vy);
                 p.life -= 1;
-                p.grace = None;
+                // 撃った本人の体から出るまでは、当たらない (体が大きいと、1 tick では出られない)。
+                if let Some(owner) = p.grace
+                    && !inside_entity(entities, owner, p.x16, p.y16)
+                {
+                    p.grace = None;
+                }
                 if p.life == 0 {
                     self.projectiles.remove(&id);
                 } else {
@@ -320,6 +325,16 @@ fn blocks(world: &World, pos: CellPos) -> bool {
 }
 
 /// 点 `(x16, y16)` を当たり判定に含む、体力を持つエンティティのうち ID が最小のもの。
+/// 点 (x16, y16) が、エンティティ id の箱の中にあるか。
+fn inside_entity(entities: &EntityWorld, id: EntityId, x16: i64, y16: i64) -> bool {
+    entities.get(id).is_some_and(|e| {
+        x16 >= e.x16
+            && x16 < e.x16 + i64::from(e.width) * 16
+            && y16 >= e.y16
+            && y16 < e.y16 + i64::from(e.height) * 16
+    })
+}
+
 fn entity_at(
     entities: &EntityWorld,
     vitals: &VitalsTable,

@@ -32,7 +32,7 @@ impl Walker {
     /// 床の上の `x` に、プレイヤーを立たせる (落ちて接地するまで待つ)。
     fn new(world: World, x: i32) -> Self {
         let mut entities = EntityWorld::new();
-        let id = entities.spawn_player(i64::from(x) * 16, 40 * 16, &world).unwrap();
+        let id = entities.spawn_player(i64::from(x) * 16, 30 * 16, &world).unwrap();
         let mut walker = Self { world, entities, id };
         for _ in 0..60 {
             walker.step(0, false);
@@ -85,7 +85,7 @@ fn small_steps_are_climbed_automatically_and_walls_are_not() {
         assert!(walker.get().grounded, "高さ {height}: 上に立って接地している");
         assert_eq!(walker.feet_row(), i64::from(59 - height), "段の上に、ぴったり立つ");
     }
-    for height in [STEP_UP_CELLS as i32 + 1, 8, 20] {
+    for height in [STEP_UP_CELLS as i32 + 1, 16, 20] {
         let mut walker = Walker::new(with_step(height), 10);
         walker.walk_right(60);
         let flush = 30 - i64::from(PLAYER_WIDTH);
@@ -98,23 +98,23 @@ fn small_steps_are_climbed_automatically_and_walls_are_not() {
 #[test]
 fn a_staircase_of_single_cell_steps_is_climbed_without_stopping() {
     let mut world = flat_world();
-    for i in 0..12 {
-        // 幅 3 セルの段が、1 セルずつ高くなる。
-        testkit::fill(&mut world, 24 + i * 3, 59 - i, 24 + i * 3 + 2, 59, '#');
+    for i in 0..6 {
+        // 幅 2 セルの段が、1 セルずつ高くなる。
+        testkit::fill(&mut world, 16 + i * 2, 59 - i, 63, 59, '#');
     }
-    let mut walker = Walker::new(world, 10);
+    let mut walker = Walker::new(world, 2);
     let mut stalled = 0;
     let mut last_x = walker.get().x16;
     for _ in 0..120 {
         walker.step(1, false);
         // 最上段に着くまでの間に、進まなかった tick を数える。
-        if walker.get().x16 == last_x && walker.x() < 24 + 11 * 3 {
+        if walker.get().x16 == last_x && walker.x() < 16 + 5 * 2 {
             stalled += 1;
         }
         last_x = walker.get().x16;
     }
-    assert!(walker.x() >= 24 + 11 * 3, "階段の最上段まで: x = {}", walker.x());
-    assert!(walker.feet_row() <= 59 - 11, "11 段ぶん高い");
+    assert!(walker.x() >= 16 + 5 * 2, "階段の最上段まで: x = {}", walker.x());
+    assert!(walker.feet_row() <= 59 - 5, "6 段ぶん高い");
     assert_eq!(stalled, 0, "止まらない");
 }
 
@@ -132,7 +132,7 @@ fn steps_are_not_climbed_in_the_air() {
     }
     // 楕円の下は丸いので、壁の手前で止まる位置は、箱がちょうど接する位置より少し (1〜2 セル) 先になる。
     assert!(
-        airborne.x() <= flush + 2,
+        airborne.x() <= flush + 6,
         "接地していないと、1 セルの段でも止まる: x = {}",
         airborne.x()
     );
@@ -147,7 +147,7 @@ fn steps_are_not_climbed_in_the_air() {
 #[test]
 fn steps_under_a_low_ceiling_are_not_climbed() {
     let mut world = with_step(2);
-    // 段の上の、頭の高さ (段の上から 6 セル上) に天井を置く: 高さ 10 のプレイヤーは入れない。
+    // 段の上の、頭の高さ (段の上から 5 セル上) に天井を置く: 高さ 24 のプレイヤーは入れない。
     testkit::fill(&mut world, 30, 40, 63, 52, '#');
     let mut walker = Walker::new(world, 10);
     walker.walk_right(60);
@@ -213,7 +213,7 @@ fn coyote_time_does_not_allow_a_double_jump() {
         walker.step(0, true);
     }
     // 押し続けても、空中では二度目の上向きの初速はつかない (上がり続けるが、速さは減っていく)。
-    assert!(walker.get().vy > -96, "二段ジャンプはない: vy = {}", walker.get().vy);
+    assert!(walker.get().vy > -60, "二段ジャンプはない: vy = {}", walker.get().vy);
     assert!(walker.get().y16 < after_first, "上がっている");
 }
 
@@ -224,7 +224,7 @@ fn a_jump_pressed_just_before_landing_fires_on_landing() {
     let drop = || {
         let world = flat_world();
         let mut entities = EntityWorld::new();
-        let id = entities.spawn_player(10 * 16, 20 * 16, &world).unwrap();
+        let id = entities.spawn_player(10 * 16, 2 * 16, &world).unwrap();
         Walker { world, entities, id }
     };
     let mut probe = drop();
@@ -255,14 +255,29 @@ fn a_jump_pressed_just_before_landing_fires_on_landing() {
     }
 }
 
+/// 体は 2×3 ブロック (16×24 セル)。ジャンプは 3〜4 ブロック (24..=32 セル) の高さ。
+#[test]
+fn the_body_is_two_by_three_blocks_and_jumps_three_to_four_blocks() {
+    assert_eq!((PLAYER_WIDTH, PLAYER_HEIGHT), (16, 24));
+    let mut walker = Walker::new(flat_world(), 10);
+    let floor = walker.get().y16;
+    let mut top = floor;
+    for tick in 0..120 {
+        walker.step(0, tick == 0);
+        top = top.min(walker.get().y16);
+    }
+    let height = (floor - top) / 16;
+    assert!((24..=32).contains(&height), "ジャンプの高さ {height} セル");
+}
+
 /// 新しい状態 (`coyote`・`jump_buffer`) も状態のハッシュに入る (同期の検査で、食い違いを見つけられる)。
 #[test]
 fn the_new_movement_state_is_part_of_the_state_hash() {
     let world = flat_world();
     let mut a = EntityWorld::new();
     let mut b = EntityWorld::new();
-    let ida = a.spawn_player(10 * 16, 40 * 16, &world).unwrap();
-    let idb = b.spawn_player(10 * 16, 40 * 16, &world).unwrap();
+    let ida = a.spawn_player(10 * 16, 30 * 16, &world).unwrap();
+    let idb = b.spawn_player(10 * 16, 30 * 16, &world).unwrap();
     assert_eq!(a.state_hash(), b.state_hash());
     a.get_mut(ida).unwrap().coyote = 3;
     assert_ne!(a.state_hash(), b.state_hash());

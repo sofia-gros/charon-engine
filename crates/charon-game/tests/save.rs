@@ -62,7 +62,7 @@ impl Drop for TempDir {
 /// 状態を写して RON にし、読み戻すと、新しいキャラクターへ体力・息・マナ・位置・持ち物が戻る。
 #[test]
 fn game_state_roundtrips_through_ron() {
-    let mut a = setup(10, 40);
+    let mut a = setup(10, 26);
     let stone = testkit::material_of(&a.world, '#');
     let sand = testkit::material_of(&a.world, 's');
     a.game.inventories.get_mut(&a.player).unwrap().add(stone, 42);
@@ -79,12 +79,12 @@ fn game_state_roundtrips_through_ron() {
     assert_eq!(loaded, save);
 
     // 別の場所に生まれた新しいキャラクターへ戻す。
-    let mut b = setup(30, 40);
+    let mut b = setup(30, 26);
     let applied = loaded.apply(&mut b.game, &mut b.entities, &b.world, b.player);
     assert!(applied.moved);
     assert_eq!(applied.kinds, 2);
     let entity = b.entities.get(b.player).unwrap();
-    assert_eq!((entity.x16, entity.y16), (10 * 16, 40 * 16), "位置が戻る");
+    assert_eq!((entity.x16, entity.y16), (10 * 16, 26 * 16), "位置が戻る");
     let vitals = b.game.vitals.get(b.player).unwrap();
     assert_eq!((vitals.hp, vitals.breath), (37, 123));
     assert_eq!(b.game.wands[&b.player].mana, 55);
@@ -95,7 +95,7 @@ fn game_state_roundtrips_through_ron() {
 /// 倒れていたプレイヤーは満タンで戻る。保存した位置が固体と重なるときは、位置を戻さない。値は上限に収める。
 #[test]
 fn apply_is_careful_with_dead_players_solid_positions_and_limits() {
-    let mut s = setup(10, 40);
+    let mut s = setup(10, 26);
     let save = GameSave {
         version: GAME_SAVE_VERSION,
         tick: 0,
@@ -116,7 +116,7 @@ fn apply_is_careful_with_dead_players_solid_positions_and_limits() {
     let applied = save.apply(&mut s.game, &mut s.entities, &s.world, s.player);
     assert!(!applied.moved, "固体の中へは戻さない");
     let entity = s.entities.get(s.player).unwrap();
-    assert_eq!((entity.x16, entity.y16), (10 * 16, 40 * 16));
+    assert_eq!((entity.x16, entity.y16), (10 * 16, 26 * 16));
     let vitals = s.game.vitals.get(s.player).unwrap();
     assert_eq!(vitals.hp, MAX_HP, "体力 0 は満タンで戻る");
     assert_eq!(vitals.breath, BREATH_MAX, "息は上限に収める");
@@ -168,7 +168,7 @@ fn bad_game_saves_are_rejected() {
 fn game_save_file_io() {
     let dir = TempDir::new();
     assert_eq!(GameSave::read(&dir.0), Ok(None), "ファイルがなければ None");
-    let s = setup(10, 40);
+    let s = setup(10, 26);
     let materials = Arc::clone(s.world.materials());
     let save = GameSave::capture(&s.game, &s.entities, s.player, &materials, 5);
     save.write(&dir.0).unwrap();
@@ -186,7 +186,7 @@ fn game_save_file_io() {
 /// 持ち物のないキャラクターは掘っても集めない。持ち物があれば、掘ったセルの数だけ材質が増える。
 #[test]
 fn inventory_requires_a_character_with_a_wand() {
-    let mut s = setup(10, 40);
+    let mut s = setup(10, 26);
     assert!(s.game.give_inventory(EntityId(99)).is_err(), "杖のないキャラクターには持たせない");
     s.game.inventories.get_mut(&s.player).unwrap().add(MaterialId(3), 1);
     s.game.give_inventory(s.player).unwrap();

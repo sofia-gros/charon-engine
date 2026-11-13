@@ -32,7 +32,7 @@ pub const ROOM: [i32; 4] = [4, 196, 188, 268];
 /// 部屋の空洞 (`x0, y0, x1, y1`、終端は含まない)。床は `y1` の行から。
 pub const ROOM_INTERIOR: [i32; 4] = [8, 200, 184, 264];
 /// プレイヤーの初期位置 (左上のセル)。8×16 で、床の上に立つ。
-pub const PLAYER_SPAWN: [i32; 2] = [40, 248];
+pub const PLAYER_SPAWN: [i32; 2] = [40, 238];
 /// `Tile Entity` の文字の左上と、それを囲む枠 (`x0, y0, x1, y1`、終端は含まない)。
 pub const SIGN_TEXT: [i32; 2] = [100, 215];
 pub const SIGN_FRAME: [i32; 4] = [98, 213, 168, 224];

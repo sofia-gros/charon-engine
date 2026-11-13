@@ -31,7 +31,7 @@ fn hot_cells_damage_entity() {
     for seed in 1..=8 {
         let mut world = scene(seed);
         testkit::fill(&mut world, 0, 30, 63, 39, 'l');
-        let (entities, id) = spawn(&world, 24);
+        let (entities, id) = spawn(&world, 16);
         let mut hot = Vitals::new(MAX_HP).unwrap();
         // 足元だけが溶岩に触れる。頭は空気なので溺れない。
         step_environment(entities.get(id).unwrap(), &mut hot, &world);
@@ -41,7 +41,7 @@ fn hot_cells_damage_entity() {
         assert_eq!(hot.hp, first - (MAX_HP - first), "毎 tick 同じだけ減る seed={seed}");
 
         // 溶岩のない場所では減らない。
-        let (entities, id) = spawn(&scene(seed), 24);
+        let (entities, id) = spawn(&scene(seed), 16);
         let mut safe = Vitals::new(MAX_HP).unwrap();
         for _ in 0..10 {
             step_environment(entities.get(id).unwrap(), &mut safe, &scene(seed));
@@ -56,7 +56,7 @@ fn drowning_needs_submerged_head() {
         // 足だけ水に浸かる (頭の行は空気)。
         let mut world = scene(seed);
         testkit::fill(&mut world, 0, 33, 63, 39, 'w');
-        let (entities, id) = spawn(&world, 24);
+        let (entities, id) = spawn(&world, 16);
         let mut feet = Vitals::new(MAX_HP).unwrap();
         for _ in 0..(BREATH_MAX as usize + 100) {
             step_environment(entities.get(id).unwrap(), &mut feet, &world);
@@ -66,7 +66,7 @@ fn drowning_needs_submerged_head() {
         // 頭まで水没する。
         let mut world = scene(seed);
         testkit::fill(&mut world, 0, 10, 63, 39, 'w');
-        let (entities, id) = spawn(&world, 24);
+        let (entities, id) = spawn(&world, 16);
         let mut deep = Vitals::new(MAX_HP).unwrap();
         let entity = entities.get(id).unwrap();
         for _ in 0..(BREATH_MAX - 1) {
@@ -90,7 +90,7 @@ fn drowning_needs_submerged_head() {
 #[test]
 fn breath_recovers_in_air() {
     let world = scene(1);
-    let (entities, id) = spawn(&world, 24);
+    let (entities, id) = spawn(&world, 16);
     let mut vitals = Vitals::new(MAX_HP).unwrap();
     vitals.breath = 10;
     let entity = entities.get(id).unwrap();
@@ -135,7 +135,7 @@ fn damage_and_heal_saturate() {
     // 死んだエンティティは環境の影響を受けない。
     let mut world = scene(1);
     testkit::fill(&mut world, 0, 10, 63, 39, 'l');
-    let (entities, id) = spawn(&world, 24);
+    let (entities, id) = spawn(&world, 16);
     step_environment(entities.get(id).unwrap(), &mut v, &world);
     assert_eq!(v.hp, 0);
 }

@@ -42,7 +42,7 @@ impl Arena {
         testkit::fill(&mut world, 0, 60, 63, 60, '#');
         testkit::fill(&mut world, 30, 40, 40, 59, wall);
         let mut entities = EntityWorld::new();
-        let player = entities.spawn_player(10 * 16, 50 * 16, &world).unwrap();
+        let player = entities.spawn_player(10 * 16, 36 * 16, &world).unwrap();
         let mut game = GameState::from_definitions(&defs);
         game.add_character(player, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
         game.equip_dig(player, &defs, dig).unwrap();
@@ -266,7 +266,7 @@ fn dig_beam_follows_the_aim() {
     let beam = arena.game.dig_beam(arena.player).expect("光線が出る");
     assert!(beam.hit);
     assert!((beam.to[1] - (row as f32 + 0.5)).abs() < 1.5, "同じ高さへ進む: {beam:?}");
-    assert!(beam.to[0] > beam.from[0] + 15.0, "右へ進む");
+    assert!(beam.to[0] > beam.from[0] + 8.0, "右へ進む");
     // 上へ向ければ、壁には当たらない。
     arena.step(GameInput { dig: true, aim: (0, -1000), ..Default::default() });
     let up = arena.game.dig_beam(arena.player).unwrap();

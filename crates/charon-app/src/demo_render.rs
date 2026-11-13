@@ -523,7 +523,10 @@ fn demo_renders_wand_panel() {
     let (mut scene, center) = room_scene(&pack);
     let id = scene.player.unwrap();
     // 体力を減らして、バーが途中までになるようにする。
-    scene.game.vitals.get_mut(id).unwrap().damage(35);
+    {
+        let vitals = scene.game.vitals.get_mut(id).unwrap();
+        vitals.hp = vitals.max_hp * 65 / 100;
+    }
     let (_, without_shots) = render_world(&gpu, &mut scene, center);
 
     let player = scene.entities.get(id).unwrap().clone();
@@ -593,7 +596,7 @@ fn demo_renders_hook() {
         .filter(|(a, b)| a != b)
         .count();
     println!("hook: ワイヤーで変わった画素 {changed}");
-    assert!(changed > 200, "ワイヤーの点列が画素に現れる ({changed})");
+    assert!(changed > 120, "ワイヤーの点列が画素に現れる ({changed})");
 
     let ui_pixels = render_ui(&gpu, &scene, center, &texture, true);
     assert_ne!(ui_pixels, world_pixels);

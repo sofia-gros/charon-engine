@@ -32,7 +32,7 @@ impl Arena {
         let mut world = World::new(Arc::new(materials), 1);
         world.insert_chunk(ChunkPos::new(0, 0));
         let mut entities = EntityWorld::new();
-        let player = entities.spawn_player(10 * 16, 40 * 16, &world).unwrap();
+        let player = entities.spawn_player(10 * 16, 26 * 16, &world).unwrap();
         let mut game = GameState::from_definitions(&defs);
         game.add_character(player, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
         Self { world, physics: PhysicsEngine::new(), entities, game, player, tick: 0 }

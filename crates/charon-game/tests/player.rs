@@ -31,7 +31,7 @@ fn player_lands_on_solid() {
     for seed in 1..=8 {
         let world = scene(seed, false);
         let mut entities = EntityWorld::new();
-        let id = entities.spawn_player(8 * 16, 5 * 16, &world).unwrap();
+        let id = entities.spawn_player(8 * 16, 0, &world).unwrap();
         for _ in 0..100 {
             entities.step_players(&[], &world).unwrap();
         }
@@ -47,29 +47,29 @@ fn player_lands_on_solid() {
 fn player_hits_body_stamp() {
     for seed in 1..=8 {
         let mut world = scene(seed, false);
-        testkit::fill(&mut world, 18, 24, 18, 39, 'w');
+        testkit::fill(&mut world, 30, 24, 30, 39, 'w');
         for y in 24..40 {
-            let pos = CellPos::new(18, y);
+            let pos = CellPos::new(30, y);
             world.set(pos, world.get(pos).with(FLAG_BODY, true));
         }
         let mut entities = EntityWorld::new();
-        let id = entities.spawn_player(8 * 16, 24 * 16, &world).unwrap();
+        let id = entities.spawn_player(8 * 16, 10 * 16, &world).unwrap();
         for _ in 0..8 {
             entities
                 .step_players(&[(id, PlayerInput { horizontal: 1, jump: false })], &world)
                 .unwrap();
         }
-        assert_eq!(entities.get(id).unwrap().x16, (18 - W) * 16, "seed={seed}");
+        assert_eq!(entities.get(id).unwrap().x16, (30 - W) * 16, "seed={seed}");
         for y in 24..40 {
-            let pos = CellPos::new(18, y);
+            let pos = CellPos::new(30, y);
             world.set(pos, world.get(pos).with(FLAG_BODY, false));
         }
-        for _ in 0..8 {
+        for _ in 0..32 {
             entities
                 .step_players(&[(id, PlayerInput { horizontal: 1, jump: false })], &world)
                 .unwrap();
         }
-        assert!(entities.get(id).unwrap().x16 > 18 * 16, "seed={seed}");
+        assert!(entities.get(id).unwrap().x16 > 30 * 16, "seed={seed}");
     }
 }
 
@@ -79,10 +79,10 @@ fn player_jump_and_negative_coords() {
         let mut world = scene(seed, true);
         testkit::fill(&mut world, -20, 24, -20, 39, '#');
         let mut entities = EntityWorld::new();
-        let id = entities.spawn_player(-32 * 16, STAND, &world).unwrap();
+        let id = entities.spawn_player(-48 * 16, STAND, &world).unwrap();
         entities.step_players(&[], &world).unwrap();
         assert!(entities.get(id).unwrap().grounded);
-        for _ in 0..10 {
+        for _ in 0..14 {
             entities
                 .step_players(&[(id, PlayerInput { horizontal: 1, jump: false })], &world)
                 .unwrap();
@@ -107,7 +107,7 @@ fn player_jump_and_negative_coords() {
 #[test]
 fn player_collision_is_elliptical() {
     for seed in 1..=8 {
-        let (x, y) = (20_i32, 20_i32);
+        let (x, y) = (20_i32, 10_i32);
         let (x16, y16) = (i64::from(x) * 16, i64::from(y) * 16);
         // 箱の左上の角のセル。
         let mut world = scene(seed, false);
@@ -159,8 +159,8 @@ fn player_pushes_sand_out() {
 fn invalid_input_is_atomic() {
     let world = scene(1, false);
     let mut entities = EntityWorld::new();
-    let first = entities.spawn_player(8 * 16, 24 * 16, &world).unwrap();
-    let second = entities.spawn_player(32 * 16, 24 * 16, &world).unwrap();
+    let first = entities.spawn_player(8 * 16, 10 * 16, &world).unwrap();
+    let second = entities.spawn_player(32 * 16, 10 * 16, &world).unwrap();
     let before = entities.state_hash();
     let right = PlayerInput { horizontal: 1, jump: false };
     assert_eq!(

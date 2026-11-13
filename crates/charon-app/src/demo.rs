@@ -248,8 +248,8 @@ pub(crate) fn demo_deep_background(seed: u64) -> DeepBackgroundParams {
 /// デモ (ゲーム側) が部屋に置く敵 (仕様 10 §8.5)。種類はエンジンの既定の定義。
 pub(crate) fn demo_enemies() -> Vec<EnemySpawn> {
     vec![
-        EnemySpawn { name: "walker".to_owned(), cell: [164, 248] },
-        EnemySpawn { name: "shooter".to_owned(), cell: [176, 248] },
+        EnemySpawn { name: "walker".to_owned(), cell: [12, 238] },
+        EnemySpawn { name: "shooter".to_owned(), cell: [160, 238] },
     ]
 }
 

@@ -1,8 +1,8 @@
 // エンジンが既定で持つ敵の種類 (仕様 10 §7.1・§8)。動き (AI) はエンジンが決める。
 // ゲームは MOD の enemies.ron で足したり、`replace: true` で上書きしたりできる。
 [
-    (name: "walker", width: 8, height: 16, max_hp: 30, walk_speed: 16, jump_speed: 80,
+    (name: "walker", width: 16, height: 24, max_hp: 30, walk_speed: 12, jump_speed: 56,
      sight: 120, attack: None, attack_interval: 0, contact_damage: 5),
-    (name: "shooter", width: 8, height: 16, max_hp: 30, walk_speed: 16, jump_speed: 80,
+    (name: "shooter", width: 16, height: 24, max_hp: 30, walk_speed: 12, jump_speed: 56,
      sight: 160, attack: Some("spark"), attack_interval: 60),
 ]

@@ -19,8 +19,8 @@ use charon_world::background::BackgroundWorld;
 fn scene(seed: u64) -> (World, EntityWorld, PhysicsEngine, BackgroundWorld, [EntityId; 2]) {
     let mut world = world_from_ascii(&box_art(62, 64), seed);
     let mut entities = EntityWorld::new();
-    let a = entities.spawn_player(10 * 16, 8 * 16, &world).unwrap();
-    let b = entities.spawn_player(30 * 16, 8 * 16, &world).unwrap();
+    let a = entities.spawn_player(10 * 16, 0, &world).unwrap();
+    let b = entities.spawn_player(30 * 16, 0, &world).unwrap();
     let stone = material_of(&world, '#');
     let mut physics = PhysicsEngine::new();
     physics
@@ -218,7 +218,7 @@ fn lockstep_rejects_mismatch() {
             .unwrap();
         assert_eq!(
             entities.get(players[0]).unwrap().x16,
-            12 * 16,
+            11 * 16,
             "seed={seed}: 重複入力に上書きされた"
         );
         assert!(matches!(lockstep.submit(input), Err(LockstepError::WrongTick)));
@@ -273,7 +273,7 @@ fn script_precedes_player_collision() {
         world.insert_chunk(ChunkPos::new(0, 0));
         fill(&mut world, 18, 8, 18, 8, '#');
         let mut entities = EntityWorld::new();
-        let player = entities.spawn_player(10 * 16, 8 * 16, &world).unwrap();
+        let player = entities.spawn_player(0, 0, &world).unwrap();
         let mut game = GameState::new(SpellTable::default());
         let before = world.get(CellPos::new(18, 8)).material;
         let info = ConnectionInfo::new(
@@ -304,7 +304,7 @@ fn script_precedes_player_collision() {
             .unwrap()
             .unwrap();
         assert_ne!(world.get(CellPos::new(18, 8)).material, before, "seed={seed}");
-        assert_eq!(entities.get(player).unwrap().x16, 12 * 16, "seed={seed}");
+        assert_eq!(entities.get(player).unwrap().x16, 16, "seed={seed}");
         fs::remove_dir_all(path).unwrap();
     }
 }

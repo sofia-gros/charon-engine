@@ -37,7 +37,7 @@ impl Arena {
         world.insert_chunk(ChunkPos::new(0, 0));
         testkit::fill(&mut world, 0, 60, 63, 60, '#');
         let mut entities = EntityWorld::new();
-        let player = entities.spawn_player(10 * 16, 50 * 16, &world).unwrap();
+        let player = entities.spawn_player(10 * 16, 36 * 16, &world).unwrap();
         let mut game = GameState::from_definitions(&defs);
         game.add_character(player, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
         game.give_inventory(player).unwrap();
@@ -189,7 +189,7 @@ fn dig_to_drops_makes_pickups_instead_of_direct_collection() {
     let mut defs = Definitions::engine_defaults(&materials).unwrap();
     defs.layer(DefinitionFiles::default(), &materials, None).unwrap();
     let mut arena = Arena::new();
-    testkit::fill(&mut arena.world, 30, 40, 40, 59, '#');
+    testkit::fill(&mut arena.world, 36, 40, 46, 59, '#');
     arena.game.equip_dig(arena.player, &defs, "laser").unwrap();
     arena.game.dig_to_drops = true;
     let mut dug = 0;

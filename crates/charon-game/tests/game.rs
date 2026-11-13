@@ -39,7 +39,7 @@ impl Stage {
         let mut game = GameState::new(table.clone());
         let mut ids = Vec::new();
         for x in [8, 40] {
-            let id = entities.spawn_player(x * 16, 24 * 16, &world).unwrap();
+            let id = entities.spawn_player(x * 16, 10 * 16, &world).unwrap();
             let wand = Wand::new(vec![SpellId(spell)], 100, 1, 0, &table).unwrap();
             game.add_character(id, Vitals::new(MAX_HP).unwrap(), wand);
             ids.push(id);
@@ -132,10 +132,12 @@ fn shooter_is_not_hit_by_own_shot() {
     let hits = stage.step(&[(a, shoot_right())]).unwrap();
     assert!(hits.is_empty());
     assert_eq!(stage.game.vitals.get(a).unwrap().hp, MAX_HP, "発射した tick は当たらない");
-    let hits = stage.step(&[]).unwrap();
-    assert_eq!(hits.len(), 1, "次の tick からは自分にも当たる");
-    assert_eq!(hits[0].entity, Some(a));
-    assert_eq!(stage.game.vitals.get(a).unwrap().hp, MAX_HP - 10);
+    // 体から出るまでは、自分には当たらない (体が大きいと、1 tick では出られない)。
+    for _ in 0..40 {
+        let hits = stage.step(&[]).unwrap();
+        assert!(hits.iter().all(|h| h.entity != Some(a)), "自分の体の中では当たらない");
+    }
+    assert_eq!(stage.game.vitals.get(a).unwrap().hp, MAX_HP);
 }
 
 #[test]

@@ -196,19 +196,19 @@ fn place_block_refuses_solid_or_unloaded_or_invalid() {
 /// 敵・プレイヤーは、左右の近い方のブロックの外へ飛ばされる。
 #[test]
 fn place_block_pushes_entities_sideways() {
-    for (x, expect_left) in [(13, true), (21, false)] {
+    for (x, expect_left) in [(33, true), (39, false)] {
         let mut world = arena();
         let mut entities = EntityWorld::new();
         let id = entities.spawn_player(i64::from(x) * 16, 38 * 16, &world).unwrap();
         let before = entities.get(id).unwrap().clone();
         let material = stone(&world);
-        let placed = put(&mut world, &mut entities, AT, material).unwrap();
+        let placed = put(&mut world, &mut entities, BlockPos { bx: 5, by: 5 }, material).unwrap();
         assert_eq!(placed.pushed_entities, 1);
         let after = entities.get(id).unwrap();
         assert_eq!(after.y16, before.y16, "横へ飛ぶだけ");
         if expect_left {
             assert!(after.x16 < before.x16, "左へ");
-            assert!(after.x16 + 80 <= 16 * 16 + 40, "左へ出た: x16 = {}", after.x16);
+            assert!(after.x16 + 256 <= 40 * 16 + 40, "左へ出た: x16 = {}", after.x16);
         } else {
             assert!(after.x16 > before.x16, "右へ");
         }
@@ -224,11 +224,11 @@ fn place_block_pushes_entities_sideways() {
 #[test]
 fn place_block_fails_when_an_entity_cannot_move() {
     let mut world = arena();
-    // 閉じた部屋 (内側 x 14..=25、y 38..=47)。中の高さ 10・幅 5 のプレイヤーは、ブロックの外へ出られない。
-    fill(&mut world, 10, 34, 30, 52, '#');
-    fill(&mut world, 14, 38, 25, 47, '.');
+    // 閉じた部屋 (内側 x 12..=29、y 30..=57)。中の高さ 24・幅 16 のプレイヤーは、ブロックの外へ出られない。
+    fill(&mut world, 8, 26, 34, 62, '#');
+    fill(&mut world, 12, 30, 29, 57, '.');
     let mut entities = EntityWorld::new();
-    let id = entities.spawn_player(14 * 16, 38 * 16, &world).unwrap();
+    let id = entities.spawn_player(12 * 16, 30 * 16, &world).unwrap();
     let (hw, he) = (world.state_hash(), entities.state_hash());
     let material = stone(&world);
     assert_eq!(put(&mut world, &mut entities, AT, material), Err(PlaceError::EntityStuck(id)));
@@ -241,14 +241,14 @@ fn entities_stand_on_block_cells() {
     let mut world = arena();
     place_block(&mut world, 2, 5, 's'); // 砂のブロック (旗つき)。
     let mut entities = EntityWorld::new();
-    let id = entities.spawn_player(17 * 16, 20 * 16, &world).unwrap();
+    let id = entities.spawn_player(12 * 16, 2 * 16, &world).unwrap();
     for _ in 0..120 {
         entities.step_players(&[(id, PlayerInput::default())], &world).unwrap();
         world.step();
     }
     let e = entities.get(id).unwrap();
     assert!(e.grounded, "ブロックの上に立つ");
-    assert_eq!((e.y16 + 160).div_euclid(16), 40, "足がブロックの上端 (y = 40) に着く");
+    assert_eq!((e.y16 + 24 * 16).div_euclid(16), 40, "足がブロックの上端 (y = 40) に着く");
 }
 
 /// 失敗したら状態のハッシュが変わらない。同じ入力なら、同じ結果。

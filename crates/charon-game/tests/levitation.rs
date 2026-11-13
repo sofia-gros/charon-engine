@@ -37,7 +37,7 @@ impl Arena {
         }
         testkit::fill(&mut world, 0, 62, 63, 62, '#');
         let mut entities = EntityWorld::new();
-        let player = entities.spawn_player(10 * 16, 50 * 16, &world).unwrap();
+        let player = entities.spawn_player(10 * 16, 36 * 16, &world).unwrap();
         let mut game = GameState::from_definitions(&defs);
         game.add_character(player, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
         if let Some(def) = def {

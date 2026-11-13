@@ -63,13 +63,13 @@ impl Arena {
 
     /// 体力 100・杖 (`basic`) を持つプレイヤー (8×16) を `(x, 24)` に置く。
     fn add_player(&mut self, x: i64) -> EntityId {
-        let id = self.entities.spawn_player(x * 16, 24 * 16, &self.world).unwrap();
+        let id = self.entities.spawn_player(x * 16, 10 * 16, &self.world).unwrap();
         self.game.add_character(id, Vitals::new(MAX_HP).unwrap(), self.defs.wand("basic").unwrap());
         id
     }
 
     fn spawn(&mut self, name: &str, x: i32) -> EntityId {
-        self.game.spawn_enemy(&self.defs, &mut self.entities, &self.world, name, (x, 24)).unwrap()
+        self.game.spawn_enemy(&self.defs, &mut self.entities, &self.world, name, (x, 10)).unwrap()
     }
 
     fn step_with(&mut self, actions: &[(EntityId, GameInput)]) -> StepReport {
@@ -99,11 +99,11 @@ impl Arena {
 fn enemy_spawns_from_definition() {
     for seed in 1..=8 {
         let mut arena = Arena::new(seed);
-        let first = arena.spawn("walker", 30);
-        let second = arena.spawn("shooter", 40);
+        let first = arena.spawn("walker", 8);
+        let second = arena.spawn("shooter", 30);
         assert!(first < second, "ID は単調増加");
         let e = arena.entity(first);
-        assert_eq!((e.x16, e.y16, e.width, e.height), (30 * 16, 24 * 16, 8, 16));
+        assert_eq!((e.x16, e.y16, e.width, e.height), (8 * 16, 10 * 16, 16, 24));
         assert_eq!(arena.hp(first), 30);
         assert_eq!(arena.game.enemies.len(), 2);
         assert_eq!(arena.game.enemies[&second].def.attack.as_deref(), Some("spark"));
@@ -121,7 +121,7 @@ fn enemy_spawns_from_definition() {
         assert_eq!(fail("nothing", 24), GameError::UnknownEnemy("nothing".to_owned()));
         // 床 (y = 40) と重なる。
         assert_eq!(fail("walker", 30), GameError::Entity(EntityError::Occupied));
-        let third = arena.spawn("walker", 50);
+        let third = arena.spawn("walker", 46);
         assert_eq!(third.0, second.0 + 1, "失敗した生成で ID を消費しない seed={seed}");
     }
 
@@ -166,7 +166,7 @@ fn enemy_chases_target_in_sight() {
         }
         let (p, c) = (arena.entity(player).x16, arena.entity(chaser).x16);
         assert!(c < start, "近づく seed={seed}");
-        assert!((c - p).abs() <= 8 * 16, "接触するまで近づく seed={seed}: {p} {c}");
+        assert!((c - p).abs() <= 16 * 16, "接触するまで近づく seed={seed}: {p} {c}");
         assert!(arena.hp(player) < MAX_HP, "接触ダメージを受ける seed={seed}");
     }
 
@@ -338,7 +338,7 @@ fn step_entity_uses_given_speeds() {
     testkit::fill(&mut world, 0, 40, 63, 40, '#');
     let spawn = || {
         let mut entities = EntityWorld::new();
-        let id = entities.spawn_player(8 * 16, 24 * 16, &world).unwrap();
+        let id = entities.spawn_player(8 * 16, 10 * 16, &world).unwrap();
         (entities, id)
     };
     // 速さは引数どおり。範囲外は 96 に収める。
@@ -371,7 +371,13 @@ fn step_entity_uses_given_speeds() {
     for tick in 0..120 {
         let input = PlayerInput { horizontal: [1, 0, -1][tick % 3], jump: tick % 40 == 0 };
         step_player(a.get_mut(ida).unwrap(), input, &world);
-        step_entity(b.get_mut(idb).unwrap(), input, 32, 96, &world);
+        step_entity(
+            b.get_mut(idb).unwrap(),
+            input,
+            charon_game::PLAYER_WALK_SPEED,
+            charon_game::PLAYER_JUMP_SPEED,
+            &world,
+        );
         assert_eq!(a.get(ida), b.get(idb), "tick {tick}");
     }
 }

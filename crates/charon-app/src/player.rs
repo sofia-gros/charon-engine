@@ -401,7 +401,7 @@ mod tests {
         // 足元 (y + 高さ) が別のチャンクにあり、それが未読み込みなら生成しない。
         assert_eq!(try_spawn_player(&mut entities, &world, [20, 56]), Ok(None));
         world.insert_chunk(ChunkPos::new(0, 1));
-        let id = try_spawn_player(&mut entities, &world, [20, 40]).unwrap();
+        let id = try_spawn_player(&mut entities, &world, [20, 36]).unwrap();
         assert!(id.is_some());
         assert!(entities.get(id.unwrap()).is_some());
         // 固体に重なる位置はエラーで、エンティティも ID も変えない。

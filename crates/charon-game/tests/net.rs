@@ -31,8 +31,8 @@ struct Peer {
 fn peer(seed: u64) -> Peer {
     let mut world = world_from_ascii(&box_art(62, 64), seed);
     let mut entities = EntityWorld::new();
-    let a = entities.spawn_player(10 * 16, 8 * 16, &world).unwrap();
-    let b = entities.spawn_player(30 * 16, 8 * 16, &world).unwrap();
+    let a = entities.spawn_player(10 * 16, 0, &world).unwrap();
+    let b = entities.spawn_player(30 * 16, 0, &world).unwrap();
     let stone = material_of(&world, '#');
     let mut physics = PhysicsEngine::new();
     physics

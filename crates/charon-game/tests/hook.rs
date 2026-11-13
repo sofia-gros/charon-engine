@@ -60,7 +60,7 @@ impl Arena {
 
     /// 体力・杖・フック (`hook`) を持つプレイヤーを `(x, y)` (左上のセル) に置く。
     fn add_player(&mut self, x: i64, y: i64, hook: Option<&str>) -> EntityId {
-        let id = self.entities.spawn_player(x * 16, y * 16, &self.world).unwrap();
+        let id = self.entities.spawn_player((x - 5) * 16, (y - 14) * 16, &self.world).unwrap();
         self.game.add_character(id, Vitals::new(MAX_HP).unwrap(), self.defs.wand("basic").unwrap());
         if let Some(name) = hook {
             self.game.equip_hook(id, &self.defs, name).unwrap();
@@ -182,13 +182,13 @@ fn hook_pulls_player_toward_anchor() {
 fn hook_swings_without_stretching() {
     for seed in 1..=8 {
         let mut arena = Arena::new(seed, Some(5));
-        let player = arena.add_player(30, 20, Some("swing"));
+        let player = arena.add_player(30, 34, Some("swing"));
         arena.step(player, 0, tool((0, -1)));
         let mut rest = None;
         let mut xs = Vec::new();
         for tick in 0..400 {
             // 最初の 20 tick は右へ歩いて勢いをつけ、あとは離して揺らす。
-            let walk = i8::from(tick < 20);
+            let walk = i8::from(tick < 40);
             arena.step(player, walk, tool((0, -1)));
             let rope = arena.game.rope(player).expect("つながったまま");
             if rope.phase() == RopePhase::Anchored {
@@ -327,7 +327,7 @@ fn entity_external_velocity_decays() {
 
     // 接地中は 3/4 ずつ減る。
     let mut entities = EntityWorld::new();
-    let id = entities.spawn_player(10 * 16, 50 * 16, &world).unwrap();
+    let id = entities.spawn_player(10 * 16, 36 * 16, &world).unwrap();
     for _ in 0..3 {
         step_entity(entities.get_mut(id).unwrap(), neutral, 32, 96, &world);
     }
@@ -344,7 +344,7 @@ fn entity_external_velocity_decays() {
 
     // 空中は 15/16 ずつ減る。
     let mut entities = EntityWorld::new();
-    let id = entities.spawn_player(10 * 16, 5 * 16, &world).unwrap();
+    let id = entities.spawn_player(10 * 16, 0, &world).unwrap();
     entities.get_mut(id).unwrap().ext_vx = 160;
     step_entity(entities.get_mut(id).unwrap(), neutral, 32, 96, &world);
     assert!(!entities.get(id).unwrap().grounded);
@@ -355,7 +355,7 @@ fn entity_external_velocity_decays() {
     // 壁に当たると 0 になる。
     let mut entities = EntityWorld::new();
     testkit::fill(&mut world, 20, 0, 20, 59, '#');
-    let id = entities.spawn_player(10 * 16, 50 * 16, &world).unwrap();
+    let id = entities.spawn_player(2 * 16, 36 * 16, &world).unwrap();
     entities.get_mut(id).unwrap().ext_vx = 400;
     for _ in 0..30 {
         step_entity(entities.get_mut(id).unwrap(), neutral, 32, 96, &world);

@@ -229,20 +229,22 @@ pub struct PlayerInput {
 }
 
 /// プレイヤーの大きさ (セル)。当たり判定は、この箱に内接する楕円。
-pub const PLAYER_WIDTH: u8 = 5;
-pub const PLAYER_HEIGHT: u8 = 10;
+/// 2×3 ブロック (仕様 17 §5)。
+pub const PLAYER_WIDTH: u8 = 16;
+pub const PLAYER_HEIGHT: u8 = 24;
 
 /// プレイヤーの速さ: 歩く速さ (1/16 セル / tick) とジャンプの初速。
-pub const PLAYER_WALK_SPEED: i16 = 32;
-pub const PLAYER_JUMP_SPEED: i16 = 96;
+/// 歩きは 1 秒に約 7.5 ブロック。ジャンプは約 3.5 ブロックの高さ (重力 4 / tick)。
+pub const PLAYER_WALK_SPEED: i16 = 16;
+pub const PLAYER_JUMP_SPEED: i16 = 60;
 
 /// x → y の順に 1/16 セルずつ移動し、衝突する直前で止める。
 pub fn step_player(entity: &mut Entity, input: PlayerInput, world: &World) {
     step_entity(entity, input, PLAYER_WALK_SPEED, PLAYER_JUMP_SPEED, world);
 }
 
-/// 接地中の自動の段差乗り越えで、持ち上げてよい高さ (セル)。プレイヤー (高さ 10) の 4 割。
-pub const STEP_UP_CELLS: i64 = 4;
+/// 接地中の自動の段差乗り越えで、持ち上げてよい高さ (セル)。1 ブロック。2 ブロックの壁は止まる。
+pub const STEP_UP_CELLS: i64 = 8;
 /// 足場を離れてからも、ジャンプできる tick (コヨーテタイム、0.1 秒)。
 pub const COYOTE_TICKS: u8 = 6;
 /// ジャンプを押してから、着地したら跳ぶ tick (ジャンプの先行入力、約 0.08 秒)。

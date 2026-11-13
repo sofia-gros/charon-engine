@@ -12,7 +12,7 @@ use crate::EntityId;
 /// 同時に存在できるドロップの数。超える分は作らない。
 pub const MAX_DROPS: usize = 256;
 /// 拾える距離 (セル)。
-pub const PICKUP_RADIUS: i64 = 8;
+pub const PICKUP_RADIUS: i64 = 16;
 /// 作られてから拾えるまでの待ち (tick)。投げた直後に拾い直さないため。
 pub const PICKUP_DELAY: u32 = 30;
 /// 拾われないまま消えるまでの時間 (tick)。5 分。
