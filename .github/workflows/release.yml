@@ -51,7 +51,7 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null || true
           "$SDKMANAGER" --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
-      - run: cargo install --git https://github.com/rust-mobile/cargo-apk --package cargo-apk --locked
+      - run: cargo install --git https://github.com/rust-mobile/cargo-apk cargo-apk --locked
       # リリースビルドの署名に使うデバッグ用の鍵 (本番の配布用の鍵ではない)。
       - name: デバッグ用の鍵を作る
         run: |

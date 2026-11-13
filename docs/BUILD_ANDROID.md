@@ -24,7 +24,7 @@ SDK のライセンスを承認した上で、次を実行する。
 ```bash
 sdkmanager --install 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
 rustup target add aarch64-linux-android
-cargo install --git https://github.com/rust-mobile/cargo-apk --package cargo-apk --locked
+cargo install --git https://github.com/rust-mobile/cargo-apk cargo-apk --locked
 ```
 
 Windows では SDK の `platform-tools` を `PATH` に加える。環境変数はインストール先に合わせる。
