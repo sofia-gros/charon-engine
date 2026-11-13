@@ -235,6 +235,104 @@ pub(super) struct Overlay<'a> {
     pub(super) pad: Option<&'a crate::touch_pad::TouchPad>,
 }
 
+/// 持ち物の画面 (仕様 10 §14): 持っている材質を多い順に、名前と数で。
+fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut Controls) {
+    let mut open = true;
+    egui::Window::new("Inventory").open(&mut open).default_pos([40.0, 300.0]).show(context, |ui| {
+        let items: Vec<(u32, String)> = overlay
+            .player
+            .and_then(|id| overlay.game.inventories.get(&id))
+            .map(|inventory| {
+                let mut items: Vec<(u32, String)> = inventory
+                    .iter()
+                    .map(|(material, count)| {
+                        (count, overlay.world.materials().get(material).name.clone())
+                    })
+                    .collect();
+                items.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                items
+            })
+            .unwrap_or_default();
+        if items.is_empty() {
+            ui.label("Empty — dig something with the laser.");
+            return;
+        }
+        let total: u64 = items.iter().map(|(count, _)| u64::from(*count)).sum();
+        ui.label(format!("{} kinds · {total} items", items.len()));
+        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+            egui::Grid::new("charon inventory").num_columns(2).show(ui, |ui| {
+                for (count, name) in &items {
+                    ui.label(name);
+                    ui.label(count.to_string());
+                    ui.end_row();
+                }
+            });
+        });
+    });
+    controls.inventory_open = open;
+}
+
+/// ポーズのメニュー (仕様 10 §14): 再開・設定 (UI の大きさ・キャラクターの大きさ・光)・キー割り当て・持ち物・終了。
+fn draw_pause_menu(context: &egui::Context, controls: &mut Controls) -> Option<DemoAction> {
+    let mut action = None;
+    egui::Window::new("Pause")
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .collapsible(false)
+        .resizable(false)
+        .show(context, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Resume").clicked() {
+                    controls.pause_menu = false;
+                    controls.rebinding = None;
+                }
+                if ui.button("Inventory").clicked() {
+                    controls.inventory_open = !controls.inventory_open;
+                }
+                if ui.button("Quit").clicked() {
+                    action = Some(DemoAction::Quit);
+                }
+            });
+            ui.separator();
+            ui.add(egui::Slider::new(&mut controls.ui_scale, 0.5..=3.0).text("UI scale"));
+            ui.add(
+                egui::Slider::new(&mut controls.sprite_scale, 0.25..=3.0).text("Character scale"),
+            );
+            ui.horizontal(|ui| {
+                ui.label("Light");
+                for (quality, name) in [
+                    (LightQuality::Off, "Off"),
+                    (LightQuality::Low, "Low"),
+                    (LightQuality::High, "High"),
+                    (LightQuality::XHigh, "xHigh"),
+                ] {
+                    ui.selectable_value(&mut controls.light_quality, quality, name);
+                }
+            });
+            ui.separator();
+            ui.label("Keys (click, then press a key; Esc cancels)");
+            egui::Grid::new("charon keys").num_columns(2).show(ui, |ui| {
+                for key_action in crate::settings::Action::ALL {
+                    ui.label(key_action.label());
+                    let waiting = controls.rebinding == Some(key_action);
+                    let text = if waiting {
+                        "press a key…".to_owned()
+                    } else {
+                        controls.bindings.describe(key_action)
+                    };
+                    if ui.button(text).clicked() {
+                        controls.rebinding = if waiting { None } else { Some(key_action) };
+                    }
+                    ui.end_row();
+                }
+            });
+            if ui.button("Reset keys").clicked() {
+                controls.bindings.reset();
+                controls.rebinding = None;
+            }
+        });
+    action
+}
+
 /// 仮想スティックとボタンを、半透明で描く (ピクセル → egui の点へ直す)。
 fn draw_touch_pad(context: &egui::Context, pad: &crate::touch_pad::TouchPad) {
     let painter = context.layer_painter(egui::LayerId::new(
@@ -333,6 +431,14 @@ impl DemoUi {
         self.history.push(stats);
         let mut action = None;
         draw_wand_panel(context, overlay);
+        if controls.inventory_open {
+            draw_inventory(context, overlay, controls);
+        }
+        if controls.pause_menu
+            && let Some(chosen) = draw_pause_menu(context, controls)
+        {
+            action = Some(chosen);
+        }
         if let Some(pad) = overlay.pad {
             draw_touch_pad(context, pad);
         }
@@ -969,6 +1075,66 @@ mod tests {
         assert_eq!(pointer_cell([0.0, 0.0], 4, [-8.0, 3.5]), Some(CellPos::new(-8, 3)));
         assert_eq!(pointer_cell([f32::NAN, 0.0], 4, [0.0, 0.0]), None);
         assert_eq!(pointer_cell([1.0, 1.0], 0, [0.0, 0.0]), Some(CellPos::new(1, 1)));
+    }
+
+    /// ポーズのメニューと持ち物の画面 (仕様 10 §14): 開くと図形が増え、閉じたままなら増えない。
+    #[test]
+    fn pause_menu_and_inventory_draw() {
+        let world = world_from_ascii(&box_art(40, 20), 1);
+        let physics = PhysicsEngine::new();
+        let entities = EntityWorld::new();
+        let game = charon_game::game::GameState::new(Default::default());
+        let overlay = Overlay {
+            world: &world,
+            physics: &physics,
+            entities: &entities,
+            game: &game,
+            player: None,
+            pad: None,
+        };
+        let shapes = |pause: bool, inventory: bool, rebinding: bool| -> usize {
+            let mut demo = DemoUi::new(world.materials());
+            let mut controls = Controls::new(material_of(&world, 's'));
+            controls.pause_menu = pause;
+            controls.inventory_open = inventory;
+            if rebinding {
+                controls.rebinding = Some(crate::settings::Action::Dig);
+            }
+            let context = egui::Context::default();
+            let mut count = 0;
+            for frame in 0..3u32 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 768.0),
+                    )),
+                    time: Some(f64::from(frame) / 60.0),
+                    ..Default::default()
+                };
+                let mut action = None;
+                let mut output = context.run_pass(input, |context| {
+                    action = demo.draw(
+                        context,
+                        &mut controls,
+                        &overlay,
+                        FrameStats { frame_ms: 2.0, tick_ms: 1.0, phys_ms: 0.1 },
+                        0,
+                    );
+                });
+                assert_eq!(action, None, "押さなければ何も起きない");
+                count = output.shapes.len();
+                output.textures_delta.clear();
+            }
+            assert_eq!(controls.pause_menu, pause);
+            count
+        };
+        let closed = shapes(false, false, false);
+        let inventory = shapes(false, true, false);
+        let pause = shapes(true, false, false);
+        let rebinding = shapes(true, false, true);
+        assert!(inventory > closed, "持ち物の画面が出る ({closed} → {inventory})");
+        assert!(pause > closed + 10, "ポーズのメニューが出る ({closed} → {pause})");
+        assert_ne!(rebinding, 0);
     }
 
     #[test]

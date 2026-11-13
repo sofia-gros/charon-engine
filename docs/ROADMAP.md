@@ -304,6 +304,7 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 |---|---|---|
 | T15.1 | スプライトシートのアニメーション (立つ・歩く・跳ぶ・落ちる)、敵の種類ごとの画像 ([06 §10.4](spec/06-rendering-platform.md)) | `clips_advance_and_loop`、`pose_follows_the_entity`、`frames_pick_the_row_and_column_from_the_sheet`、`sprites_are_assigned_to_the_player_and_to_enemy_kinds`、`facing_flips_when_walking_left_and_is_remembered`、`frames_select_part_of_the_sheet` |
 | T15.2 (= T11.5 の掘る部分) | 掘る道具 (Starbound 型のレーザー、硬さ × 力) ([10 §12](spec/10-noita-like-game.md)) | `dig_*`、`hardness_defaults_by_phase`、`lockstep_packet_v4_roundtrip`、`demo_dig_in_scene` |
+| T15.4 | ポーズのメニュー・持ち物の画面・設定 `settings.ron`・キー割り当て ([10 §14](spec/10-noita-like-game.md))。Android を横画面に固定 | `settings_roundtrip_and_clamp`、`binding_moves_a_key_from_the_old_action`、`broken_key_tables_are_repaired`、`settings_file_io`、`custom_bindings_change_which_keys_work`、`pause_menu_and_inventory_draw`、`demo_renders_pause_menu` |
 | T15.3 | 持ち物とゲーム状態の保存 `game.ron` ([10 §13](spec/10-noita-like-game.md)) | `add_take_and_count` ほか、`game_state_roundtrips_through_ron`、`game_save_file_io`、`dig_collects_into_the_inventory` |
 
 ---

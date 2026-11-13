@@ -25,6 +25,8 @@ pub struct DemoConfig {
     pub mod_dir: PathBuf,
     /// seed ごとの保存先の親。実際の保存先は `save_base/seed-N`。
     pub save_base: PathBuf,
+    /// 設定 (`settings.ron`、仕様 10 §14) のファイル。
+    pub settings: PathBuf,
 }
 
 impl DemoConfig {
@@ -43,7 +45,11 @@ impl DemoConfig {
         } else {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/mods/fse_demo")
         };
-        Self { mod_dir, save_base: PathBuf::from("saves/demo") }
+        Self {
+            mod_dir,
+            save_base: PathBuf::from("saves/demo"),
+            settings: PathBuf::from("saves/settings.ron"),
+        }
     }
 }
 
@@ -378,6 +384,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             enemies: demo_enemies(),
             player_sprite: Some(demo_character_image()),
             enemy_sprites: demo_enemy_images(),
+            settings_path: Some(config.settings.clone()),
         },
         brush: demo_materials.rainbow_sand,
     })
@@ -459,6 +466,7 @@ mod tests {
         DemoConfig {
             mod_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/mods/fse_demo"),
             save_base: dir.0.clone(),
+            settings: dir.0.join("settings.ron"),
         }
     }
 

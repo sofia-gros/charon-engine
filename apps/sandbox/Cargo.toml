@@ -34,6 +34,10 @@ min_sdk_version = 26
 [package.metadata.android.application]
 label = "Charon Demo"
 
+# 横画面に固定する (センサーで左右どちらの横向きにもなる。縦にはならない)。
+[package.metadata.android.application.activity]
+orientation = "sensorLandscape"
+
 # リリースビルド (`cargo apk build --release`) の署名。配布用の本番の鍵ではなく、デバッグ用の鍵で署名する
 # (`apps/sandbox/debug.keystore`。コミットしない。GitHub Actions と docs/BUILD_ANDROID.md の手順で作る)。
 [package.metadata.android.signing.release]

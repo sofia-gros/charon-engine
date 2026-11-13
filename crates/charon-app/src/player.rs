@@ -7,30 +7,36 @@ use charon_game::{Entity, EntityError, EntityId, EntityWorld, PlayerInput};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{KeyCode, NativeKeyCode, PhysicalKey};
 
+use crate::settings::{Action, KeyBindings};
+
 /// キーが押されて起きる操作。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyCommand {
-    /// `F`: 自由カメラの切り替え。
+    /// 自由カメラの切り替え (既定は `F`)。
     ToggleFreeCamera,
-    /// `B`: 左ボタンの割り当て (武器 / ブラシ) の切り替え。
+    /// 左ボタンの割り当て (武器 / ブラシ) の切り替え (既定は `B`)。
     TogglePaint,
+    /// 持ち物の画面を開閉する (既定は `I`、仕様 10 §14)。
+    ToggleInventory,
+    /// ポーズのメニューを開閉する (既定は `Esc`、仕様 10 §14)。
+    Pause,
 }
 
-/// 押されているキー。`A`/`D`/`←`/`→` が左右、`W`/`↑`/`Space`/`C` がジャンプ。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// 押されているキー。キーと操作の対応は `KeyBindings` (既定: `A`/`D`/`←`/`→` が左右、`W`/`↑`/`Space`/`C` がジャンプ、`E` が掘る)。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeyState {
+    bindings: KeyBindings,
     left: bool,
     right: bool,
     up: bool,
     down: bool,
-    space: bool,
     shift: bool,
     /// ゲームパッドのボタン (Android では、ボタンはキーとして届く)。
     pad_jump: bool,
     pad_fire: bool,
     pad_tool: bool,
     pad_dig: bool,
-    /// `E` キー: 掘る道具 (仕様 10 §12)。
+    /// 掘る道具のキー (仕様 10 §12)。
     dig: bool,
 }
 
@@ -45,7 +51,21 @@ const ANDROID_BUTTON_L2: u32 = 104;
 const ANDROID_BUTTON_R2: u32 = 105;
 
 impl KeyState {
-    /// ゲームパッドのボタン (仕様 10 §10): `A` = ジャンプ、`X`・`R1`・`R2` = 武器、`B`・`L1`・`L2` = 道具、
+    /// 割り当て (`settings.ron` から読んだもの) を使う。押しているキーはすべて離した状態に戻す。
+    pub fn with_bindings(bindings: KeyBindings) -> Self {
+        Self { bindings, ..Self::default() }
+    }
+
+    /// 割り当てを入れ替える。押しているキーはすべて離した状態に戻す。
+    pub fn set_bindings(&mut self, bindings: KeyBindings) {
+        *self = Self::with_bindings(bindings);
+    }
+
+    pub fn bindings(&self) -> &KeyBindings {
+        &self.bindings
+    }
+
+    /// ゲームパッドのボタン (仕様 10 §10): `A` = ジャンプ、`X`・`R1`・`R2` = 武器、`B`・`L1` = 道具、`L2` = 掘る道具、
     /// `Y` = 武器 / ブラシの切り替え。十字キーは矢印キーと同じ。対応するボタンなら true。
     pub(crate) fn set_android_button(&mut self, code: u32, pressed: bool) -> bool {
         match code {
@@ -64,33 +84,36 @@ impl KeyState {
         (self.pad_fire, self.pad_tool)
     }
 
-    /// 掘る道具を押しているか (`E` キー、ゲームパッドの `L2`)。
+    /// 掘る道具を押しているか (割り当てのキー、ゲームパッドの `L2`)。
     pub(crate) fn dig_held(&self) -> bool {
         self.dig || self.pad_dig
     }
 
-    /// 対応するキーなら状態を更新して true。対応しないキーは何もしない。
+    /// 割り当てのあるキー (移動・ジャンプ・掘る) か、自由カメラの `S`・`↓`・`Shift` なら状態を更新して true。
     pub fn set(&mut self, code: KeyCode, pressed: bool) -> bool {
-        match code {
-            KeyCode::KeyA | KeyCode::ArrowLeft => self.left = pressed,
-            KeyCode::KeyD | KeyCode::ArrowRight => self.right = pressed,
-            KeyCode::KeyW | KeyCode::ArrowUp => self.up = pressed,
-            KeyCode::KeyS | KeyCode::ArrowDown => self.down = pressed,
-            KeyCode::Space | KeyCode::KeyC => self.space = pressed,
-            KeyCode::KeyE => self.dig = pressed,
-            KeyCode::ShiftLeft | KeyCode::ShiftRight => self.shift = pressed,
-            _ => return false,
+        match self.bindings.action_of(code) {
+            Some(Action::Left) => self.left = pressed,
+            Some(Action::Right) => self.right = pressed,
+            Some(Action::Jump) => self.up = pressed,
+            Some(Action::Dig) => self.dig = pressed,
+            Some(_) => return false,
+            None => match code {
+                KeyCode::KeyS | KeyCode::ArrowDown => self.down = pressed,
+                KeyCode::ShiftLeft | KeyCode::ShiftRight => self.shift = pressed,
+                _ => return false,
+            },
         }
         true
     }
 
-    /// 全部のキーを離した状態に戻す (ウィンドウがフォーカスを失ったとき)。
+    /// 全部のキーを離した状態に戻す (ウィンドウがフォーカスを失ったとき)。割り当ては残す。
     pub fn release_all(&mut self) {
-        *self = Self::default();
+        let bindings = std::mem::take(&mut self.bindings);
+        *self = Self::with_bindings(bindings);
     }
 
     /// ウィンドウのイベントを反映する。`allow_press` が偽のときは押下を無視する (UI の文字入力中)。
-    /// `F` / `B` が押された (繰り返しでない) とき、対応する操作を返す。
+    /// 操作 (自由カメラ・描画の切り替え・持ち物・ポーズ) のキーが押された (繰り返しでない) とき、対応する操作を返す。
     pub fn event(&mut self, event: &WindowEvent, allow_press: bool) -> Option<KeyCommand> {
         let WindowEvent::KeyboardInput { event, .. } = event else { return None };
         let pressed = event.state == ElementState::Pressed;
@@ -106,23 +129,22 @@ impl KeyState {
         if pressed && !allow_press {
             return None;
         }
-        let command = match code {
-            KeyCode::KeyF => Some(KeyCommand::ToggleFreeCamera),
-            KeyCode::KeyB => Some(KeyCommand::TogglePaint),
+        let command = match self.bindings.action_of(code) {
+            Some(Action::FreeCamera) => KeyCommand::ToggleFreeCamera,
+            Some(Action::TogglePaint) => KeyCommand::TogglePaint,
+            Some(Action::Inventory) => KeyCommand::ToggleInventory,
+            Some(Action::Pause) => KeyCommand::Pause,
             _ => {
                 self.set(code, pressed);
                 return None;
             }
         };
-        if pressed && !event.repeat { command } else { None }
+        if pressed && !event.repeat { Some(command) } else { None }
     }
 
     /// 1 tick の入力。左右が同時なら中立。
     pub fn player_input(&self) -> PlayerInput {
-        PlayerInput {
-            horizontal: i8::from(self.right) - i8::from(self.left),
-            jump: self.up || self.space,
-        }
+        PlayerInput { horizontal: i8::from(self.right) - i8::from(self.left), jump: self.up }
     }
 
     /// 自由カメラの 1 フレームの移動量 (セル)。`Shift` で 12、通常は 4。
@@ -269,6 +291,43 @@ mod tests {
         let id = entities.spawn(-24, -40, 8, 16).unwrap();
         let negative = entities.get(id).unwrap().clone();
         assert_eq!(follow_origin(&negative, [64, 64], 1), [2.0 - 32.0, 5.0 - 32.0]);
+    }
+
+    /// キー割り当て (仕様 10 §14): 割り当てを変えると、新しいキーが効き、古いキーは効かなくなる。押している間に入れ替えても、
+    /// 押しっぱなしにならない。割り当てのないキーは何もしない。
+    #[test]
+    fn custom_bindings_change_which_keys_work() {
+        let mut bindings = KeyBindings::default();
+        bindings.bind(Action::Left, KeyCode::KeyJ);
+        bindings.bind(Action::Right, KeyCode::KeyL);
+        bindings.bind(Action::Jump, KeyCode::KeyK);
+        bindings.bind(Action::Dig, KeyCode::KeyG);
+        let mut keys = KeyState::with_bindings(bindings.clone());
+        assert!(keys.set(KeyCode::KeyL, true));
+        assert_eq!(keys.player_input().horizontal, 1);
+        assert!(keys.set(KeyCode::KeyJ, true));
+        assert_eq!(keys.player_input().horizontal, 0);
+        assert!(!keys.set(KeyCode::KeyA, true), "A は左ではなくなった");
+        assert!(!keys.set(KeyCode::KeyD, true));
+        assert!(keys.set(KeyCode::KeyK, true));
+        assert!(keys.player_input().jump);
+        assert!(!keys.set(KeyCode::Space, true), "Space はジャンプではなくなった");
+        assert!(!keys.dig_held());
+        keys.set(KeyCode::KeyG, true);
+        assert!(keys.dig_held());
+        // 割り当てを入れ替えると、押していたキーは離した状態になる。
+        keys.set_bindings(KeyBindings::default());
+        assert_eq!(keys.player_input(), PlayerInput::default());
+        assert!(!keys.dig_held());
+        // release_all は割り当てを残す。
+        let mut keys = KeyState::with_bindings(bindings.clone());
+        keys.set(KeyCode::KeyL, true);
+        keys.release_all();
+        assert_eq!(keys.bindings(), &bindings);
+        assert_eq!(keys.player_input(), PlayerInput::default());
+        // 自由カメラの下 (`S`・`↓`) と `Shift` は割り当てなしで効く。
+        assert!(keys.set(KeyCode::KeyS, true));
+        assert!(keys.set(KeyCode::ShiftLeft, true));
     }
 
     /// Android のゲームパッド: ボタンは武器・道具・ジャンプ・切り替えになり、離すと止まる。知らないボタンは無視する。

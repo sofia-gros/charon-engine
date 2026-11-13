@@ -69,7 +69,11 @@ pub fn android_main(app: AndroidApp) {
             return;
         }
     };
-    let config = charon_app::demo::DemoConfig { mod_dir, save_base: data.join("saves/demo") };
+    let config = charon_app::demo::DemoConfig {
+        mod_dir,
+        save_base: data.join("saves/demo"),
+        settings: data.join("settings.ron"),
+    };
     if let Err(err) = charon_app::demo::run_demo_with(event_loop, config) {
         eprintln!("Android デモの実行に失敗: {err}");
     }

@@ -16,6 +16,7 @@ mod headless_tests;
 mod player;
 mod pointer;
 mod replay;
+pub mod settings;
 mod sim;
 mod timestep;
 mod touch_pad;
@@ -25,6 +26,7 @@ pub use animation::{Clip, Clips, Pose, SpriteAsset};
 pub use player::{KeyCommand, KeyState, follow_origin, try_spawn_player};
 pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
+pub use settings::{Action, KeyBindings, Settings};
 use sim::{Sim, sprites};
 pub use timestep::FixedTimestep;
 use timestep::advance_frame;
@@ -73,6 +75,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{KeyCode, PhysicalKey};
 #[cfg(target_arch = "wasm32")]
 use winit::platform::web::{EventLoopExtWebSys, WindowExtWebSys};
 use winit::window::{Window, WindowId};
@@ -221,6 +224,8 @@ pub struct AppOptions {
     pub player_sprite: Option<SpriteAsset>,
     /// 敵の種類の名前 (`EnemyDef::name`) ごとの画像 (仕様 06 §10.4)。ない種類は単色の箱。
     pub enemy_sprites: BTreeMap<String, SpriteAsset>,
+    /// 設定 (`settings.ron`: UI の大きさ・キャラクターの大きさ・光・キー割り当て、仕様 10 §14) を読み書きする場所。`None` なら保存しない。
+    pub settings_path: Option<std::path::PathBuf>,
 }
 
 /// ゲームがエンジンに渡す敵の生成の指定 (仕様 10 §8.5)。
@@ -308,6 +313,7 @@ pub fn run_with_streaming_options(
     app.enemies_pending = options.enemies.clone();
     app.options = options;
     app.reset_game();
+    app.load_settings();
     app.restart = restart;
     app.background = background;
     app.pending_game_save = read_game_save(&save_root);
@@ -315,6 +321,7 @@ pub fn run_with_streaming_options(
     app.physics = physics;
     app.physics_initialized = false;
     let result = event_loop.run_app(&mut app);
+    app.save_settings();
     if let Err(err) = app.save_world() {
         eprintln!("ワールドの保存に失敗: {err}");
     }
@@ -412,6 +419,8 @@ struct App {
     facing: i8,
     /// 画像のエンティティごとの向き (仕様 06 §10.4)。
     sprite_facing: BTreeMap<EntityId, i8>,
+    /// 読み込んだ設定 (仕様 10 §14)。終了とメニューを閉じたときに、画面の値を写して書く。
+    settings: Settings,
     /// 読み込んだ `game.ron` (仕様 10 §13)。プレイヤーが生まれたら、体力・マナ・位置・持ち物を戻す。
     #[cfg(not(target_arch = "wasm32"))]
     pending_game_save: Option<GameSave>,
@@ -479,11 +488,43 @@ impl App {
             gamepad: gamepad::Gamepad::new(),
             facing: 1,
             sprite_facing: BTreeMap::new(),
+            settings: Settings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_game_save: None,
             timer: FixedTimestep::default(),
             previous: None,
             occluded: false,
+        }
+    }
+
+    /// `settings_path` の設定を読み、キー割り当てを入力に反映する。なければ既定。読めなければ報告して既定。
+    // 呼び出し元 (起動) は native 専用。Web では保存しない。
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn load_settings(&mut self) {
+        let Some(path) = self.options.settings_path.clone() else { return };
+        match Settings::read(&path) {
+            Ok(Some(settings)) => {
+                self.keys.set_bindings(settings.keys.clone());
+                self.settings = settings;
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("{err}"),
+        }
+    }
+
+    /// 画面の値 (UI の大きさ・キャラクターの大きさ・光・キー割り当て) を写して、`settings_path` に書く。
+    fn save_settings(&mut self) {
+        let Some(path) = self.options.settings_path.clone() else { return };
+        if let Some(gui) = self.gui.as_ref() {
+            let controls = &gui.controls;
+            self.settings.ui_scale = controls.ui_scale;
+            self.settings.character_scale = controls.sprite_scale;
+            self.settings.light = settings::light_name(controls.light_quality).to_owned();
+            self.settings.keys = controls.bindings.clone();
+        }
+        self.settings.sanitize();
+        if let Err(err) = self.settings.write(&path) {
+            eprintln!("{err}");
         }
     }
 
@@ -734,6 +775,7 @@ impl App {
             eprintln!("この起動では世界を作り直せません");
             return;
         }
+        self.save_settings();
         if let Err(err) = self.save_world() {
             eprintln!("ワールドの保存に失敗: {err}");
         }
@@ -803,7 +845,7 @@ impl App {
                 (
                     controls.zoom,
                     controls.origin,
-                    controls.paused,
+                    controls.paused || controls.pause_menu,
                     controls.step_once,
                     controls.light_quality,
                 )
@@ -821,6 +863,12 @@ impl App {
             if let Some(gui) = self.gui.as_mut() {
                 gui.controls.origin = origin;
             }
+        }
+        // キー割り当ては、メニューで変えられる。入力に反映する (仕様 10 §14)。
+        if let Some(gui) = self.gui.as_ref()
+            && gui.controls.bindings != *self.keys.bindings()
+        {
+            self.keys.set_bindings(gui.controls.bindings.clone());
         }
         // 画面のスティック・ボタン (仕様 10 §10)。キーボード・マウスの操作と、使っている方が優先される形で重ねる。
         self.touch_pad.set_viewport([size.width as f32, size.height as f32]);
@@ -1341,6 +1389,11 @@ impl ApplicationHandler for App {
                 gui.controls = controls;
             } else {
                 gui.controls.rainbow = self.options.rainbow_sand;
+                // 保存した設定 (仕様 10 §14)。
+                gui.controls.ui_scale = self.settings.ui_scale;
+                gui.controls.sprite_scale = self.settings.character_scale;
+                gui.controls.light_quality = self.settings.light_quality();
+                gui.controls.bindings = self.keys.bindings().clone();
                 #[cfg(target_arch = "wasm32")]
                 {
                     gui.controls.web_status = self.web_status.clone();
@@ -1422,6 +1475,19 @@ impl ApplicationHandler for App {
             _ => false,
         };
         let consumed = consumed || pad_owned;
+        // キー割り当ての変更中は、次に押したキーを割り当てる (`Esc` は取り消し)。ほかの操作には使わない。
+        if let WindowEvent::KeyboardInput { event: key, .. } = &event
+            && key.state == ElementState::Pressed
+            && let PhysicalKey::Code(code) = key.physical_key
+            && let Some(gui) = self.gui.as_mut()
+            && let Some(action) = gui.controls.rebinding
+        {
+            if code != KeyCode::Escape {
+                gui.controls.bindings.bind(action, code);
+            }
+            gui.controls.rebinding = None;
+            return;
+        }
         if self.options.follow_player {
             // UI が文字入力などでキーを使うときは押下を無視する。離したキーは常に反映する。
             match self.keys.event(&event, !consumed) {
@@ -1435,6 +1501,21 @@ impl ApplicationHandler for App {
                         gui.controls.paint = !gui.controls.paint;
                     }
                     self.weapon_down = false;
+                }
+                Some(KeyCommand::ToggleInventory) => {
+                    if let Some(gui) = self.gui.as_mut() {
+                        gui.controls.inventory_open = !gui.controls.inventory_open;
+                    }
+                }
+                Some(KeyCommand::Pause) => {
+                    if let Some(gui) = self.gui.as_mut() {
+                        gui.controls.pause_menu = !gui.controls.pause_menu;
+                        gui.controls.rebinding = None;
+                    }
+                    self.weapon_down = false;
+                    self.tool_down = false;
+                    // メニューを閉じたときに、設定を保存する。
+                    self.save_settings();
                 }
                 None => {}
             }

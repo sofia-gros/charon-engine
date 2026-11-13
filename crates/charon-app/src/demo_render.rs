@@ -55,6 +55,8 @@ struct Scene {
     character_scale: Option<f32>,
     /// 光の品質。
     light: LightQuality,
+    /// ポーズのメニューと持ち物の画面を開く。
+    menu: bool,
     /// 画面の仮想スティックとボタン。`Some` なら UI の重ね描きに出す。
     pad: Option<crate::touch_pad::TouchPad>,
 }
@@ -77,6 +79,7 @@ impl Scene {
             skip_smooth: false,
             character_scale: None,
             light: LightQuality::High,
+            menu: false,
             pad: None,
         }
     }
@@ -337,6 +340,8 @@ fn render_ui(
     let mut controls = Controls::new(scene.generator.materials.rainbow_sand);
     controls.rainbow = Some(scene.generator.materials.rainbow_sand);
     controls.zoom = ZOOM;
+    controls.pause_menu = scene.menu;
+    controls.inventory_open = scene.menu;
     controls.origin = Scene::origin(center);
     let context = egui::Context::default();
     let mut renderer = egui_wgpu::Renderer::new(
@@ -676,6 +681,33 @@ fn demo_renders_sprite_with_scale() {
     assert!((3.0..5.0).contains(&ratio), "拡大率 2 倍で面積は約 4 倍 ({ratio:.2})");
     capture("sprite_small", "world", &small);
     capture("sprite_large", "world", &large);
+}
+
+/// ポーズのメニューと持ち物の画面 (仕様 10 §14) が、実際の描画に出る。
+#[test]
+fn demo_renders_pause_menu() {
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let (mut scene, center) = room_scene(&pack);
+    let (texture, _) = render_world(&gpu, &mut scene, center);
+    let closed = render_ui(&gpu, &scene, center, &texture, false);
+    scene.menu = true;
+    let (texture, _) = render_world(&gpu, &mut scene, center);
+    let open = render_ui(&gpu, &scene, center, &texture, false);
+    // 画面の中央 (メニューの位置) の画素が変わる。
+    let middle = (
+        WIDTH as usize / 2 - 150..WIDTH as usize / 2 + 150,
+        HEIGHT as usize / 2 - 100..HEIGHT as usize / 2 + 100,
+    );
+    let changed = middle
+        .1
+        .clone()
+        .flat_map(|y| middle.0.clone().map(move |x| (y * WIDTH as usize + x) * 4))
+        .filter(|&i| open[i..i + 3] != closed[i..i + 3])
+        .count();
+    println!("pause menu: 中央で変わった画素 {changed}");
+    assert!(changed > 5_000, "メニューが中央に描かれる ({changed})");
+    capture("pause_menu", "ui", &open);
 }
 
 fn empty_scene(pack: &ModPack) -> (Scene, CellPos) {

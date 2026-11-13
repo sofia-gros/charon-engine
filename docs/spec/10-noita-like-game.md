@@ -478,6 +478,14 @@ Android 実機での確認は未実施。
 
 掘れない固体 (`hardness: Some(65535)`) の見た目、レーザーの光・音、道具の持ち替え。浮遊は未着手 (T11.5 の残り)。掘ったものを集める持ち物は §13。
 
+## 14. ゲーム用 UI・設定・キー割り当て (M15、`charon-app`)
+
+- **ポーズのメニュー** (既定は `Esc`): 開いている間、世界は止まる。`Resume`・`Inventory`・`Quit`、`UI scale` (0.5〜3.0)・`Character scale` (0.25〜3.0)・光の品質 (`Off`/`Low`/`High`/`xHigh`)、キー割り当て (操作ごとに、押して次のキーを割り当てる。`Esc` で取り消し)、`Reset keys`。閉じたときに設定を書く。
+- **持ち物の画面** (既定は `I`): 持っている材質を多い順に、名前と数で (§13)。持ち物がなければ `Empty`。
+- **キー割り当て** (`settings::KeyBindings`): 操作 `Left`・`Right`・`Jump`・`Dig`・`FreeCamera`・`TogglePaint`・`Inventory`・`Pause` ごとに 1 つ以上のキー (名前は `winit::KeyCode` の `"KeyA"`・`"Space"` など。割り当てられるのは表のキーだけ)。**1 つのキーは 1 つの操作だけ**: 別の操作に割り当てると、前の操作から外れる。既定: 左 `A`/`←`、右 `D`/`→`、ジャンプ `W`/`↑`/`Space`/`C`、掘る `E`、自由カメラ `F`、武器 / ブラシ `B`、持ち物 `I`、ポーズ `Esc`。自由カメラの下 (`S`/`↓`) と `Shift` は割り当てなし。
+- **設定ファイル** (`settings.ron`、`DemoConfig::settings`。Android は内部ストレージ): `Settings { version, ui_scale, character_scale, light, keys }`。読むときに、範囲外の値を収め (NaN は既定)、知らないキー名の除去・重複の解消・空の操作への既定の戻しを行う。版が違う・壊れたファイルは報告して既定で始める。64 KiB 超は拒否。起動時に読み、メニューを閉じたとき・世界の作り直し・終了で書く (一時ファイルへ書いて入れ替える)。Web では保存しない。
+- テスト: `key_names_roundtrip_and_unknown_keys_are_refused`、`defaults_cover_every_action_without_overlap`、`binding_moves_a_key_from_the_old_action`、`settings_roundtrip_and_clamp`、`broken_key_tables_are_repaired`、`settings_file_io`、`custom_bindings_change_which_keys_work`、`pause_menu_and_inventory_draw`、`demo_renders_pause_menu` ([`M15-pause-menu.png`](../screenshots/M15-pause-menu.png))。
+
 ## 13. 持ち物とゲーム状態の保存 (M15)
 
 ### 13.1 持ち物 (`charon-game::inventory`)

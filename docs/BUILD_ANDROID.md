@@ -47,6 +47,8 @@ cargo apk run -p charon-sandbox
 
 ## 参照デモの APK とリリース (M13)
 
+画面の向きは**横画面に固定** (`apps/sandbox/Cargo.toml` の `orientation = "sensorLandscape"`: センサーで左右どちらの横向きにもなり、縦にはならない)。仮想スティックとボタンは横画面の配置 ([仕様 10 §11](spec/10-noita-like-game.md))。
+
 APK は参照デモ (`charon-demo`) を動かす。`android_main` がデモの MOD (`assets/mods/fse_demo`、APK に埋め込み) を内部ストレージへ書き出して `charon_app::demo::run_demo_with` を呼ぶ。操作はタッチの仮想スティックとゲームパッドのボタン ([仕様 10 §11](spec/10-noita-like-game.md))。
 
 リリースビルドの署名は、`apps/sandbox/Cargo.toml` の `[package.metadata.android.signing.release]` が `apps/sandbox/debug.keystore` (パスワード `android`、コミットしない) を指す。手元で `cargo apk build --release` するには、先に鍵を作る (配布用の本番の鍵ではない):

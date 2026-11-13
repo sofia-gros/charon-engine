@@ -9,6 +9,7 @@ use winit::event::WindowEvent;
 use winit::window::Window;
 
 use crate::demo_ui::{DemoAction, DemoUi, FrameStats, Overlay};
+use crate::settings::{Action, KeyBindings};
 
 #[derive(Debug)]
 pub(super) struct Controls {
@@ -29,6 +30,14 @@ pub(super) struct Controls {
     pub(super) ui_scale: f32,
     /// 画像のスプライトの大きさの倍率 (ゲームの `SpriteAsset::scale` に掛ける)。
     pub(super) sprite_scale: f32,
+    /// ポーズのメニューが開いている (開いている間、世界は止まる、仕様 10 §14)。
+    pub(super) pause_menu: bool,
+    /// 持ち物の画面が開いている。
+    pub(super) inventory_open: bool,
+    /// キー割り当ての変更中の操作 (次に押したキーを割り当てる)。
+    pub(super) rebinding: Option<Action>,
+    /// キー割り当て (画面に出す・変更する。アプリの入力と同期する)。
+    pub(super) bindings: KeyBindings,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) save: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -55,6 +64,10 @@ impl Controls {
             show_debug: false,
             ui_scale: 1.0,
             sprite_scale: 1.0,
+            pause_menu: false,
+            inventory_open: false,
+            rebinding: None,
+            bindings: KeyBindings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             save: false,
             #[cfg(not(target_arch = "wasm32"))]
