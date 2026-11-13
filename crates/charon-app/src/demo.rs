@@ -57,15 +57,35 @@ pub(crate) fn demo_loadout() -> PlayerLoadout {
     }
 }
 
-/// デモ (ゲーム側) のキャラクターの画像: 32×64 の RGBA (魔法使い。右向き)。当たり判定 (5×10 セル) より大きく作り、
-/// `scale = 10 / 64` で足元の中央を基準に 5×10 セルに描く。`Character scale` (Debug パネル) で大きさを変えられる。
-pub(crate) fn demo_character_image() -> crate::SpriteAsset {
-    const W: usize = 32;
-    const H: usize = 64;
-    let mut rgba = vec![0u8; W * H * 4];
+/// キャラクターの配色。
+#[derive(Clone, Copy)]
+struct Palette {
+    robe: [u8; 4],
+    robe_dark: [u8; 4],
+    skin: [u8; 4],
+    hat: [u8; 4],
+    boots: [u8; 4],
+    wood: [u8; 4],
+    glow: [u8; 4],
+}
+
+/// シートの 1 コマの大きさ (画素)。当たり判定 (5×10 セル) より大きく作る。
+const FRAME: [usize; 2] = [32, 64];
+
+/// 1 コマ (32×64) を `(ox, oy)` から描く。`bob` は体の上下 (画素)、`stride` は足の開き (-1..=1)、`jump` は腕を上げる。
+fn draw_figure(
+    rgba: &mut [u8],
+    sheet_width: usize,
+    (ox, oy): (usize, usize),
+    palette: Palette,
+    bob: i32,
+    stride: i32,
+    jump: bool,
+) {
+    let (w, h) = (FRAME[0] as i32, FRAME[1] as i32);
     let mut put = |x: i32, y: i32, c: [u8; 4]| {
-        if (0..W as i32).contains(&x) && (0..H as i32).contains(&y) {
-            let at = (y as usize * W + x as usize) * 4;
+        if (0..w).contains(&x) && (0..h).contains(&y) {
+            let at = ((oy + y as usize) * sheet_width + ox + x as usize) * 4;
             rgba[at..at + 4].copy_from_slice(&c);
         }
     };
@@ -73,58 +93,131 @@ pub(crate) fn demo_character_image() -> crate::SpriteAsset {
         let (dx, dy) = ((x as f32 + 0.5 - cx) / rx, (y as f32 + 0.5 - cy) / ry);
         dx * dx + dy * dy <= 1.0
     };
-    let robe = [96, 64, 190, 255];
-    let robe_dark = [66, 44, 140, 255];
-    let skin = [236, 190, 150, 255];
-    let hat = [70, 48, 150, 255];
-    let boots = [50, 36, 30, 255];
-    let wood = [140, 96, 50, 255];
-    for y in 0..H as i32 {
-        for x in 0..W as i32 {
+    let up = if jump { 6 } else { 0 };
+    for y in 0..h {
+        for x in 0..w {
+            let yb = y - bob; // 体 (足以外) は bob だけ動く。
             // 帽子 (つば + とんがり)。
-            if ellipse(16.0, 15.0, 12.0, 3.0, x, y)
-                || (y < 14 && (x as f32 - 16.0).abs() < (y as f32) * 0.55 && y > 0)
+            if ellipse(16.0, 15.0, 12.0, 3.0, x, yb)
+                || (yb < 14 && (x as f32 - 16.0).abs() < (yb as f32) * 0.55 && yb > 0)
             {
-                put(x, y, hat);
+                put(x, y, palette.hat);
             }
             // 顔。
-            if ellipse(16.0, 21.0, 6.5, 6.5, x, y) {
-                put(x, y, skin);
+            if ellipse(16.0, 21.0, 6.5, 6.5, x, yb) {
+                put(x, y, palette.skin);
             }
             // ローブ (裾が広がる)。
-            let half = 6.0 + (y as f32 - 28.0).max(0.0) * 0.28;
-            if (28..58).contains(&y) && (x as f32 + 0.5 - 16.0).abs() < half {
-                put(x, y, if (x + y) % 7 == 0 { robe_dark } else { robe });
+            let half = 6.0 + (yb as f32 - 28.0).max(0.0) * 0.28;
+            if (28..58).contains(&yb) && (x as f32 + 0.5 - 16.0).abs() < half {
+                put(x, y, if (x + y) % 7 == 0 { palette.robe_dark } else { palette.robe });
             }
-            // 足 (ブーツ)。
-            if (58..64).contains(&y) && ((6..14).contains(&x) || (18..27).contains(&x)) {
-                put(x, y, boots);
+            // 足 (ブーツ)。歩くと開く。
+            let left = (6 - stride * 3..14 - stride * 3).contains(&x);
+            let right = (18 + stride * 3..27 + stride * 3).contains(&x);
+            if (58..64).contains(&y) && (left || right) {
+                put(x, y, palette.boots);
             }
-            // 杖 (右手)。
-            if (25..60).contains(&y) && (x == 27 || x == 28) {
-                put(x, y, wood);
+            // 杖 (右手)。ジャンプでは上げる。
+            if (25 - up..60 - up).contains(&yb) && (x == 27 || x == 28) {
+                put(x, y, palette.wood);
             }
         }
     }
     // 目と杖の先の光。
-    for (x, y) in [(14, 21), (19, 21)] {
+    for (x, y) in [(14, 21 + bob), (19, 21 + bob)] {
         put(x, y, [30, 30, 40, 255]);
     }
     for y in 21..26 {
         for x in 25..31 {
-            if ellipse(27.5, 23.5, 3.0, 3.0, x, y) {
-                put(x, y, [120, 230, 255, 255]);
+            if ellipse(27.5, 23.5 - up as f32, 3.0, 3.0, x, y - bob) {
+                put(x, y - up, palette.glow);
             }
         }
     }
-    crate::SpriteAsset {
-        width: W as u16,
-        height: H as u16,
-        rgba: rgba.into(),
-        pivot: [W as f32 / 2.0, H as f32],
-        scale: 10.0 / H as f32,
-        filter: charon_render::SpriteFilter::Nearest,
+}
+
+/// 4 行のスプライトシートを作る: 立つ (2 コマ)・歩く (4 コマ)・跳ぶ・落ちる。1 コマは 32×64。
+fn demo_sheet(palette: Palette, scale: f32) -> crate::SpriteAsset {
+    use crate::{Clip, Clips};
+    let (sheet_w, sheet_h) = (FRAME[0] * 4, FRAME[1] * 4);
+    let mut rgba = vec![0u8; sheet_w * sheet_h * 4];
+    let mut figure = |col: usize, row: usize, bob: i32, stride: i32, jump: bool| {
+        draw_figure(
+            &mut rgba,
+            sheet_w,
+            (col * FRAME[0], row * FRAME[1]),
+            palette,
+            bob,
+            stride,
+            jump,
+        );
+    };
+    figure(0, 0, 0, 0, false); // 立つ
+    figure(1, 0, 1, 0, false); // 立つ (息をする)
+    for (col, (bob, stride)) in [(0, 0), (1, 1), (0, 0), (1, -1)].into_iter().enumerate() {
+        figure(col, 1, bob, stride, false); // 歩く
     }
+    figure(0, 2, 0, 1, true); // 跳ぶ
+    figure(0, 3, 1, 0, false); // 落ちる
+    crate::SpriteAsset {
+        width: sheet_w as u16,
+        height: sheet_h as u16,
+        rgba: rgba.into(),
+        frame_size: [FRAME[0] as u16, FRAME[1] as u16],
+        pivot: [FRAME[0] as f32 / 2.0, FRAME[1] as f32],
+        scale,
+        filter: charon_render::SpriteFilter::Nearest,
+        clips: Clips {
+            idle: Clip { row: 0, frames: 2, ticks_per_frame: 30 },
+            walk: Clip { row: 1, frames: 4, ticks_per_frame: 6 },
+            jump: Clip::still(2),
+            fall: Clip::still(3),
+        },
+    }
+}
+
+/// デモ (ゲーム側) のキャラクターの画像: 4 行のシート (魔法使い。右向き)。当たり判定 (5×10 セル) より大きい 32×64 のコマを、
+/// `scale = 10 / 64` で足元の中央を基準に 5×10 セルに描く。`Character scale` (Debug パネル) で大きさを変えられる。
+pub(crate) fn demo_character_image() -> crate::SpriteAsset {
+    demo_sheet(
+        Palette {
+            robe: [96, 64, 190, 255],
+            robe_dark: [66, 44, 140, 255],
+            skin: [236, 190, 150, 255],
+            hat: [70, 48, 150, 255],
+            boots: [50, 36, 30, 255],
+            wood: [140, 96, 50, 255],
+            glow: [120, 230, 255, 255],
+        },
+        10.0 / 64.0,
+    )
+}
+
+/// デモ (ゲーム側) の敵の画像。敵の種類の名前 (`walker`・`shooter`) ごとに、配色を変えた同じ形。敵は 8×16 セル。
+pub(crate) fn demo_enemy_images() -> std::collections::BTreeMap<String, crate::SpriteAsset> {
+    let walker = Palette {
+        robe: [70, 150, 70, 255],
+        robe_dark: [40, 110, 50, 255],
+        skin: [150, 200, 110, 255],
+        hat: [90, 70, 40, 255],
+        boots: [40, 30, 20, 255],
+        wood: [110, 80, 50, 255],
+        glow: [255, 230, 120, 255],
+    };
+    let shooter = Palette {
+        robe: [190, 60, 60, 255],
+        robe_dark: [130, 36, 40, 255],
+        skin: [240, 170, 140, 255],
+        hat: [120, 30, 40, 255],
+        boots: [40, 24, 24, 255],
+        wood: [120, 90, 60, 255],
+        glow: [255, 140, 60, 255],
+    };
+    [("walker", walker), ("shooter", shooter)]
+        .into_iter()
+        .map(|(name, palette)| (name.to_owned(), demo_sheet(palette, 16.0 / 64.0)))
+        .collect()
 }
 
 /// デモ (ゲーム側) の、背景のさらに奥で動く虹色の塊 (仕様 09 §9)。配置は世界の seed で決まる。
@@ -283,6 +376,7 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             deep_background: Some(demo_deep_background(metadata_seed)),
             enemies: demo_enemies(),
             player_sprite: Some(demo_character_image()),
+            enemy_sprites: demo_enemy_images(),
         },
         brush: demo_materials.rainbow_sand,
     })

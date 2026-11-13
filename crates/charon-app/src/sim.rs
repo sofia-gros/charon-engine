@@ -46,11 +46,11 @@ fn rope_sprites(points: &[[f32; 2]], out: &mut Vec<EntitySprite>) {
 pub(crate) fn sprites(
     entities: &EntityWorld,
     game: &GameState,
-    skip: Option<EntityId>,
+    skip: &[EntityId],
 ) -> Vec<EntitySprite> {
     let mut out: Vec<EntitySprite> = entities
         .iter()
-        .filter(|entity| Some(entity.id) != skip)
+        .filter(|entity| !skip.contains(&entity.id))
         .map(|entity| EntitySprite {
             x16: entity.x16,
             y16: entity.y16,

@@ -1,5 +1,6 @@
 //! 仕様 06 §6〜§7: 固定 tick と、ウィンドウ・サーフェスの復帰管理。
 
+mod animation;
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,6 +21,7 @@ mod timestep;
 mod touch_pad;
 mod ui;
 
+pub use animation::{Clip, Clips, Pose, SpriteAsset};
 pub use player::{KeyCommand, KeyState, follow_origin, try_spawn_player};
 pub use pointer::{PointerEvent, PointerInput};
 pub use replay::{BrushOp, Replay};
@@ -30,7 +32,7 @@ use touch_pad::{PadOutput, TouchPad};
 
 #[cfg(target_arch = "wasm32")]
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 #[cfg(target_arch = "wasm32")]
@@ -49,8 +51,7 @@ use charon_physics::{BodyRender, CELLS_PER_METER, PhysicsEngine};
 use charon_render::{
     BackgroundLayerPass, BackgroundPass, BackgroundSource, CellPass, CompositePass,
     DeepBackgroundClock, DeepBackgroundParams, DeepBackgroundPass, EntityPass, FullscreenPass,
-    GpuContext, LightPass, PassList, SmoothBodyPass, SmoothBodySprite, Sprite, SpriteFilter,
-    SpritePass,
+    GpuContext, LightPass, PassList, SmoothBodyPass, SmoothBodySprite, SpritePass,
 };
 use charon_world::background::BackgroundWorld;
 use charon_world::building::{BuildOp, Layer, apply_build};
@@ -216,21 +217,8 @@ pub struct AppOptions {
     pub enemies: Vec<EnemySpawn>,
     /// プレイヤーを描く画像 (仕様 06 §10)。`None` なら単色の箱。当たり判定の大きさは変わらない。
     pub player_sprite: Option<SpriteAsset>,
-}
-
-/// ゲームがエンジンに渡す、キャラクターなどの画像 (仕様 06 §10)。画像は大きく作り、`scale` で大きさを決める
-/// (例: 32×64 の画像を `scale = 10 / 64` で 5×10 セルに描く)。
-#[derive(Clone, Debug, PartialEq)]
-pub struct SpriteAsset {
-    pub width: u16,
-    pub height: u16,
-    /// 行優先の RGBA8 (sRGB、ストレートアルファ)。長さは `width * height * 4`。
-    pub rgba: Arc<[u8]>,
-    /// 基準点の画像上の位置 (画素)。足元の中央なら `[width / 2, height]`。エンティティの足元の中央に置く。
-    pub pivot: [f32; 2],
-    /// 画像の 1 画素あたりのセル数。
-    pub scale: f32,
-    pub filter: SpriteFilter,
+    /// 敵の種類の名前 (`EnemyDef::name`) ごとの画像 (仕様 06 §10.4)。ない種類は単色の箱。
+    pub enemy_sprites: BTreeMap<String, SpriteAsset>,
 }
 
 /// ゲームがエンジンに渡す敵の生成の指定 (仕様 10 §8.5)。
@@ -415,6 +403,8 @@ struct App {
     gamepad: Option<gamepad::Gamepad>,
     /// 最後に歩いた向き (-1 か 1)。ゲームパッドのボタンで撃つ向きに使う。
     facing: i8,
+    /// 画像のエンティティごとの向き (仕様 06 §10.4)。
+    sprite_facing: BTreeMap<EntityId, i8>,
     timer: FixedTimestep,
     previous: Option<Instant>,
     occluded: bool,
@@ -477,6 +467,7 @@ impl App {
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             gamepad: gamepad::Gamepad::new(),
             facing: 1,
+            sprite_facing: BTreeMap::new(),
             timer: FixedTimestep::default(),
             previous: None,
             occluded: false,
@@ -942,30 +933,18 @@ impl App {
         let visible =
             visible_chunks(&self.world, &self.background, origin, [scene_width, scene_height]);
         let mut background = BackgroundAdapter(&mut self.background);
-        // プレイヤーの画像 (仕様 06 §10)。画像があるときは、プレイヤーの箱は描かない。
+        // 画像を割り当てたエンティティ (プレイヤー・敵) は、アニメーションする画像で描き、箱は描かない (仕様 06 §10)。
         let sprite_scale = self.gui.as_ref().map_or(1.0, |gui| gui.controls.sprite_scale);
-        let player_image =
-            self.options.player_sprite.as_ref().zip(self.player).and_then(|(asset, id)| {
-                let entity = self.entities.get(id)?;
-                Some(Sprite {
-                    id: 1,
-                    width: asset.width,
-                    height: asset.height,
-                    rgba: &asset.rgba,
-                    position: [
-                        (entity.x16 as f32 + f32::from(entity.width) * 8.0) / 16.0,
-                        (entity.y16 as f32 + f32::from(entity.height) * 16.0) / 16.0,
-                    ],
-                    pivot: asset.pivot,
-                    scale: asset.scale * sprite_scale,
-                    angle: 0.0,
-                    flip_x: self.facing < 0,
-                    filter: asset.filter,
-                    lit: true,
-                })
-            });
-        let skip = player_image.as_ref().and(self.player);
-        let boxes = sprites(&self.entities, &self.game, skip);
+        let drawn = animation::entity_sprites(
+            self.player.zip(self.options.player_sprite.as_ref()),
+            &self.options.enemy_sprites,
+            &self.entities,
+            &self.game.enemies,
+            &mut self.sprite_facing,
+            self.world.tick(),
+            sprite_scale,
+        );
+        let boxes = sprites(&self.entities, &self.game, &drawn.skip);
         let smooth = smooth_sprites(&self.physics);
         if let Err(err) = passes.render_with_sprites(
             gpu,
@@ -973,7 +952,7 @@ impl App {
             Some(&mut background),
             &boxes,
             &smooth,
-            player_image.as_slice(),
+            &drawn.sprites,
             &visible,
             &view,
             origin,

@@ -36,16 +36,30 @@ pub struct Sprite<'a> {
     pub filter: SpriteFilter,
     /// 光を掛けるか。
     pub lit: bool,
+    /// 画像の一部だけを描くコマ `[x, y, 幅, 高さ]` (画素)。スプライトシートのアニメーションに使う。
+    /// `None` なら画像の全体。`pivot` はコマの中の位置。
+    pub frame: Option<[u16; 4]>,
 }
 
 /// 画像の 1 辺の上限 (画素)。
 const MAX_SIDE: u16 = 2048;
-const UNIFORM_BYTES: usize = 64;
+const UNIFORM_BYTES: usize = 80;
 
 impl Sprite<'_> {
-    /// 描いてよい値か (大きさ・長さ・有限の数)。
+    /// 描くコマ `[x, y, 幅, 高さ]` (画素)。`frame` がなければ画像の全体。
+    pub fn frame_rect(&self) -> [u16; 4] {
+        self.frame.unwrap_or([0, 0, self.width, self.height])
+    }
+
+    /// 描いてよい値か (大きさ・長さ・有限の数)。コマは画像の中に収まっていること。
     fn valid(&self) -> bool {
-        self.width > 0
+        let [fx, fy, fw, fh] = self.frame_rect();
+        let inside = fw > 0
+            && fh > 0
+            && u32::from(fx) + u32::from(fw) <= u32::from(self.width)
+            && u32::from(fy) + u32::from(fh) <= u32::from(self.height);
+        inside
+            && self.width > 0
             && self.height > 0
             && self.width <= MAX_SIDE
             && self.height <= MAX_SIDE
@@ -58,7 +72,8 @@ impl Sprite<'_> {
 
     /// 画面に描かれる大きさ (セル)。`(幅, 高さ)`。
     pub fn size_in_cells(&self) -> [f32; 2] {
-        [f32::from(self.width) * self.scale, f32::from(self.height) * self.scale]
+        let [_, _, w, h] = self.frame_rect();
+        [f32::from(w) * self.scale, f32::from(h) * self.scale]
     }
 }
 
@@ -92,14 +107,18 @@ fn uniform_bytes(
         sprite.position[1],
         sprite.pivot[0],
         sprite.pivot[1],
-        f32::from(sprite.width),
-        f32::from(sprite.height),
+        f32::from(sprite.frame_rect()[2]),
+        f32::from(sprite.frame_rect()[3]),
         sprite.scale,
         f32::from(u8::from(sprite.flip_x)),
         cos,
         sin,
         ambient.clamp(0.0, 1.0),
         f32::from(u8::from(lit)),
+        f32::from(sprite.frame_rect()[0]),
+        f32::from(sprite.frame_rect()[1]),
+        f32::from(sprite.width),
+        f32::from(sprite.height),
     ];
     let mut bytes = [0u8; UNIFORM_BYTES];
     for (i, value) in floats.iter().enumerate() {
@@ -377,6 +396,7 @@ mod tests {
             flip_x: false,
             filter: SpriteFilter::Nearest,
             lit: true,
+            frame: None,
         }
     }
 
@@ -419,6 +439,24 @@ mod tests {
         let mut s = sprite(&pixels);
         s.position = [f32::INFINITY, 0.0];
         assert!(!s.valid(), "位置が有限でない");
+    }
+
+    /// コマ (スプライトシートの一部) の大きさで描き、画像の外にはみ出すコマは描かない。
+    #[test]
+    fn frames_select_part_of_the_sheet() {
+        let pixels = vec![0u8; 64 * 32 * 4];
+        let mut s = sprite(&pixels);
+        s.width = 64;
+        s.height = 32;
+        s.scale = 0.5;
+        s.frame = Some([32, 0, 32, 32]);
+        assert!(s.valid());
+        assert_eq!(s.frame_rect(), [32, 0, 32, 32]);
+        assert_eq!(s.size_in_cells(), [16.0, 16.0], "コマの大きさ × scale");
+        s.frame = Some([40, 0, 32, 32]);
+        assert!(!s.valid(), "画像の外にはみ出す");
+        s.frame = Some([0, 0, 0, 32]);
+        assert!(!s.valid(), "幅 0");
     }
 
     #[test]

@@ -263,6 +263,16 @@ pub struct Sprite<'a> {
 - **アプリ (`charon-app`):** ゲームは `AppOptions::player_sprite: Option<SpriteAsset>` (画像・基準点・`scale`・補間) を渡す。プレイヤーは足元の中央に画像で描かれ (単色の箱は描かない)、左向きのときは左右反転する。当たり判定の大きさは変わらない。`Debug` パネルの `Character scale` (0.25〜3.0) が `scale` に掛かる倍率。
 - 未対応: スプライトシートとアニメーション (コマ送り)、敵・アイテムへの画像の割り当て (プレイヤーだけ)。
 
+### 10.4 アニメーション (スプライトシート、M15)
+
+- `Sprite::frame: Option<[x, y, 幅, 高さ]>` (画素) で、画像の一部 (コマ) だけを描く。コマの大きさ × `scale` が画面の大きさ。`pivot` はコマの中の位置。コマが画像の外にはみ出す・幅か高さが 0 なら描かない。
+- `charon-app::SpriteAsset` は 1 枚のシート: `frame_size` (1 コマの大きさ) と `clips` (`idle`・`walk`・`jump`・`fall` の `Clip { row, frames, ticks_per_frame }`)。**1 行が 1 つの動き**で、左から右へコマが並ぶ。コマは `(世界の tick / ticks_per_frame) % frames` で選ぶ。
+- 状態 (`Pose::of`): 接地していなければ、`vy < 0` なら `Jump`、そうでなければ `Fall`。接地して `vx ≠ 0` なら `Walk`、それ以外は `Idle`。
+- 向き: 横に動いたとき (`vx` の符号) だけ更新し、止まっても覚える。左向きは `flip_x`。エンティティごとに持つ。
+- 割り当て: `AppOptions::player_sprite` (プレイヤー) と `AppOptions::enemy_sprites` (敵の種類の名前 `EnemyDef::name` → 画像)。画像のあるエンティティは単色の箱を描かない。`SpriteAsset::still` は動きのない 1 枚の画像。
+- テスト: `clips_advance_and_loop`、`pose_follows_the_entity`、`frames_pick_the_row_and_column_from_the_sheet`、`sprites_are_assigned_to_the_player_and_to_enemy_kinds`、`facing_flips_when_walking_left_and_is_remembered`、`frames_select_part_of_the_sheet`、`demo_renders_sprite_with_scale` (コマを選んで描く)。
+- デモ: 32×64 のコマ 4 行 (立つ 2・歩く 4・跳ぶ 1・落ちる 1) の魔法使いと、配色違いの敵 (`walker`・`shooter`)。
+
 ### 10.2 UI の大きさ
 
 - `Debug` パネルの `UI scale` (0.5〜3.0) が、egui の `zoom_factor` として全部のパネルとグラフを同じ倍率で拡大・縮小する。

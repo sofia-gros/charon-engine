@@ -277,7 +277,7 @@ fn render_world(gpu: &GpuContext, scene: &mut Scene, center: CellPos) -> (wgpu::
     let origin = Scene::origin(center);
     let visible =
         visible_chunks(&scene.world, &scene.background, origin, [WIDTH / ZOOM, HEIGHT / ZOOM]);
-    let sprites = crate::sim::sprites(&scene.entities, &scene.game, None);
+    let sprites = crate::sim::sprites(&scene.entities, &scene.game, &[]);
     let output = target(gpu);
     let view = output.create_view(&Default::default());
     let mut background = BackgroundAdapter(&mut scene.background);
@@ -301,6 +301,7 @@ fn render_world(gpu: &GpuContext, scene: &mut Scene, center: CellPos) -> (wgpu::
             flip_x: false,
             filter: asset.filter,
             lit: true,
+            frame: Some(asset.frame_for(crate::Pose::Idle, 0)),
         })
         .into_iter()
         .collect();

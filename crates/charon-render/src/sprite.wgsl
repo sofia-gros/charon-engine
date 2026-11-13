@@ -14,6 +14,8 @@ struct Params {
     shape: vec4<f32>,
     // x = cos、y = sin、z = 環境光、w = 光を掛けるか (1 / 0)。
     turn: vec4<f32>,
+    // x, y = 描くコマの左上 (画素)、z, w = 画像全体の大きさ (画素)。コマは `shape.xy` の大きさ。
+    frame: vec4<f32>,
 };
 @group(0) @binding(4) var<uniform> params: Params;
 
@@ -42,7 +44,7 @@ fn vs_main(@builtin(vertex_index) vertex: u32) -> VertexOut {
     let scene_uv = (world - params.camera.xy) / params.camera.zw;
     var out: VertexOut;
     out.position = vec4<f32>(scene_uv.x * 2.0 - 1.0, 1.0 - scene_uv.y * 2.0, 0.0, 1.0);
-    out.uv = corner;
+    out.uv = (params.frame.xy + corner * params.shape.xy) / params.frame.zw;
     out.scene_uv = scene_uv;
     return out;
 }
