@@ -10,6 +10,7 @@ mod region_error;
 pub use region_error::RegionError;
 pub mod save;
 pub mod streaming;
+pub mod terrain;
 pub mod web_save;
 
 use std::collections::BTreeMap;

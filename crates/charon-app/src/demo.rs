@@ -27,6 +27,8 @@ pub struct DemoConfig {
     pub save_base: PathBuf,
     /// 設定 (`settings.ron`、仕様 10 §14) のファイル。
     pub settings: PathBuf,
+    /// 真なら、デモの部屋ではなく、冒険の世界 (仕様 21) を開く。`discover` では、環境変数 `CHARON_WORLD=demo` でないときは真。
+    pub adventure: bool,
 }
 
 impl DemoConfig {
@@ -49,6 +51,7 @@ impl DemoConfig {
             mod_dir,
             save_base: PathBuf::from("saves/demo"),
             settings: PathBuf::from("saves/settings.ron"),
+            adventure: std::env::var("CHARON_WORLD").map_or(true, |kind| kind != "demo"),
         }
     }
 }
@@ -421,6 +424,63 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
     })
 }
 
+/// `seed` の冒険の世界 (仕様 21) を組み立てる。デモの部屋・剛体・背景はなく、表面・洞窟・ダンジョンのある、広い世界。
+/// 保存があればその seed・tick を読み込む。
+pub fn open_adventure(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Error>> {
+    use charon_world::terrain::{AdventureGenerator, AdventureMaterials};
+    let pack = ModPack::load(&[ModDirectory { path: config.mod_dir.clone(), script: false }])?;
+    let materials = Arc::clone(&pack.materials);
+    let adventure =
+        AdventureMaterials::from_table(&materials).ok_or("冒険の世界の材質が足りません")?;
+    let generator = AdventureGenerator { materials: adventure };
+    let root = config.save_base.join(format!("adventure-{seed}"));
+    let saved = WorldMeta::load(&root)?;
+    let mut metadata = saved.clone().unwrap_or_else(|| WorldMeta::new(seed, &materials));
+    for name in charon_world::material_names(&materials) {
+        if !metadata.materials.contains(&name) {
+            metadata.materials.push(name);
+        }
+    }
+    let mut world = pack.new_world(metadata.seed);
+    world.restore_tick(metadata.tick);
+    let physics = PhysicsEngine::load_bodies(&root, &materials, &metadata.materials)?
+        .unwrap_or_else(PhysicsEngine::new);
+    let streamer = Streamer::with_saved_names(
+        root.clone(),
+        Arc::clone(&materials),
+        metadata.seed,
+        Arc::new(generator),
+        3,
+        metadata.materials.clone(),
+    )?;
+    let spawn = generator.spawn_point(metadata.seed);
+    let brush = materials.id("sand").ok_or("sand がありません")?;
+    Ok(OpenDemo {
+        session: DemoSession { world, streamer, save_root: root, metadata, physics },
+        options: AppOptions {
+            follow_player: true,
+            player_spawn: Some(spawn),
+            rainbow_sand: None,
+            demo: true,
+            background: None,
+            definitions: Some(Arc::new(pack.definitions.clone())),
+            player: Some(demo_loadout()),
+            deep_background: None,
+            enemies: Vec::new(),
+            player_sprite: Some(demo_character_image()),
+            enemy_sprites: demo_enemy_images(),
+            settings_path: Some(config.settings.clone()),
+            logic: Some(crate::api::GameLogic::new(DemoGame::load(&config.mod_dir))),
+            sounds: Some({
+                let mut assets = crate::assets::Assets::new();
+                assets.add_root(config.mod_dir.join("assets"));
+                crate::audio::SoundBank::from_assets(&mut assets, crate::audio::RATE)
+            }),
+        },
+        brush,
+    })
+}
+
 /// デモのゲームロジック (仕様 14): 出来事に、画面の揺れと音で反応する。エンジンの `Game` API の使用例。
 #[derive(Debug, Default)]
 pub struct DemoGame {
@@ -481,11 +541,20 @@ pub fn run_demo(config: DemoConfig) -> Result<(), Box<dyn Error>> {
 
 /// [`run_demo`] に、呼び出し側が作ったイベントループを渡す (Android は専用のループが要る)。
 pub fn run_demo_with(event_loop: EventLoop<()>, config: DemoConfig) -> Result<(), Box<dyn Error>> {
-    let OpenDemo { session, options, brush } = open_demo(&config, 1)?;
+    let open = |config: &DemoConfig, seed| {
+        if config.adventure { open_adventure(config, seed) } else { open_demo(config, seed) }
+    };
+    let OpenDemo { session, options, brush } = open(&config, 1)?;
     let DemoSession { world, streamer, save_root, metadata, physics } = session;
     let restart_config = config.clone();
-    let restart: RestartFn =
-        Box::new(move |seed| open_demo(&restart_config, seed).map(|open| open.session));
+    let restart: RestartFn = Box::new(move |seed| {
+        if restart_config.adventure {
+            open_adventure(&restart_config, seed)
+        } else {
+            open_demo(&restart_config, seed)
+        }
+        .map(|open| open.session)
+    });
     run_with_streaming_options(
         event_loop,
         world,
@@ -546,7 +615,63 @@ mod tests {
             mod_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/mods/fse_demo"),
             save_base: dir.0.clone(),
             settings: dir.0.join("settings.ron"),
+            adventure: false,
         }
+    }
+
+    /// 冒険の世界 (仕様 21): プレイヤーが表面に生まれて立ち、ホットバーに最初のアイテムが並ぶ。同じ seed なら同じ結果。
+    #[test]
+    fn adventure_world_spawns_the_player_on_the_surface() {
+        let run = |seed: u64| {
+            let dir = TestDir::new();
+            let config = DemoConfig { adventure: true, ..config(&dir) };
+            let OpenDemo { session, options, .. } = open_adventure(&config, seed).unwrap();
+            let DemoSession { mut world, streamer, save_root, metadata, mut physics } = session;
+            let mut streaming = Some(StreamingState { streamer, save_root, metadata });
+            let mut initialized = false;
+            let mut entities = EntityWorld::new();
+            let mut player = None;
+            let mut spawn = options.player_spawn;
+            let mut enemy_spawns = options.enemies.clone();
+            let mut game = GameState::from_definitions(options.definitions.as_ref().unwrap());
+            let mut physics_ms = 0.0;
+            for _ in 0..240 {
+                Sim {
+                    world: &mut world,
+                    streaming: &mut streaming,
+                    physics: &mut physics,
+                    initialized: &mut initialized,
+                    entities: &mut entities,
+                    player: &mut player,
+                    spawn: &mut spawn,
+                    game: &mut game,
+                    definitions: options.definitions.as_deref(),
+                    loadout: options.player.as_ref(),
+                    enemy_spawns: &mut enemy_spawns,
+                }
+                .tick(
+                    ChunkPos::new(0, 3),
+                    PlayerInput::default(),
+                    GameInput::default(),
+                    &mut physics_ms,
+                )
+                .unwrap();
+            }
+            let id = player.expect("プレイヤーが生まれる");
+            let body = entities.get(id).unwrap().clone();
+            let inventory = &game.inventories[&id];
+            assert!(body.grounded, "seed {seed}: 地面に立つ");
+            assert_eq!(
+                (body.y16 / 16) + i64::from(body.height),
+                i64::from(charon_world::terrain::surface_y(seed, 0)),
+                "seed {seed}: 表面の上に立つ"
+            );
+            assert!(inventory.selected_item().is_some(), "seed {seed}: ホットバーの先頭がある");
+            streaming.take().unwrap().streamer.finish().unwrap();
+            (world.state_hash(), entities.state_hash())
+        };
+        assert_eq!(run(1), run(1));
+        assert_ne!(run(1).0, run(2).0);
     }
 
     /// 描画ループと同じ `Sim::tick` を `ticks` 回進め、世界・プレイヤー・剛体をまとめたハッシュと状態を返す。

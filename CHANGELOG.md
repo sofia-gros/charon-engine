@@ -20,6 +20,13 @@
 - **保存**: `PlayerSave` に `items`・`hotbar`・`selected`・`equipment` (古い保存にはなくてよい)。名前で保存し、知らない名前は読み飛ばす。`GameSave::with_items` / `apply_items`。
 - **壊れるもの**: `PlayerSave` の項目が増えた (構造体を直接書いている場合は `items: vec![]` ほかを足す)。持ち物の種類の上限 (256) は、セル・ブロック・定義の合計になった。`DefinitionFiles` / `ModSource` に `items`・`recipes` が増えた。
 
+### 追加 (冒険の世界、M24、仕様 21)
+
+- **`charon_world::terrain::AdventureGenerator`**: 表面の丘・バイオーム (森・砂漠・氷原)・池・洞窟 (大広間・坑道・立て坑)・鉱石 (石炭・鉄・金)・地下の水と溶岩・ブロックでできたダンジョン (広間・塔・地下墓所) と家・底の境界 (深さ 1200)。
+- 材質 `grass`・`coal`・`iron_ore`・`gold_ore` を足した (エンジンの既定は 21 個になった)。
+- **デモ**: `open_adventure`。`DemoConfig::adventure` (`discover` では、`CHARON_WORLD=demo` でないとき真。Android は真)。**壊れるもの**: `DemoConfig` に `adventure` が増えた。デモの部屋に戻すには、`CHARON_WORLD=demo`。
+- まだ: 溶岩の熱が眠る (シミュレーションの結果が変わるため、確認待ち)。
+
 ### 追加 (戦闘、M23、仕様 20)
 
 - **武器**: 装備した武器で `fire` の動きが変わる。近接 (前の箱を斬る、間隔 20 tick)・遠距離 (重力のある矢)・杖 (杖の武器を装備すると、キャラクターの杖が入れ替わる)。`GameState::equipped_weapon`、出来事 `GameEvent::Melee`。デモのホットバーで武器を選ぶと、装備する。

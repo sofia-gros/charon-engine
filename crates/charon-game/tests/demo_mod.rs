@@ -49,8 +49,8 @@ fn demo_mod_loads() {
         let id = materials.id(&format!("fse_demo:{name}")).unwrap();
         assert!(materials.get(id).emission.iter().any(|&c| c > 0), "{name} は発光する");
     }
-    // 組み込み 17 材質の後ろに 32 個。何度読んでも同じ並び。
-    assert_eq!(materials.len(), 17 + 32);
+    // 組み込み 21 材質の後ろに 32 個。何度読んでも同じ並び。
+    assert_eq!(materials.len(), 21 + 32);
     let again = ModPack::load(&[demo_mod()]).unwrap();
     let names = |pack: &ModPack| {
         (0..pack.materials.len())

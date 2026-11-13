@@ -45,4 +45,16 @@
     (name: "fire", phase: Gas, density: 1, color: (255, 150, 40, 220), color_variation: 40,
      dispersion: 1, initial_temp: 900, conductivity: 255, lifetime: Some((4, 12)),
      decay_into: "smoke", emission: (255, 160, 40)),
+
+    // ---- 冒険の世界 (仕様 21): 草・鉱石 ----
+    (name: "grass", phase: Solid, density: 700, color: (70, 150, 60, 255), color_variation: 16,
+     conductivity: 10, ignite_at: Some(250), burn_time: 20, burn_into: "ash", burn_temp: 700,
+     rigid_friction: 0.5, hardness: Some(80)),
+    (name: "coal", phase: Solid, density: 1400, color: (40, 40, 44, 255), color_variation: 8,
+     conductivity: 20, ignite_at: Some(350), burn_time: 120, burn_into: "ash", burn_temp: 900,
+     rigid_friction: 0.6, hardness: Some(300)),
+    (name: "iron_ore", phase: Solid, density: 3200, color: (170, 120, 100, 255), color_variation: 10,
+     conductivity: 60, rigid_friction: 0.7, hardness: Some(500)),
+    (name: "gold_ore", phase: Solid, density: 3800, color: (230, 190, 60, 255), color_variation: 10,
+     conductivity: 70, rigid_friction: 0.7, hardness: Some(650)),
 ]

@@ -1334,8 +1334,8 @@ mod tests {
         assert!(!list.iter().any(|s| s.label.starts_with("fse_demo:rainbow_")));
         assert!(!list.iter().any(|s| s.target == SwatchTarget::Material(MaterialId::EMPTY)));
         assert!(!list.iter().any(|s| s.target == SwatchTarget::Material(MaterialId::BOUNDARY)));
-        // 17 組み込み材質から 2 つ除いた 15 + 他の MOD 材質 8 + 虹色 2。
-        assert_eq!(list.len(), 15 + 8 + 2);
+        // 21 組み込み材質から 2 つ除いた 19 + 他の MOD 材質 8 + 虹色 2。
+        assert_eq!(list.len(), 19 + 8 + 2);
         let first = materials.id("fse_demo:rainbow_sand_0").unwrap();
         assert!(list.iter().any(|s| s.target == SwatchTarget::Rainbow(first)));
     }

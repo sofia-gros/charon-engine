@@ -390,9 +390,9 @@ mod tests {
     const SAND: &str = r#"(name: "sand", phase: Powder, density: 1600, color: (1, 2, 3, 255))"#;
 
     #[test]
-    fn builtin_has_17_materials() {
+    fn builtin_has_21_materials() {
         let t = MaterialTable::builtin().unwrap();
-        assert_eq!(t.len(), 17);
+        assert_eq!(t.len(), 21);
         assert_eq!(t.id("empty"), Some(MaterialId::EMPTY));
         assert_eq!(t.id("boundary"), Some(MaterialId::BOUNDARY));
         assert_eq!(t.id("stone"), Some(MaterialId(2)));
