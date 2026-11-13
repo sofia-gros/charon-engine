@@ -17,6 +17,7 @@ pub mod mods;
 pub mod net;
 pub mod projectile;
 pub mod save;
+pub mod spawner;
 pub mod status;
 pub mod vitals;
 pub mod wand;

@@ -655,6 +655,7 @@ impl DemoUi {
         // 計測 (FPS・グラフ・版の表示) は、デスクトップか、`Debug` パネルを開いたときだけ。タッチの画面では邪魔になる。
         let show_stats = overlay.pad.is_none() || open[PANEL_DEBUG];
         draw_hud_bars(context, overlay);
+        draw_boss_bar(context, overlay);
         if controls.inventory_open {
             draw_inventory(context, overlay, controls);
         }
@@ -1112,6 +1113,41 @@ pub(super) fn pointer_cell(pos: [f32; 2], zoom: f32, origin: [f32; 2]) -> Option
 /// 画面の右上の、小さなバーだけの表示 (背景・文字なし)。上から体力 (赤)・マナ (青)・燃料 (黄)、息は減っているときだけ (水色)。
 /// 状態異常は、バーの下に小さな四角 (燃える = 橙、濡れる = 水色、毒 = 緑) で出す。杖を持つプレイヤーがいるときだけ。
 /// 文字の情報 (道具・持ち物・次の呪文など) は、`Debug` パネルの `player_info` に出す。
+/// ボスの体力のバー (画面の上の中央、仕様 22 §4)。ボスがいるときだけ。
+fn draw_boss_bar(context: &egui::Context, overlay: &Overlay<'_>) {
+    let boss = overlay.game.enemies.iter().find(|(id, enemy)| {
+        enemy.def.boss && overlay.game.vitals.get(**id).is_some_and(|v| v.alive())
+    });
+    let Some((id, enemy)) = boss else { return };
+    let Some(vitals) = overlay.game.vitals.get(*id) else { return };
+    let fraction = if vitals.max_hp > 0 {
+        (vitals.hp as f32 / vitals.max_hp as f32).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    egui::Area::new(egui::Id::unique("charon boss bar"))
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 36.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(context, |ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(320.0, 14.0), egui::Sense::hover());
+            let painter = ui.painter();
+            painter.rect_filled(rect, 3.0, egui::Color32::from_black_alpha(150));
+            let fill = egui::Rect::from_min_size(
+                rect.min,
+                egui::vec2(rect.width() * fraction, rect.height()),
+            );
+            painter.rect_filled(fill, 3.0, egui::Color32::from_rgb(200, 50, 70));
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &enemy.def.name,
+                egui::FontId::proportional(11.0),
+                egui::Color32::WHITE,
+            );
+        });
+}
+
 fn draw_hud_bars(context: &egui::Context, overlay: &Overlay<'_>) {
     use charon_game::status::StatusKind;
     let Some(id) = overlay.player else { return };

@@ -62,6 +62,8 @@ pub enum GameError {
     Entity(EntityError),
     Wand(WandError),
     Vitals(VitalsError),
+    /// 敵の武器・防具の名前が、アイテムの定義にない。
+    UnknownItem(String),
 }
 
 impl std::fmt::Display for GameError {
@@ -76,6 +78,7 @@ impl std::fmt::Display for GameError {
             Self::Entity(e) => write!(f, "敵を生成できません: {e}"),
             Self::Wand(e) => write!(f, "{e}"),
             Self::Vitals(e) => write!(f, "{e}"),
+            Self::UnknownItem(name) => write!(f, "アイテム \"{name}\" は定義されていません"),
         }
     }
 }
@@ -151,6 +154,8 @@ pub struct GameState {
     pub(crate) item_defs: Vec<crate::items::ItemDef>,
     /// 武器の次の攻撃までの tick (近接・遠距離)。
     pub(crate) weapon_cooldown: BTreeMap<EntityId, u16>,
+    /// 敵の自動のスポーンと削除 (仕様 22 §3)。`None` なら、ゲームが `spawn_enemy` で出す。
+    pub spawner: Option<crate::spawner::Spawner>,
 }
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
@@ -171,6 +176,8 @@ pub enum GameEvent {
     BlockBroken(BlockPos, MaterialId),
     /// 近接の攻撃が当たった (仕様 20)。`damage` は防具で軽減したあとの量。
     Melee { attacker: EntityId, target: EntityId, damage: i32 },
+    /// ボスを倒した (ID と、倒れた位置の中心のセル、仕様 22)。`Defeated` も同時に起きる。
+    BossDefeated(EntityId, CellPos),
 }
 
 /// ブロックの設置・破壊の失敗。
@@ -274,6 +281,7 @@ impl GameState {
             dig_to_drops: false,
             item_defs: Vec::new(),
             weapon_cooldown: BTreeMap::new(),
+            spawner: None,
         }
     }
 
@@ -502,6 +510,21 @@ impl GameState {
             }
             None => None,
         };
+        // 持っている武器・防具を、自動装備する (仕様 22 §1)。名前が不正なら、何も作らずに失敗する (ID も使わない)。
+        let equipment = if def.weapon.is_some() || !def.armor.is_empty() {
+            let mut carried = Inventory::new();
+            for name in def.weapon.iter().chain(def.armor.iter()) {
+                let item = defs
+                    .item_id(name, world.materials())
+                    .ok_or_else(|| GameError::UnknownItem(name.clone()))?;
+                carried.add_item(item, 1);
+            }
+            let mut equipment = crate::items::Equipment::new();
+            crate::loadout::auto_equip_best(&mut carried, &mut equipment, defs);
+            Some(equipment)
+        } else {
+            None
+        };
         let vitals = Vitals::new(def.max_hp).map_err(GameError::Vitals)?;
         let id = entities
             .spawn_checked(
@@ -515,6 +538,9 @@ impl GameState {
         self.vitals.insert(id, vitals);
         self.enemies
             .insert(id, Enemy { def: def.clone(), wand, attack_cooldown: 0, contact_cooldown: 0 });
+        if let Some(equipment) = equipment {
+            self.equipment.insert(id, equipment);
+        }
         Ok(id)
     }
 
@@ -625,13 +651,31 @@ impl GameState {
             .filter(|&id| self.vitals.get(id).is_none_or(|v| !v.alive()))
             .collect();
         let mut defeated_at = Vec::new();
+        let mut boss_down: Vec<(EntityId, CellPos)> = Vec::new();
         for &id in &defeated {
             if let Some(entity) = entities.get(id) {
                 let (cx, cy) = center_cell(entity);
                 let to_i32 = |v: i64| i32::try_from(v).unwrap_or(0);
                 defeated_at.push((id, CellPos::new(to_i32(cx), to_i32(cy))));
             }
+            // 戦利品を落とす。ボスなら出来事を足す (仕様 22)。
+            if let (Some(enemy), Some(entity)) = (self.enemies.get(&id), entities.get(id)) {
+                let (x, y) = center16(entity);
+                for (name, count) in &enemy.def.loot {
+                    let name = name.strip_prefix("cells:").unwrap_or(name);
+                    if let Some(material) = world.materials().id(name) {
+                        self.drops.spawn(material, *count, x, y);
+                    }
+                }
+                if enemy.def.boss {
+                    let (cx, cy) = center_cell(entity);
+                    let to_i32 = |v: i64| i32::try_from(v).unwrap_or(0);
+                    boss_down.push((id, CellPos::new(to_i32(cx), to_i32(cy))));
+                }
+            }
             self.enemies.remove(&id);
+            self.equipment.remove(&id);
+            self.weapon_cooldown.remove(&id);
             self.statuses.clear(id);
             self.vitals.remove(id);
             entities.remove(id);
@@ -650,6 +694,9 @@ impl GameState {
         });
         let report = StepReport { hits, defeated, dug };
         self.push_events(&report, &defeated_at, &picked);
+        for (id, pos) in boss_down {
+            self.push_event(GameEvent::BossDefeated(id, pos));
+        }
         Ok(report)
     }
 
@@ -817,7 +864,11 @@ impl GameState {
                     let (tx, _) = center_cell(target);
                     let dx = tx - mx;
                     let toward = dx.signum() as i8;
-                    let horizontal = if def.attack.is_none() {
+                    let ranged = matches!(
+                        self.equipped_weapon(id),
+                        Some((crate::items::WeaponClass::Ranged, _))
+                    );
+                    let horizontal = if def.attack.is_none() && !ranged {
                         // 当たり判定が重なるまで近づく (仕様 10 §8.3)。
                         let reach =
                             ((i64::from(me.width) + i64::from(target.width)) / 2 - 2).max(0);
@@ -880,6 +931,33 @@ impl GameState {
                 ) {
                     self.projectiles.set_grace(pid, id);
                     enemy.attack_cooldown = def.attack_interval;
+                }
+            }
+
+            // 武器 (仕様 22 §2): 近接は目標が箱に入ったら斬る、遠距離は目標へ矢を撃つ。
+            if let Some(target) = &target {
+                let (mcx, mcy) = center16(&me);
+                let (tcx, tcy) = center16(target);
+                let (dx, dy) = ((tcx - mcx) / 16, (tcy - mcy) / 16);
+                match self.equipped_weapon(id) {
+                    Some((crate::items::WeaponClass::Melee, damage))
+                        if dx.abs() <= i64::from(me.width) / 2 + crate::combat::MELEE_REACH - 2
+                            && dy.abs() <= crate::combat::MELEE_HALF_HEIGHT =>
+                    {
+                        let aim = (i32::try_from(dx).unwrap_or(0), 0);
+                        self.try_melee(entities, id, damage, aim);
+                    }
+                    Some((crate::items::WeaponClass::Ranged, damage)) => {
+                        // 重力で落ちる分、遠いほど上を狙う。
+                        let aim = (
+                            i32::try_from(dx * 16).unwrap_or(0),
+                            i32::try_from((dy - dx.abs() / 3) * 16).unwrap_or(0),
+                        );
+                        if let Some(pid) = self.try_shoot_ranged(world, entities, id, damage, aim) {
+                            self.projectiles.set_grace(pid, id);
+                        }
+                    }
+                    _ => {}
                 }
             }
 

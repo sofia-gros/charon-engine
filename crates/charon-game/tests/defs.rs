@@ -36,7 +36,10 @@ fn engine_defaults_load() {
     assert_eq!(names, ["spark", "bomb", "sand_shot", "water_shot", "fireball"], "記載順");
     assert_eq!(defs.spells.id("bomb"), Some(SpellId(1)));
     assert_eq!(defs.wand_names().collect::<Vec<_>>(), ["basic", "bomber", "fire_wand"]);
-    assert_eq!(defs.enemy_names().collect::<Vec<_>>(), ["walker", "shooter"]);
+    assert_eq!(
+        defs.enemy_names().collect::<Vec<_>>(),
+        ["walker", "shooter", "skeleton", "archer", "mage", "golem"]
+    );
 
     // 杖は名前から作れて、定義どおりの呪文・マナを持つ。
     let basic = defs.wand("basic").unwrap();

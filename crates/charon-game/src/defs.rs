@@ -98,6 +98,14 @@ pub struct EnemyDef {
     pub attack_interval: u16,
     /// 当たり判定が重なる目標に、`CONTACT_INTERVAL` ごとに与えるダメージ (仕様 10 §8.1)。
     pub contact_damage: i32,
+    /// 持っている武器のアイテムの名前 (仕様 22 §1)。生まれたときに装備する。
+    pub weapon: Option<String>,
+    /// 持っている防具のアイテムの名前。各枠で、いちばん強いものを装備する (自動装備、仕様 19 §6)。
+    pub armor: Vec<String>,
+    /// 倒したときに落とす材質のセル (名前と数。`cells:` の接頭辞は任意)。
+    pub loot: Vec<(String, u32)>,
+    /// ボスか (体力のバーが出る。倒すと `GameEvent::BossDefeated`)。
+    pub boss: bool,
 }
 
 /// ワイヤーフックの定義 (仕様 10 §9.3)。長さはセル、速さは 1/16 セル / tick。
@@ -187,6 +195,14 @@ struct RawEnemy {
     attack_interval: i64,
     #[serde(default)]
     contact_damage: i64,
+    #[serde(default)]
+    weapon: Option<String>,
+    #[serde(default)]
+    armor: Vec<String>,
+    #[serde(default)]
+    loot: Vec<(String, i64)>,
+    #[serde(default)]
+    boss: bool,
 }
 
 #[derive(Deserialize)]
@@ -467,6 +483,12 @@ impl Definitions {
                 range(&name, raw.attack_interval, 0, 3600, "attack_interval は 0..=3600 です")?;
             let contact =
                 range(&name, raw.contact_damage, 0, 1000, "contact_damage は 0..=1000 です")?;
+            let mut loot = Vec::with_capacity(raw.loot.len());
+            for (item, count) in &raw.loot {
+                let count = range(&name, *count, 1, 99_999, "loot の個数は 1..=99999 です")?;
+                loot.push((item.clone(), count as u32));
+            }
+            range(&name, raw.armor.len() as i64, 0, 8, "armor は 8 個までです")?;
             let attack = match &raw.attack {
                 Some(spell) => {
                     if interval == 0 {
@@ -492,6 +514,10 @@ impl Definitions {
                 attack,
                 attack_interval: interval as u16,
                 contact_damage: contact as i32,
+                weapon: raw.weapon,
+                armor: raw.armor,
+                loot,
+                boss: raw.boss,
             };
             place("敵", &mut self.enemies, |e| &e.name, &mut seen, raw.replace, def)?;
         }
@@ -820,6 +846,21 @@ impl Definitions {
             hash.bytes(&[0]);
             hash.bytes(&e.attack_interval.to_le_bytes());
             hash.bytes(&e.contact_damage.to_le_bytes());
+            // 装備・戦利品・ボスは、あるときだけ流す (なければ、これまでと同じ値)。
+            if e.weapon.is_some() || !e.armor.is_empty() || !e.loot.is_empty() || e.boss {
+                hash.bytes(&[0xEE]);
+                hash.bytes(e.weapon.as_deref().unwrap_or("").as_bytes());
+                for a in &e.armor {
+                    hash.bytes(&[0]);
+                    hash.bytes(a.as_bytes());
+                }
+                for (item, count) in &e.loot {
+                    hash.bytes(&[1]);
+                    hash.bytes(item.as_bytes());
+                    hash.bytes(&count.to_le_bytes());
+                }
+                hash.bytes(&[u8::from(e.boss)]);
+            }
         }
         hash.bytes(&[2]);
         for h in &self.hooks {

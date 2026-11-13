@@ -5,4 +5,22 @@
      sight: 120, attack: None, attack_interval: 0, contact_damage: 5),
     (name: "shooter", width: 16, height: 24, max_hp: 30, walk_speed: 12, jump_speed: 56,
      sight: 160, attack: Some("spark"), attack_interval: 60),
+
+    // ---- 仕様 22: 武器・防具を持つ敵と、ボス ----
+    // 骸骨: 石の剣と、石の兜・胸当て (自動装備)。
+    (name: "skeleton", width: 16, height: 24, max_hp: 45, walk_speed: 12, jump_speed: 56,
+     sight: 120, attack: None, weapon: Some("stone_sword"),
+     armor: ["stone_helmet", "stone_chestplate"], loot: [("stone", 15)]),
+    // 弓兵: 距離をとって、重力で落ちる矢を撃つ。
+    (name: "archer", width: 16, height: 24, max_hp: 30, walk_speed: 12, jump_speed: 56,
+     sight: 160, attack: None, weapon: Some("wood_bow"), loot: [("wood", 20)]),
+    // 魔術師: 火の玉を撃つ (当たると周りが燃える)。火の指輪で、火に強い。
+    (name: "mage", width: 16, height: 24, max_hp: 40, walk_speed: 10, jump_speed: 56,
+     sight: 180, attack: Some("fireball"), attack_interval: 150, armor: ["fire_ring"],
+     loot: [("coal", 8)]),
+    // ゴーレム (ボス): 大きな拳と、石の防具。倒すと、鉱石を落とす。
+    (name: "golem", width: 16, height: 24, max_hp: 600, walk_speed: 8, jump_speed: 40,
+     sight: 220, attack: None, contact_damage: 15, weapon: Some("golem_fist"),
+     armor: ["stone_helmet", "stone_chestplate", "stone_greaves"],
+     loot: [("gold_ore", 40), ("iron_ore", 40)], boss: true),
 ]

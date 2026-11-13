@@ -255,6 +255,8 @@ pub struct AppOptions {
     pub deep_background: Option<DeepBackgroundParams>,
     /// 世界に置く敵。周囲のチャンクが読み込まれたら `GameState::spawn_enemy` で生成する (仕様 10 §8.5)。
     pub enemies: Vec<EnemySpawn>,
+    /// 敵の自動のスポーンと削除 (仕様 22 §3)。`None` なら、`enemies` だけ。
+    pub spawner: Option<charon_game::spawner::Spawner>,
     /// プレイヤーを描く画像 (仕様 06 §10)。`None` なら単色の箱。当たり判定の大きさは変わらない。
     pub player_sprite: Option<SpriteAsset>,
     /// 敵の種類の名前 (`EnemyDef::name`) ごとの画像 (仕様 06 §10.4)。ない種類は単色の箱。
@@ -614,6 +616,7 @@ impl App {
             .definitions
             .as_deref()
             .map_or_else(|| GameState::new(SpellTable::default()), GameState::from_definitions);
+        self.game.spawner = self.options.spawner.clone();
         // 掘る道具のあるゲームでは、支えを失った地形が落ちる (仕様 10 §16)。
         if self.options.player.as_ref().is_some_and(|loadout| loadout.dig.is_some()) {
             self.game.collapse = Some(charon_game::collapse::Collapse::new());

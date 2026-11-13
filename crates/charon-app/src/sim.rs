@@ -181,6 +181,10 @@ impl Sim<'_> {
         self.game
             .step(self.world, self.physics, self.entities, &actions, tick, seed)
             .map_err(|err| err.to_string())?;
+        // 敵の自動のスポーンと削除 (仕様 22 §3)。
+        if let Some(definitions) = self.definitions {
+            self.game.step_spawner(self.world, self.entities, definitions, tick, seed);
+        }
         let started = Instant::now();
         let result = self.physics.step(self.world).map_err(|err| err.to_string());
         *physics_ms += started.elapsed().as_secs_f32() * 1000.0;

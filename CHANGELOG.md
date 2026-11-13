@@ -20,6 +20,12 @@
 - **保存**: `PlayerSave` に `items`・`hotbar`・`selected`・`equipment` (古い保存にはなくてよい)。名前で保存し、知らない名前は読み飛ばす。`GameSave::with_items` / `apply_items`。
 - **壊れるもの**: `PlayerSave` の項目が増えた (構造体を直接書いている場合は `items: vec![]` ほかを足す)。持ち物の種類の上限 (256) は、セル・ブロック・定義の合計になった。`DefinitionFiles` / `ModSource` に `items`・`recipes` が増えた。
 
+### 追加 (敵とボス、M25、仕様 22)
+
+- **敵の定義**: `weapon`・`armor` (自動装備)・`loot`・`boss`。既定の敵に `skeleton`・`archer`・`mage`・`golem` (ボス) を足した。敵は、近接の剣・矢・火の玉で戦い、倒すと戦利品を落とす。`GameEvent::BossDefeated`、体力のバー (ボス)。
+- **`charon_game::spawner`**: `Spawner`・`SpawnRule`・`GameState::step_spawner`。画面の外に敵を出し (深さの規則・上限)、遠い・チャンクの外の敵を消す。`AppOptions::spawner`。冒険の世界は `Spawner::adventure()`。
+- **壊れるもの**: `EnemyDef` に項目が増えた。`GameError`・`GameEvent` にバリアントが増えた。`AppOptions` に `spawner` が増えた。
+
 ### 追加 (冒険の世界、M24、仕様 21)
 
 - **`charon_world::terrain::AdventureGenerator`**: 表面の丘・バイオーム (森・砂漠・氷原)・池・洞窟 (大広間・坑道・立て坑)・鉱石 (石炭・鉄・金)・地下の水と溶岩・ブロックでできたダンジョン (広間・塔・地下墓所) と家・底の境界 (深さ 1200)。
