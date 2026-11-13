@@ -176,6 +176,7 @@ charon-engine/
 |---|---|
 | [ROADMAP](docs/ROADMAP.md) | 設計原則、マイルストーン、タスクと完了条件 |
 | [STATUS](docs/STATUS.md) | マイルストーンごとの状況、確認の範囲、性能の目標と実測 |
+| [ENGINE_CHECKLIST](docs/ENGINE_CHECKLIST.md) | ゲームエンジンとして必要なことの一覧と、現状・足りないもの |
 | [GAME_API](docs/GAME_API.md) | ゲームがエンジンを呼ぶ API (定義の追加・上書き、敵、道具) |
 | [TESTING](docs/TESTING.md) | テストの置き場所、`testkit`、決定性の確認 |
 | [BENCHMARKS](docs/BENCHMARKS.md) | 性能の実測の履歴 |
