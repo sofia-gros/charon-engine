@@ -45,6 +45,7 @@ pub struct GameInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GameError {
     /// 存在しない ID、または同じ ID の重複。
     InvalidAction,
@@ -147,6 +148,7 @@ pub struct GameState {
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GameEvent {
     /// 弾が当たった (敵・キャラクター、または地形)。
     Hit(Hit),

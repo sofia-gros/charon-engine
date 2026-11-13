@@ -22,6 +22,7 @@ pub const MAX_ERRORS: u32 = 10;
 
 /// スクリプトが頼む操作。
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Command {
     Shake(f32),
     Play(SoundEvent),
@@ -244,6 +245,8 @@ impl ScriptGame {
                     GameEvent::Defeated(_, pos) => ("defeated", i64::from(pos.x), i64::from(pos.y)),
                     GameEvent::Pickup(pickup) => ("pickup", i64::from(pickup.count), 0),
                     GameEvent::Dug(dug) => ("dug", i64::from(dug.pos.x), i64::from(dug.pos.y)),
+                    // 新しい種類の出来事は、スクリプトにはまだ渡さない。
+                    _ => continue,
                 };
                 self.call(name, (kind.to_string(), a, b));
             }

@@ -27,6 +27,32 @@ mod timestep;
 mod touch_pad;
 mod ui;
 
+/// ゲームを作る人が使う名前をまとめたもの (仕様 14 §5)。`use charon_app::prelude::*;` で足りる。
+/// ここに載せた名前は、互換性の方針 (`docs/API_POLICY.md`) の「安定」の対象。
+pub mod prelude {
+    pub use charon_core::cell::{Cell, MaterialId};
+    pub use charon_core::coords::CellPos;
+    pub use charon_core::material::MaterialTable;
+    pub use charon_core::query::{RayHit, Stop};
+    pub use charon_core::world::World;
+    pub use charon_game::collapse::Collapse;
+    pub use charon_game::defs::Definitions;
+    pub use charon_game::drops::{Drops, Pickup};
+    pub use charon_game::game::{GameEvent, GameInput, GameState};
+    pub use charon_game::levitation::{Levitation, LevitationDef};
+    pub use charon_game::status::{StatusKind, StatusTable};
+    pub use charon_game::{EntityId, EntityWorld};
+
+    pub use crate::animation::{Clip, Clips, SpriteAsset};
+    pub use crate::api::{Context, Effects, Game, GameLogic};
+    pub use crate::assets::{AssetError, Assets, SpriteSpec};
+    pub use crate::audio::{SoundBank, SoundEvent};
+    pub use crate::camera::CameraFx;
+    pub use crate::script::ScriptGame;
+    pub use crate::settings::{Action, KeyBindings, Settings};
+    pub use crate::{AppOptions, EnemySpawn, PlayerLoadout};
+}
+
 pub use animation::{Clip, Clips, Pose, SpriteAsset};
 pub use player::{KeyCommand, KeyState, follow_origin, try_spawn_player};
 pub use pointer::{PointerEvent, PointerInput};

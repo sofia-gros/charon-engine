@@ -19,6 +19,7 @@ pub const MAX_SOUND_SAMPLES: usize = 44_100 * 240;
 
 /// 読み込みの失敗。
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AssetError {
     /// ファイルを読めない、大きすぎる、名前が不正。
     File(String),

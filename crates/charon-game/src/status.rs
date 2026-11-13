@@ -12,6 +12,7 @@ use crate::{Entity, EntityId};
 
 /// 状態異常の種類。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum StatusKind {
     /// 燃えている: `BURN_INTERVAL` tick ごとに 1 ダメージ。濡れると消える。
     Burning,

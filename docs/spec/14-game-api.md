@@ -25,6 +25,10 @@ pub trait Game: Send {
 
 ロジックが世界やゲーム状態を変えるなら、同期 (Lockstep) のために、乱数は `rng::hash`、入力は同期された値だけを使うこと。画面の揺れ・音は描画側なので自由。
 
+## 5. 安定の範囲 (`prelude`)
+
+`charon_app::prelude` に、ゲームが使う名前をまとめる (世界・材質・エンティティ・ゲーム状態・出来事・状態異常・浮遊・崩落・ドロップ・問い合わせ・`Game`・`Context`・アセット・音・スクリプト・設定・`AppOptions` など)。互換性の方針は [API_POLICY](../API_POLICY.md)。`crates/charon-app/tests/prelude.rs` が、外のクレートの立場から、この名前だけでゲームを書けることを確かめる。増えそうな `enum` は `#[non_exhaustive]` で、`match` には `_ =>` が要る。
+
 ## 4. デモ
 
 `charon-app::demo::DemoGame` が使用例: 敵を倒すと大きく、弾が当たると小さく揺らす。
@@ -33,3 +37,5 @@ pub trait Game: Send {
 |---|---|
 | `game_logic_is_started_once_and_ticked_with_events` | プレイヤーが生まれるまで `on_start` を呼ばない、1 回だけ呼ぶ、毎 tick と出来事が渡る、演出が足される |
 | `effects_are_clamped_and_bounded` | 揺れは 1 で頭打ち、NaN・負は無視、音は上限つき |
+| `a_game_can_be_written_with_the_prelude_alone` | (`tests/prelude.rs`) prelude だけでゲームを書いて、出来事に反応できる |
+| `the_prelude_covers_the_other_building_blocks` | (同上) 設定・カメラ・アセット・スクリプト・浮遊などが prelude から作れる |

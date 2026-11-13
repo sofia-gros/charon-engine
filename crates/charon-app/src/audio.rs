@@ -13,6 +13,7 @@ pub const RATE: u32 = 44_100;
 
 /// 音になる出来事。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SoundEvent {
     Jump,
     Shoot,
