@@ -315,6 +315,10 @@ pub fn run_with_streaming_options(
     app.options = options;
     app.reset_game();
     app.load_settings();
+    // 音声デバイスは起動時に 1 回だけ開く。開けなくても (デバイスなし等) 無音で続ける。
+    if let Err(why) = app.audio.start_device() {
+        eprintln!("音声を無効にします: {why}");
+    }
     app.restart = restart;
     app.background = background;
     app.pending_game_save = read_game_save(&save_root);

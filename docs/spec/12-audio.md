@@ -34,7 +34,13 @@
 | `an_attached_output_receives_one_frame_of_audio_per_pump` / `the_procedural_bank_has_sounds_of_sensible_lengths` | 出力の受け渡しと効果音 |
 | `volumes_are_clamped` | 設定の音量 |
 
-## 4. 未実装
+## 4. 音声デバイスへの出力 (`charon-app`, `cpal`)
 
-- **音声デバイスへの出力** (依存クレートの追加の許可待ち)。今は混ぜた音が鳴らない。
+- `Audio::start_device()` が既定の出力デバイスを開く。ミキサーのレートをデバイスに合わせ (`Mixer::set_rate`)、デバイスのスレッドのコールバックから、共有したミキサーで混ぜる。
+- サンプル形式は `f32` と `i16` に対応。チャンネル数は `fill_channels` で並べる (モノラルは平均、3 以上は左右だけ)。
+- デバイスがない・開けないときは `Err` を返し、起動は無音で続ける。ミキサーは共有 (`Arc<Mutex>`) で、ロックが毒になっても使い続ける。
+- 追加の検査: `channels_are_arranged_for_the_device` / `the_audio_device_opens_or_reports_why_not` / `changing_the_rate_keeps_sound_speed`。実際に聞こえるかは耳で確かめる (未確認)。
+
+## 5. 未実装
+
 - 音楽の再生・ループ区間・フェード、空間音 (位置による音量・パン)、OGG などの圧縮形式。

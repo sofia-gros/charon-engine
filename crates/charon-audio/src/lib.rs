@@ -272,6 +272,12 @@ impl Mixer {
         self.rate
     }
 
+    /// 出力のサンプルレートを変える (デバイスに合わせる)。鳴っている音は止める。
+    pub fn set_rate(&mut self, rate: u32) {
+        self.rate = rate.max(1);
+        self.voices.clear();
+    }
+
     /// 全体・効果音・音楽の音量 (0.0..=1.0 に収める。NaN は 0)。
     pub fn set_volumes(&mut self, master: f32, sfx: f32, music: f32) {
         let clean = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
@@ -470,6 +476,24 @@ mod tests {
         let (music, _) =
             level(PlayParams { bus: Bus::Music, ..Default::default() }, (1.0, 1.0, 0.0));
         assert_eq!(music, 0.0, "音楽の音量 0 なら音楽は無音");
+    }
+
+    #[test]
+    fn changing_the_rate_keeps_sound_speed() {
+        // 8 kHz の音を 16 kHz の出力で鳴らすと、同じ長さ (秒) で鳴り終わる。
+        let sound = Sound::new(8_000, vec![0.5; 800]);
+        let mut mixer = Mixer::new(8_000);
+        mixer.set_rate(16_000);
+        assert_eq!(mixer.rate(), 16_000);
+        mixer.play(&sound, PlayParams::default());
+        let mut out = vec![0.0; 2 * 1_000];
+        mixer.render(&mut out);
+        assert!(mixer.is_playing(VoiceId(1)), "0.1 秒の音は 1600 フレームで鳴り終わる");
+        mixer.render(&mut out);
+        assert_eq!(mixer.active(), 0);
+        mixer.play(&sound, PlayParams::default());
+        mixer.set_rate(0);
+        assert_eq!((mixer.rate(), mixer.active()), (1, 0), "レートを変えると鳴っている音は止まる");
     }
 
     #[test]

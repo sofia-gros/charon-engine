@@ -4,6 +4,8 @@
 //! 音は `charon-audio` のミキサーで混ぜる。音声デバイスへの出力 (`AudioOutput`) は、デバイス用の依存クレートで実装して
 //! `Audio::attach_output` で渡す (このクレートの既定は出力なし = 混ぜるだけ)。
 
+use std::sync::{Arc, Mutex};
+
 use charon_audio::{AudioOutput, Bus, Mixer, PlayParams, Shape, Sound, VoiceId};
 
 /// 混ぜる音の出力レート (Hz)。
@@ -81,18 +83,45 @@ impl SoundBank {
     }
 }
 
+/// ミキサーを、音声デバイスの別スレッドと共有する。ロックが毒になっていても (別スレッドが落ちても) 使い続ける。
+type SharedMixer = Arc<Mutex<Mixer>>;
+
+fn lock(mixer: &SharedMixer) -> std::sync::MutexGuard<'_, Mixer> {
+    mixer.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// 混ぜたステレオ (左右交互) を、デバイスのチャンネル数に並べ直す: モノラルは平均、3 チャンネル以上は左右だけで残りは無音。
+pub fn fill_channels(stereo: &[f32], channels: usize, out: &mut [f32]) {
+    let channels = channels.max(1);
+    for (frame, pair) in out.chunks_mut(channels).zip(stereo.chunks_exact(2)) {
+        match frame.len() {
+            1 => frame[0] = (pair[0] + pair[1]) * 0.5,
+            _ => {
+                frame[0] = pair[0];
+                frame[1] = pair[1];
+                for extra in &mut frame[2..] {
+                    *extra = 0.0;
+                }
+            }
+        }
+    }
+}
+
 /// 出来事を音にして、混ぜる。
 pub struct Audio {
-    mixer: Mixer,
+    mixer: SharedMixer,
     bank: SoundBank,
     previous: Snapshot,
     dig_voice: Option<VoiceId>,
     output: Option<Box<dyn AudioOutput>>,
+    /// 音声デバイスの出力ストリーム (開いている間、鳴る)。
+    #[cfg(not(target_arch = "wasm32"))]
+    device: Option<cpal::Stream>,
 }
 
 impl std::fmt::Debug for Audio {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Audio").field("active", &self.mixer.active()).finish_non_exhaustive()
+        f.debug_struct("Audio").field("active", &lock(&self.mixer).active()).finish_non_exhaustive()
     }
 }
 
@@ -105,16 +134,18 @@ impl Default for Audio {
 impl Audio {
     pub fn new() -> Self {
         Self {
-            mixer: Mixer::new(RATE),
+            mixer: Arc::new(Mutex::new(Mixer::new(RATE))),
             bank: SoundBank::procedural(RATE),
             previous: Snapshot::default(),
             dig_voice: None,
             output: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            device: None,
         }
     }
 
     pub fn set_volumes(&mut self, master: f32, sfx: f32, music: f32) {
-        self.mixer.set_volumes(master, sfx, music);
+        lock(&self.mixer).set_volumes(master, sfx, music);
     }
 
     /// 効果音を差し替える。
@@ -128,31 +159,85 @@ impl Audio {
     }
 
     pub fn active_voices(&self) -> usize {
-        self.mixer.active()
+        lock(&self.mixer).active()
+    }
+
+    /// 既定の音声デバイスを開いて、鳴らし始める (仕様 12 §5)。デバイスのサンプルレートにミキサーを合わせる。
+    /// デバイスがない・開けないときは `Err` で、そのまま混ぜるだけで続けられる。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn start_device(&mut self) -> Result<(), String> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        let host = cpal::default_host();
+        let device = host.default_output_device().ok_or("音声の出力デバイスがありません")?;
+        let config = device.default_output_config().map_err(|e| e.to_string())?;
+        let rate = config.sample_rate();
+        let channels = usize::from(config.channels());
+        {
+            let mut mixer = lock(&self.mixer);
+            mixer.set_rate(rate);
+        }
+        let shared = Arc::clone(&self.mixer);
+        let mut scratch: Vec<f32> = Vec::new();
+        let error = |e: cpal::Error| eprintln!("音声の出力でエラー: {e}");
+        let stream_config: cpal::StreamConfig = config.clone().into();
+        let stream = match config.sample_format() {
+            cpal::SampleFormat::F32 => device.build_output_stream(
+                stream_config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    render_into(&shared, &mut scratch, channels, data);
+                },
+                error,
+                None,
+            ),
+            cpal::SampleFormat::I16 => device.build_output_stream(
+                stream_config,
+                move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                    let mut floats = vec![0.0f32; data.len()];
+                    render_into(&shared, &mut scratch, channels, &mut floats);
+                    for (out, value) in data.iter_mut().zip(floats) {
+                        *out = (value.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+                    }
+                },
+                error,
+                None,
+            ),
+            other => return Err(format!("対応しないサンプル形式です: {other}")),
+        }
+        .map_err(|e| e.to_string())?;
+        stream.play().map_err(|e| e.to_string())?;
+        self.device = Some(stream);
+        Ok(())
+    }
+
+    /// 音声デバイスを開いているか。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn device_open(&self) -> bool {
+        self.device.is_some()
     }
 
     /// 今のフレームの状態から出来事を決めて、音を鳴らす。
     pub fn update(&mut self, now: Snapshot) -> Vec<SoundEvent> {
         let events = events(&self.previous, &now);
+        let mut mixer = lock(&self.mixer);
         for event in &events {
             let play = |mixer: &mut Mixer, sound: &Sound, volume: f32| {
                 mixer.play(sound, PlayParams { volume, bus: Bus::Sfx, ..Default::default() })
             };
             match event {
                 SoundEvent::Jump => {
-                    play(&mut self.mixer, &self.bank.jump, 0.5);
+                    play(&mut mixer, &self.bank.jump, 0.5);
                 }
                 SoundEvent::Shoot => {
-                    play(&mut self.mixer, &self.bank.shoot, 0.6);
+                    play(&mut mixer, &self.bank.shoot, 0.6);
                 }
                 SoundEvent::HookAnchor => {
-                    play(&mut self.mixer, &self.bank.anchor, 0.7);
+                    play(&mut mixer, &self.bank.anchor, 0.7);
                 }
                 SoundEvent::Pickup => {
-                    play(&mut self.mixer, &self.bank.pickup, 0.4);
+                    play(&mut mixer, &self.bank.pickup, 0.4);
                 }
                 SoundEvent::DigStart => {
-                    self.dig_voice = self.mixer.play(
+                    self.dig_voice = mixer.play(
                         &self.bank.dig,
                         PlayParams {
                             volume: 0.35,
@@ -164,7 +249,7 @@ impl Audio {
                 }
                 SoundEvent::DigStop => {
                     if let Some(id) = self.dig_voice.take() {
-                        self.mixer.stop(id);
+                        mixer.stop(id);
                     }
                 }
             }
@@ -175,7 +260,7 @@ impl Audio {
 
     /// `out` (ステレオ) に混ぜる。
     pub fn render(&mut self, out: &mut [f32]) {
-        self.mixer.render(out);
+        lock(&self.mixer).render(out);
     }
 
     /// 出力があれば、1 フレーム (1/60 秒) 分を混ぜて渡す。
@@ -183,9 +268,17 @@ impl Audio {
         let Some(output) = self.output.as_mut() else { return };
         let frames = (u64::from(output.rate()) / 60) as usize;
         let mut buffer = vec![0.0; frames * 2];
-        self.mixer.render(&mut buffer);
+        lock(&self.mixer).render(&mut buffer);
         output.submit(&buffer);
     }
+}
+
+/// デバイスのコールバックから呼ぶ: ミキサーで混ぜて、デバイスのチャンネル数に並べる。
+fn render_into(mixer: &SharedMixer, scratch: &mut Vec<f32>, channels: usize, out: &mut [f32]) {
+    let frames = out.len() / channels.max(1);
+    scratch.resize(frames * 2, 0.0);
+    lock(mixer).render(scratch);
+    fill_channels(scratch, channels, out);
 }
 
 #[cfg(test)]
@@ -312,5 +405,44 @@ mod tests {
             assert!((lo..=hi).contains(&seconds), "{name}: {seconds}");
             assert!(sound.samples.iter().any(|v| v.abs() > 0.1), "{name} は無音ではない");
         }
+    }
+
+    #[test]
+    fn channels_are_arranged_for_the_device() {
+        let stereo = [0.2, 0.6, -0.4, 0.4];
+        let mut mono = [9.0; 2];
+        fill_channels(&stereo, 1, &mut mono);
+        assert_eq!(mono, [0.4, 0.0]);
+        let mut two = [9.0; 4];
+        fill_channels(&stereo, 2, &mut two);
+        assert_eq!(two, stereo);
+        let mut six = [9.0; 12];
+        fill_channels(&stereo, 6, &mut six);
+        assert_eq!(&six[..6], &[0.2, 0.6, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(&six[6..], &[-0.4, 0.4, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// 音声デバイスがあれば開いて、効果音を鳴らしても落ちない。なければ `Err` で、混ぜるだけで続けられる。
+    /// 実際に聞こえるかは、この検査では確かめられない (耳で確かめる)。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_audio_device_opens_or_reports_why_not() {
+        let mut audio = Audio::new();
+        match audio.start_device() {
+            Ok(()) => {
+                assert!(audio.device_open());
+                audio.update(Snapshot { grounded: true, ..Default::default() });
+                audio.update(Snapshot { projectiles: 1, grounded: true, ..Default::default() });
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(why) => {
+                assert!(!why.is_empty());
+                assert!(!audio.device_open());
+            }
+        }
+        // どちらでも、混ぜるのは続けられる。
+        audio.update(Snapshot { items: 5, grounded: true, ..Default::default() });
+        let mut out = vec![0.0; 2 * 1_000];
+        audio.render(&mut out);
     }
 }
