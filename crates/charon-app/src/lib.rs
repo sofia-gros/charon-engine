@@ -6,6 +6,7 @@ pub mod assets;
 pub mod audio;
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
+mod build_input;
 pub mod camera;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod demo;
@@ -287,6 +288,10 @@ pub struct PlayerLoadout {
     pub dig: Option<String>,
     /// 浮遊 (ジャンプのボタンを押している間、燃料で上へ、仕様 10 §18)。
     pub levitation: Option<charon_game::levitation::LevitationDef>,
+    /// 最初に持つアイテム (名前と数、仕様 19 §1 の名前)。知らない名前は報告して読み飛ばす。
+    pub items: Vec<(String, u32)>,
+    /// ホットバーの先頭から順に並べるアイテムの名前 (最大 10)。
+    pub hotbar: Vec<String>,
 }
 
 /// `Main Menu` の `Singleplayer` / `Random Seed` で作り直した、新しい世界の一式。
@@ -459,6 +464,12 @@ struct App {
     gestures: TouchGestures,
     /// 画面の仮想スティックとボタン (仕様 10 §10)。
     touch_pad: TouchPad,
+    /// 使うボタンの最後の倒れ (千分率)。
+    cursor_tilt: (i32, i32),
+    /// 次にブロックなどを使える世界の tick。
+    use_ready: u64,
+    /// フックを張りっぱなしにしているか (投げてから、切り離すまで)。数えている tick は、ロープが出るまでの猶予。
+    hook_latch: Option<u8>,
     /// デスクトップのゲームパッド (仕様 10 §11.2)。使えない環境では `None`。
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     gamepad: Option<gamepad::Gamepad>,
@@ -531,6 +542,9 @@ impl App {
             brush_material,
             pointer: PointerInput::default(),
             gestures: TouchGestures::default(),
+            cursor_tilt: (0, 0),
+            use_ready: 0,
+            hook_latch: None,
             touch_pad: {
                 let mut pad = TouchPad::default();
                 // Android はタッチが主な操作なので、最初から出す。
@@ -588,44 +602,6 @@ impl App {
         self.settings.sanitize();
         if let Err(err) = self.settings.write(&path) {
             eprintln!("{err}");
-        }
-    }
-
-    /// `USE` ボタンの描画モード: 選んでいる材質 (または建築) を、ポインターのある場所へ置く (仕様 10 §11)。
-    /// 借りている項目を個別に受け取るので、描画の途中でも呼べる。
-    #[allow(clippy::too_many_arguments)]
-    fn touch_place(
-        world: &mut World,
-        background: &mut BackgroundWorld,
-        operations: &mut Vec<BrushOp>,
-        controls: &ui::Controls,
-        player: &charon_game::Entity,
-        offset: [f32; 2],
-        zoom: f32,
-        origin: [f32; 2],
-    ) {
-        let cx = (player.x16.div_euclid(16) + i64::from(player.width) / 2) as f32 + 0.5 + offset[0];
-        let cy =
-            (player.y16.div_euclid(16) + i64::from(player.height) / 2) as f32 + 0.5 + offset[1];
-        let event =
-            PointerEvent::Move { id: 0, pos: [(cx - origin[0]) * zoom, (cy - origin[1]) * zoom] };
-        let (selected, radius) = (controls.selected, controls.brush_radius);
-        if let Some(layer) = controls.build_layer {
-            if let Err(err) =
-                apply_build_pointer(world, background, layer, selected, event, zoom, origin)
-            {
-                eprintln!("建築に失敗: {err}");
-            }
-        } else {
-            operations.extend(apply_pointer(
-                world,
-                selected,
-                controls.rainbow,
-                event,
-                zoom,
-                origin,
-                radius,
-            ));
         }
     }
 
@@ -983,13 +959,6 @@ impl App {
             if let Some(gui) = self.gui.as_mut() {
                 gui.controls.origin = origin;
             }
-            // 画面のポインターの描画のために、プレイヤーの画面の位置を知らせる。
-            let player_screen = self.player.and_then(|id| self.entities.get(id)).map(|p| {
-                let cx = (p.x16.div_euclid(16) + i64::from(p.width) / 2) as f32 + 0.5;
-                let cy = (p.y16.div_euclid(16) + i64::from(p.height) / 2) as f32 + 0.5;
-                [(cx - origin[0]) * zoom, (cy - origin[1]) * zoom]
-            });
-            self.touch_pad.set_view(zoom, player_screen);
         }
         // キー割り当ては、メニューで変えられる。入力に反映する (仕様 10 §14)。
         if let Some(gui) = self.gui.as_ref()
@@ -1042,33 +1011,76 @@ impl App {
         if self.options.follow_player && !self.free_camera {
             // ゲームパッドのボタン: 向きは、狙いのスティックがあればそれ、なければ歩いている向きの少し上。
             let (button_fire, button_tool) = self.keys.pad_buttons();
-            // `USE` (画面右下) は、武器モードでは武器、描画モードではブラシを、ポインターの方へ使う。
-            let fire = pad.fire || button_fire || (pad.use_item && !paint);
-            let tool = pad.tool || button_tool;
-            if pad.use_item
-                && paint
-                && let (Some(gui), Some(player), Some(offset)) = (
-                    self.gui.as_ref(),
-                    self.player.and_then(|id| self.entities.get(id)),
-                    self.touch_pad.pointer_offset(),
-                )
+            // 持ち物の画面からの操作 (仕様 19)。
+            if let (Some(gui), Some(id), Some(defs)) =
+                (self.gui.as_mut(), self.player, self.options.definitions.as_deref())
+                && !gui.controls.inv_commands.is_empty()
             {
-                Self::touch_place(
-                    &mut self.world,
-                    &mut self.background,
-                    &mut self.operations,
-                    &gui.controls,
-                    player,
-                    offset,
-                    zoom,
-                    origin,
+                let commands = std::mem::take(&mut gui.controls.inv_commands);
+                build_input::apply_inventory_commands(
+                    &mut self.game,
+                    &self.world,
+                    &self.entities,
+                    id,
+                    defs,
+                    commands,
                 );
             }
-            action.fire |= fire && !paint;
+            // インベントリの開閉・ホットバーの選択・カーソルと使用 (仕様 18)。
+            if pad.toggle_inventory
+                && let Some(gui) = self.gui.as_mut()
+            {
+                gui.controls.inventory_open = !gui.controls.inventory_open;
+            }
+            let mouse_cell = pointer_cell(self.cursor, zoom, origin);
+            let built = build_input::build_frame(
+                build_input::BuildCtx {
+                    world: &mut self.world,
+                    entities: &mut self.entities,
+                    game: &mut self.game,
+                    touch_pad: &mut self.touch_pad,
+                    player: self.player,
+                    defs: self.options.definitions.clone(),
+                    cursor_tilt: &mut self.cursor_tilt,
+                    use_ready: &mut self.use_ready,
+                },
+                &pad,
+                self.weapon_down,
+                mouse_cell,
+                zoom,
+                origin,
+            );
+            // 使うボタンは、武器を選んでいるときは武器を撃つ (向きは使うボタンの倒れ)。
+            let fire = pad.fire || button_fire || (pad.use_item && built.weapon && !paint);
+            let tool = pad.tool || button_tool;
+            // フック (仕様 18 §2.1): フックのスティックを離した向きへ投げて、切り離す (タップ・ジャンプ) まで張ったままにする。
+            let mut latched_tool = false;
+            if let Some(aim) = pad.hook_throw {
+                self.hook_latch = Some(0);
+                action.aim = aim;
+                latched_tool = true;
+            } else if pad.hook_detach || pad.jump {
+                self.hook_latch = None;
+            }
+            if let Some(age) = self.hook_latch {
+                let rope = self.player.is_some_and(|id| self.game.rope(id).is_some());
+                if rope || age < 6 {
+                    self.hook_latch = Some(age.saturating_add(1));
+                    latched_tool = true;
+                } else {
+                    // 投げたロープが外れて消えた。
+                    self.hook_latch = None;
+                }
+            }
+            let tool = tool || latched_tool;
+            if !built.weapon {
+                action.fire = false;
+            }
+            action.fire |= fire && !paint && built.weapon;
             action.tool |= tool;
             let dig = pad.dig || self.keys.dig_held() || self.dig_down;
             action.dig |= dig;
-            if fire || tool || dig {
+            if (fire || dig || (tool && pad.hook_throw.is_none())) && pad.hook_throw.is_none() {
                 action.aim = pad.aim.unwrap_or((i32::from(self.facing) * 1000, -300));
             }
         }
@@ -1261,6 +1273,7 @@ impl App {
                 player: self.player,
                 pad: (self.options.follow_player && self.touch_pad.visible())
                     .then_some(&self.touch_pad),
+                defs: self.options.definitions.as_deref(),
             };
             let action = gui.render(gpu, window, &scene, &view, stats);
             if action.is_some() {
@@ -1754,13 +1767,9 @@ impl ApplicationHandler for App {
         {
             let at = [touch.location.x as f32, touch.location.y as f32];
             if self.options.follow_player {
-                // 1 本指のなぞりは、ポインターを動かす (仕様 10 §11)。ピンチやスワイプのカメラ操作はない
-                // (ズームはボタン、カメラはプレイヤーを少し遅れて追う)。プレイヤーのいるゲームでは、画面の
-                // 1 本指はブラシや武器のボタンにならない (`USE` ボタンを使う)。新しく触れた指は、UI が使っていれば
-                // 渡さない。動かす・離すは、UI が消費しても渡す (取りこぼすとポインターの指が詰まる)。
+                // 部品の外の 1 本指は、何も動かさない (仕様 18: 画面を直接タップするカーソルはない)。
+                // 新しく触れた指は、UI が使っていれば渡さない。
                 if !gui_consumed || touch.phase != winit::event::TouchPhase::Started {
-                    let zoom = self.gui.as_ref().map_or(4.0, |gui| gui.controls.zoom);
-                    self.touch_pad.pointer_update(touch.id, touch.phase, at, zoom, false);
                     gesture = true;
                 }
             } else if let Some(gui) = self.gui.as_mut() {

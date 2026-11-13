@@ -40,6 +40,8 @@ pub(super) struct Controls {
     pub(super) pause_menu: bool,
     /// 持ち物の画面が開いている。
     pub(super) inventory_open: bool,
+    /// 持ち物の画面からの操作。App が次のフレームでゲームに反映する。
+    pub(super) inv_commands: Vec<InvCommand>,
     /// キー割り当ての変更中の操作 (次に押したキーを割り当てる)。
     pub(super) rebinding: Option<Action>,
     /// キー割り当て (画面に出す・変更する。アプリの入力と同期する)。
@@ -52,6 +54,21 @@ pub(super) struct Controls {
     pub(super) web_save: bool,
     #[cfg(target_arch = "wasm32")]
     pub(super) web_status: String,
+}
+
+/// 持ち物の画面の操作 (仕様 19)。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum InvCommand {
+    /// ホットバーの枠を選ぶ。
+    Select(usize),
+    /// 枠にアイテムを置く。
+    Pin(usize, charon_game::items::ItemId),
+    Equip(charon_game::items::ItemId),
+    Unequip(charon_game::items::EquipSlot),
+    /// レシピの名前。
+    Craft(String),
+    /// 材質のセル 64 個から、ブロックを 1 個。
+    CraftBlock(MaterialId),
 }
 
 impl Controls {
@@ -76,6 +93,7 @@ impl Controls {
             sim_distance: 0,
             pause_menu: false,
             inventory_open: false,
+            inv_commands: Vec::new(),
             rebinding: None,
             bindings: KeyBindings::default(),
             #[cfg(not(target_arch = "wasm32"))]

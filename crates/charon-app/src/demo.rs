@@ -62,6 +62,16 @@ pub(crate) fn demo_loadout() -> PlayerLoadout {
         hook: Some("grapple".to_owned()),
         dig: Some("laser".to_owned()),
         levitation: Some(charon_game::levitation::LevitationDef::default()),
+        items: vec![
+            ("wood_pickaxe".to_owned(), 1),
+            ("wood_sword".to_owned(), 1),
+            ("block:stone".to_owned(), 30),
+            ("block:wood".to_owned(), 20),
+            ("heal_potion".to_owned(), 3),
+        ],
+        hotbar: ["wood_pickaxe", "block:stone", "block:wood", "wood_sword", "heal_potion"]
+            .map(str::to_owned)
+            .to_vec(),
     }
 }
 

@@ -96,3 +96,18 @@
 | `hotbar_selection_and_inventory_toggle` | 枠をタップで選ぶ、`...` で開閉 |
 | `multi_touch_does_not_stick` | 3 本の指を使っても、押されたままにならない (今のテストを引き継ぐ) |
 | `terraria_layout_matches_the_reference_positions` | 各部品の位置が、この仕様の表のとおり (3 つの画面の大きさ) |
+
+## 7. 実装の状態 (M22、2026-11-13)
+
+自動テストで確かめたもの (実機のタッチ・見た目は**未確認**。実機で触って、配置・大きさ・反応を直す):
+
+| 仕様 | 実装 | テスト |
+|---|---|---|
+| §1 配置 | `touch_pad::Layout` (左スティック固定・使うボタン・フックのスティック・ジャンプ・ズーム・格子・`+`・ホットバー横一列) | `terraria_layout_matches_the_reference_positions` |
+| §1 左スティック | 横で歩く。上へ倒してもジャンプしない | `left_stick_is_fixed_and_walks`・`left_stick_up_does_not_jump` |
+| §2 カーソル | `charon_game::cursor` (届く 6 ブロックの円・ブロックの格子・スマートカーソル・使える場所の判定) | `tests/cursor.rs` (7 件) |
+| §2.1 フック | 傾けて離すと 1 フレームだけ向きが出る。タップで切り離し。App が張りっぱなしにして、タップ・ジャンプで切る | `hook_stick_*` |
+| §2 使う | `GameState::use_selected` (置く・壊す・消耗品)。App の `build_input::build_frame` (タッチ・マウス共通、間隔 6 tick) | `use_selected_places_breaks_and_consumes` |
+| §4 画面 | ホットバー・選んだアイテムの名前・カーソルの枠・持ち物の画面 (ホットバー・装備・一覧・`Craft`・ブロック化) | `inventory_commands_craft_pin_equip_and_select` |
+
+**簡略にしたもの**: 体力・マナは、今までの小さなバー (ハート・星は作らない)。フックの巻き取りは、張った間は自動 (Terraria と同じ)。スマートカーソルの「最初に当たるブロック」は、向きの直線上 (§5 の案)。ホットバーの枠は 5 つ + `...`。マウスでは、左ボタンでカーソルの場所に使う (ブロック・つるはし・消耗品を選んでいるとき)。

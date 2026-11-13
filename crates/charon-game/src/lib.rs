@@ -2,6 +2,7 @@
 
 pub mod blocks;
 pub mod collapse;
+pub mod cursor;
 pub mod defs;
 pub mod dig;
 pub mod drops;

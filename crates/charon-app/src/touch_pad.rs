@@ -1,10 +1,9 @@
-//! 仕様 10 §11: 画面のタッチ操作 (Terraria 型)。ゲームパッドと同じ `PadOutput` を作る。
+//! 仕様 18: 画面のタッチ操作 (Terraria Android 型)。ゲームパッドと同じ `PadOutput` を作る。
 //!
-//! - 左下の 1/4 に、**浮動の移動パッド** (触れた場所が中心。横にずらすと歩く、上へずらすとジャンプ)。
-//! - **ポインター**: 1 本指で、パッドとボタンの外をなぞると、プレイヤーを中心にした円の中でポインターが動く。
-//!   指のずれ (画素) ÷ 拡大率 (セル) だけ動き、指を離しても残る。2 本指になったら、ポインターは動かさない (カメラ操作)。
-//! - 右下の**ボタン**: `USE` (武器 / ブラシ)・`HOOK` (右手の道具)・`DIG` (掘る道具)・`JUMP`・`PAINT` (武器 / ブラシの切り替え)。
-//!   `USE`・`HOOK`・`DIG` は、ポインターのある方へ使う。
+//! - 左下の隅に**固定の左スティック** (横で歩く。上へ倒してもジャンプしない)。
+//! - 右下の**使うボタン**: 大きな円で、**スティック**として動く。倒したずれでカーソルが動き、触れている間、選んでいるアイテムを使う。
+//! - 使うボタンの左隣の**フックのスティック**: 傾けて離した向きへ、フックを飛ばす。傾けない (タップ) と、切り離す。
+//! - **ジャンプ** (`^^`)・**ズーム** (拡大・縮小)・**インベントリ**の格子・**スマートカーソルの切り替え** (`+`)・**ホットバー** (横一列)。
 
 use std::collections::BTreeMap;
 
@@ -21,13 +20,25 @@ pub(crate) struct PadOutput {
     pub tool: bool,
     /// 掘る道具 (仕様 10 §12)。
     pub dig: bool,
-    /// `USE` ボタン: 武器モードでは武器、描画モードではブラシを、ポインターの場所へ使う。
+    /// 使うボタンに触れている: 選んでいるアイテムを、カーソルの場所へ使う。
     pub use_item: bool,
     pub aim: Option<(i32, i32)>,
-    /// このフレームに、武器 / ブラシの切り替えが押された。
+    /// このフレームに、武器 / ブラシの切り替えが押された (ゲームパッド)。
     pub toggle_paint: bool,
     /// ズームのボタン: 1 = 拡大、-1 = 縮小 (押している間)。
     pub zoom: i8,
+    /// 使うボタンのつまみの倒れ (半径の千分率、-1000..=1000)。使うボタンに触れている間だけ。
+    pub cursor_tilt: Option<(i32, i32)>,
+    /// フックのスティックを離した: 離した向きへ飛ばす (このフレームだけ)。
+    pub hook_throw: Option<(i32, i32)>,
+    /// フックのスティックを傾けずに離した (タップ): 切り離す (このフレームだけ)。
+    pub hook_detach: bool,
+    /// フックのスティックを傾けている間の向き (矢印の描画用)。
+    pub hook_aim: Option<(i32, i32)>,
+    /// ホットバーの枠がタップされた (このフレームだけ)。
+    pub select_slot: Option<u8>,
+    /// インベントリの格子が押された (このフレームだけ)。
+    pub toggle_inventory: bool,
 }
 
 impl PadOutput {
@@ -43,47 +54,43 @@ impl PadOutput {
             aim: other.aim.or(self.aim),
             toggle_paint: self.toggle_paint || other.toggle_paint,
             zoom: if other.zoom != 0 { other.zoom } else { self.zoom },
+            cursor_tilt: other.cursor_tilt.or(self.cursor_tilt),
+            hook_throw: other.hook_throw.or(self.hook_throw),
+            hook_detach: self.hook_detach || other.hook_detach,
+            hook_aim: other.hook_aim.or(self.hook_aim),
+            select_slot: other.select_slot.or(self.select_slot),
+            toggle_inventory: self.toggle_inventory || other.toggle_inventory,
         }
     }
 }
 
-/// ジャンプとみなす、上向きのずれ (パッドの半径に対する割合)。
-const SWIPE_UP: f32 = 0.7;
-/// 歩き始めるずれ (パッドの半径に対する割合)。
+/// 歩き始める倒れ (スティックの半径に対する割合)。
 const WALK_ZONE: f32 = 0.3;
-/// 狙いの既定の向き (右上)。ポインターをまだ動かしていないとき、ボタンがこの向きへ使う。
+/// フックのスティックを「傾けた」とみなす倒れ (半径に対する割合)。
+const HOOK_TILT: f32 = 0.3;
+/// 狙いの既定の向き (右上)。使うボタンをまだ倒していないとき。
 const DEFAULT_AIM: (i32, i32) = (1000, -400);
-/// ポインターがこれより近いとき (セル) は、向きを決められないので既定の向きにする。
-const AIM_MIN: f32 = 0.5;
-/// ポインターが動ける範囲 (画面の短い辺に対する割合)。
-const POINTER_REACH: f32 = 0.45;
+/// ホットバーに見える枠の数 (残りは `...` からインベントリで)。
+pub(crate) const HOTBAR_VISIBLE: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Owner {
     Stick,
-    Jump,
-    Hook,
-    Dig,
-    Paint,
     Use,
+    Hook,
+    Jump,
     ZoomIn,
     ZoomOut,
+    Inventory,
+    Smart,
+    Slot(u8),
+    More,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Touch {
     owner: Owner,
-    start: [f32; 2],
     now: [f32; 2],
-}
-
-/// ポインターを動かしている指。
-#[derive(Clone, Copy, Debug)]
-struct PointerTouch {
-    id: u64,
-    start: [f32; 2],
-    /// 触れたときのポインターの位置 (プレイヤーからのセル)。
-    base: [f32; 2],
 }
 
 #[derive(Debug, Default)]
@@ -91,34 +98,55 @@ pub(crate) struct TouchPad {
     viewport: [f32; 2],
     visible: bool,
     touches: BTreeMap<u64, Touch>,
-    toggle: bool,
     /// 部品全体の大きさの倍率 (0 は 1 とみなす)。
     scale: f32,
-    /// ポインターの位置 (プレイヤーの中心からのセル)。まだ動かしていなければ `None`。
-    pointer: Option<[f32; 2]>,
-    pointer_touch: Option<PointerTouch>,
-    /// 描画用: 拡大率と、プレイヤーの中心の画面の位置 (画素)。
-    zoom: f32,
-    player_screen: Option<[f32; 2]>,
+    /// スマートカーソルが入っているか。
+    smart: bool,
+    /// このフレームだけ立つ出来事。
+    slot_tap: Option<u8>,
+    inventory_tap: bool,
+    hook_release: Option<HookRelease>,
+    /// 使うボタンを最後に倒した向き (離してもカーソルの向きとして残る)。
+    last_aim: Option<(i32, i32)>,
+    /// 描画用のカーソルの枠。
+    cursor: Option<CursorView>,
 }
 
-/// 画面の大きさ (ピクセル) から決まる配置。
+/// カーソルの枠 (画面の画素)と状態。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CursorView {
+    /// `[左, 上, 右, 下]`。
+    pub rect: [f32; 4],
+    pub state: charon_game::cursor::CursorState,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HookRelease {
+    tilt: [f32; 2],
+}
+
+/// 画面の大きさ (ピクセル) から決まる配置 (仕様 18 §1)。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Layout {
-    /// ボタンの半径。
+    /// 基準の長さ `u`。
     pub unit: f32,
-    /// 移動パッドの領域 (左下の 1/4): `[左, 上, 右, 下]`。
-    pub stick_zone: [f32; 4],
-    /// 移動パッドの描く半径 (ずらせる最大の距離)。
+    /// 左スティックの中心と半径 (`3u`)。
+    pub stick: [f32; 2],
     pub stick_radius: f32,
+    /// 使うボタン (中心、半径 `2.2u`)。
     pub use_button: [f32; 2],
-    pub jump: [f32; 2],
+    pub use_radius: f32,
+    /// フックのスティック (中心、半径 `1.1u`)。
     pub hook: [f32; 2],
-    pub dig: [f32; 2],
-    pub paint: [f32; 2],
-    /// ズームのボタン (拡大・縮小)。半径は `0.8 unit`。
+    pub hook_radius: f32,
+    pub jump: [f32; 2],
+    pub jump_radius: f32,
+    /// ズームのボタン。半径は `0.8u`。
     pub zoom_in: [f32; 2],
     pub zoom_out: [f32; 2],
+    /// インベントリの格子と、スマートカーソルの `+`。半径は `0.9u`。
+    pub inventory: [f32; 2],
+    pub smart: [f32; 2],
 }
 
 impl Layout {
@@ -127,59 +155,85 @@ impl Layout {
         let (w, h) = (viewport[0], viewport[1]);
         let scale = if scale.is_finite() && scale > 0.0 { scale.clamp(0.5, 3.0) } else { 1.0 };
         let unit = (w.min(h) * 0.07).max(20.0) * scale;
+        let use_button = [w - 2.6 * unit, h - 2.6 * unit];
         Self {
             unit,
-            stick_zone: [0.0, h * 0.5, w * 0.5, h],
-            stick_radius: unit * 3.0,
-            use_button: [w - 2.2 * unit, h - 2.2 * unit],
-            jump: [w - 5.6 * unit, h - 1.8 * unit],
-            hook: [w - 2.0 * unit, h - 5.6 * unit],
-            dig: [w - 5.2 * unit, h - 5.2 * unit],
-            paint: [w - 2.0 * unit, h - 8.8 * unit],
-            zoom_in: [w - 8.6 * unit, h - 5.2 * unit],
-            zoom_out: [w - 8.6 * unit, h - 1.8 * unit],
+            stick: [3.6 * unit, h - 3.6 * unit],
+            stick_radius: 3.0 * unit,
+            use_button,
+            use_radius: 2.2 * unit,
+            hook: [use_button[0] - 3.6 * unit, use_button[1] + 0.3 * unit],
+            hook_radius: 1.1 * unit,
+            jump: [w - 1.5 * unit, h - 6.2 * unit],
+            jump_radius: 1.2 * unit,
+            zoom_out: [w * 0.5 - 1.2 * unit, h - 1.2 * unit],
+            zoom_in: [w * 0.5 + 1.2 * unit, h - 1.2 * unit],
+            inventory: [1.2 * unit, h - 8.0 * unit],
+            smart: [3.4 * unit, h - 8.0 * unit],
         }
     }
 
-    /// 移動パッドのずらせる最大の距離。
+    /// 左スティックのずらせる最大の距離。
     pub(crate) fn radius(&self) -> f32 {
         self.stick_radius
     }
 
-    /// 何も触れていないときの、移動パッドの目印の位置 (領域の下寄りの左)。
-    pub(crate) fn stick_home(&self) -> [f32; 2] {
-        [3.4 * self.unit, self.stick_zone[3] - 3.4 * self.unit]
+    /// ホットバーの枠 `slot` (`0..HOTBAR_VISIBLE`) の矩形 `[左, 上, 右, 下]`。`slot == HOTBAR_VISIBLE` は `...`。
+    pub(crate) fn slot_rect(&self, slot: usize) -> [f32; 4] {
+        let size = 1.5 * self.unit;
+        let left = 0.4 * self.unit + slot as f32 * (size + 0.15 * self.unit);
+        let top = 0.4 * self.unit;
+        [left, top, left + size, top + size]
     }
 
     fn owner_at(&self, pos: [f32; 2]) -> Option<Owner> {
-        let near = |center: [f32; 2], reach: f32| {
-            (pos[0] - center[0]).hypot(pos[1] - center[1]) <= self.unit * reach
+        let near = |center: [f32; 2], radius: f32| {
+            (pos[0] - center[0]).hypot(pos[1] - center[1]) <= radius
         };
-        if near(self.use_button, 1.7) {
+        if near(self.use_button, self.use_radius * 1.1) {
             return Some(Owner::Use);
         }
-        if near(self.jump, 1.3) {
-            return Some(Owner::Jump);
-        }
-        if near(self.hook, 1.3) {
+        if near(self.hook, self.hook_radius * 1.3) {
             return Some(Owner::Hook);
         }
-        if near(self.dig, 1.3) {
-            return Some(Owner::Dig);
+        if near(self.jump, self.jump_radius * 1.2) {
+            return Some(Owner::Jump);
         }
-        if near(self.paint, 1.3) {
-            return Some(Owner::Paint);
-        }
-        if near(self.zoom_in, 1.1) {
+        if near(self.zoom_in, 0.8 * self.unit * 1.2) {
             return Some(Owner::ZoomIn);
         }
-        if near(self.zoom_out, 1.1) {
+        if near(self.zoom_out, 0.8 * self.unit * 1.2) {
             return Some(Owner::ZoomOut);
         }
-        let [left, top, right, bottom] = self.stick_zone;
-        (pos[0] >= left && pos[0] < right && pos[1] >= top && pos[1] <= bottom)
-            .then_some(Owner::Stick)
+        if near(self.inventory, 0.9 * self.unit * 1.2) {
+            return Some(Owner::Inventory);
+        }
+        if near(self.smart, 0.9 * self.unit * 1.2) {
+            return Some(Owner::Smart);
+        }
+        if near(self.stick, self.stick_radius * 1.15) {
+            return Some(Owner::Stick);
+        }
+        for slot in 0..=HOTBAR_VISIBLE {
+            let [l, t, r, b] = self.slot_rect(slot);
+            if pos[0] >= l && pos[0] <= r && pos[1] >= t && pos[1] <= b {
+                return Some(if slot == HOTBAR_VISIBLE {
+                    Owner::More
+                } else {
+                    Owner::Slot(slot as u8)
+                });
+            }
+        }
+        None
     }
+}
+
+/// 中心からのずれ (画素) を、半径の千分率 (-1000..=1000、長さは 1000 まで) にする。
+fn tilt_permille(now: [f32; 2], center: [f32; 2], radius: f32) -> (i32, i32) {
+    let (dx, dy) = (now[0] - center[0], now[1] - center[1]);
+    let length = dx.hypot(dy);
+    let k = if length > radius { radius / length } else { 1.0 };
+    ((dx * k / radius * 1000.0).round() as i32, (dy * k / radius * 1000.0).round() as i32)
 }
 
 impl TouchPad {
@@ -205,110 +259,40 @@ impl TouchPad {
         self.scale = scale;
     }
 
-    /// 描画のために、拡大率とプレイヤーの中心の画面の位置 (画素) を知らせる。
-    pub(crate) fn set_view(&mut self, zoom: f32, player_screen: Option<[f32; 2]>) {
-        self.zoom = zoom;
-        self.player_screen = player_screen;
+    /// 描画のために、カーソルの枠を知らせる (なければ `None`)。
+    pub(crate) fn set_cursor(&mut self, cursor: Option<CursorView>) {
+        self.cursor = cursor;
     }
 
-    /// ポインターが動ける半径 (セル)。
-    pub(crate) fn pointer_radius(&self, zoom: f32) -> f32 {
-        let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
-        self.viewport[0].min(self.viewport[1]) * POINTER_REACH / zoom
+    pub(crate) fn cursor_view(&self) -> Option<CursorView> {
+        self.cursor
     }
 
-    /// ポインターの位置 (プレイヤーの中心からのセル)。まだ動かしていなければ `None`。
-    pub(crate) fn pointer_offset(&self) -> Option<[f32; 2]> {
-        self.pointer
+    /// 使うボタンを最後に倒した向き。
+    pub(crate) fn last_aim(&self) -> Option<(i32, i32)> {
+        self.last_aim
     }
 
-    /// ポインターの画面の位置 (画素、描画用)。
-    pub(crate) fn pointer_screen(&self) -> Option<[f32; 2]> {
-        let (offset, player) = (self.pointer?, self.player_screen?);
-        Some([player[0] + offset[0] * self.zoom, player[1] + offset[1] * self.zoom])
+    /// スマートカーソルが入っているか。
+    pub(crate) fn smart(&self) -> bool {
+        self.smart
     }
 
-    /// ポインターを動かしている指があるか。
-    pub(crate) fn pointer_active(&self) -> bool {
-        self.pointer_touch.is_some()
-    }
-
-    /// ポインターへの向き (1/16 セル単位のベクトル、長さ 1000)。近すぎる・まだ動かしていないときは既定の向き。
-    pub(crate) fn aim(&self) -> (i32, i32) {
-        let Some([x, y]) = self.pointer else { return DEFAULT_AIM };
-        let length = x.hypot(y);
-        if length < AIM_MIN {
-            return DEFAULT_AIM;
-        }
-        ((x / length * 1000.0) as i32, (y / length * 1000.0) as i32)
-    }
-
-    /// 1 本指のポインター操作。部品 (パッド・ボタン) の指は渡さない。`camera_gesture` が真 (2 本指以上) なら動かさない。
-    pub(crate) fn pointer_update(
-        &mut self,
-        id: u64,
-        phase: TouchPhase,
-        pos: [f32; 2],
-        zoom: f32,
-        camera_gesture: bool,
-    ) {
-        if !pos[0].is_finite() || !pos[1].is_finite() {
-            return;
-        }
-        let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
-        if camera_gesture {
-            self.pointer_cancel();
-            return;
-        }
-        match phase {
-            TouchPhase::Started => {
-                // 新しく触れた指が、ポインターの指になる (前の指が離れたイベントを取りこぼしていても詰まらない)。
-                self.visible = true;
-                let base = self.pointer.unwrap_or([0.0, 0.0]);
-                self.pointer_touch = Some(PointerTouch { id, start: pos, base });
-            }
-            TouchPhase::Moved => {
-                let Some(touch) = self.pointer_touch.filter(|t| t.id == id) else { return };
-                let reach = self.pointer_radius(zoom);
-                let wanted = [
-                    touch.base[0] + (pos[0] - touch.start[0]) / zoom,
-                    touch.base[1] + (pos[1] - touch.start[1]) / zoom,
-                ];
-                let length = wanted[0].hypot(wanted[1]);
-                self.pointer = Some(if length > reach {
-                    [wanted[0] / length * reach, wanted[1] / length * reach]
-                } else {
-                    wanted
-                });
-            }
-            TouchPhase::Ended | TouchPhase::Cancelled => {
-                if self.pointer_touch.is_some_and(|t| t.id == id) {
-                    self.pointer_touch = None;
-                }
-            }
-        }
-    }
-
-    /// ポインターを動かしている指をやめる (2 本指になったとき)。ポインターはその指に触れる前の位置にもどる。
-    pub(crate) fn pointer_cancel(&mut self) {
-        if let Some(touch) = self.pointer_touch.take() {
-            self.pointer = (touch.base != [0.0, 0.0]).then_some(touch.base);
-        }
-    }
-
-    /// タッチのイベントを反映する。この指が部品 (移動パッド・ボタン) のものなら true。
+    /// タッチのイベントを反映する。この指が部品のものなら true。
     pub(crate) fn update(&mut self, id: u64, phase: TouchPhase, pos: [f32; 2]) -> bool {
         match phase {
             TouchPhase::Started => {
                 self.visible = true;
                 let Some(owner) = self.layout().owner_at(pos) else { return false };
-                if owner == Owner::Paint {
-                    self.toggle = true;
-                }
                 // 同じ部品に新しく触れたら、前の指は古いもの (離したイベントを取りこぼした) とみなして捨てる。
-                // 3 本以上の指でイベントが失われても、ボタンや歩きが押されたままにならない。
                 self.touches.retain(|_, t| t.owner != owner);
-                self.touches.insert(id, Touch { owner, start: pos, now: pos });
+                match owner {
+                    Owner::Smart => self.smart = !self.smart,
+                    Owner::Inventory | Owner::More => self.inventory_tap = true,
+                    Owner::Slot(n) => self.slot_tap = Some(n),
+                    _ => {}
+                }
+                self.touches.insert(id, Touch { owner, now: pos });
                 true
             }
             TouchPhase::Moved => match self.touches.get_mut(&id) {
@@ -318,20 +302,43 @@ impl TouchPad {
                 }
                 None => false,
             },
-            TouchPhase::Ended | TouchPhase::Cancelled => self.touches.remove(&id).is_some(),
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                let Some(touch) = self.touches.remove(&id) else { return false };
+                if touch.owner == Owner::Hook && phase == TouchPhase::Ended {
+                    let layout = self.layout();
+                    let (dx, dy) = (touch.now[0] - layout.hook[0], touch.now[1] - layout.hook[1]);
+                    self.hook_release = Some(HookRelease {
+                        tilt: [dx / layout.hook_radius, dy / layout.hook_radius],
+                    });
+                }
+                true
+            }
         }
     }
 
     /// 全部の指を離した状態に戻す (ウィンドウがフォーカスを失ったとき)。
     pub(crate) fn release_all(&mut self) {
         self.touches.clear();
-        self.pointer_touch = None;
-        self.toggle = false;
+        self.slot_tap = None;
+        self.inventory_tap = false;
+        self.hook_release = None;
     }
 
-    /// 移動パッドに触れている指と、その押し込み (描画用)。`(触れた場所 = 中心, 指の位置)`。
+    /// 左スティックに触れている指のずれ (描画用)。`(中心, 指の位置)`。
     pub(crate) fn stick_touch(&self) -> Option<([f32; 2], [f32; 2])> {
-        self.touches.values().find(|t| t.owner == Owner::Stick).map(|t| (t.start, t.now))
+        let center = self.layout().stick;
+        self.touches.values().find(|t| t.owner == Owner::Stick).map(|t| (center, t.now))
+    }
+
+    /// 使うボタンのつまみ (描画用): 倒れた先の画素。
+    pub(crate) fn use_knob(&self) -> Option<[f32; 2]> {
+        let layout = self.layout();
+        self.touches.values().find(|t| t.owner == Owner::Use).map(|t| {
+            let (dx, dy) = (t.now[0] - layout.use_button[0], t.now[1] - layout.use_button[1]);
+            let length = dx.hypot(dy);
+            let k = if length > layout.use_radius { layout.use_radius / length } else { 1.0 };
+            [layout.use_button[0] + dx * k, layout.use_button[1] + dy * k]
+        })
     }
 
     pub(crate) fn held(&self, button: &str) -> bool {
@@ -339,10 +346,11 @@ impl TouchPad {
             "use" => Owner::Use,
             "jump" => Owner::Jump,
             "hook" => Owner::Hook,
-            "dig" => Owner::Dig,
             "zoom_in" => Owner::ZoomIn,
             "zoom_out" => Owner::ZoomOut,
-            _ => Owner::Paint,
+            "inventory" => Owner::Inventory,
+            "smart" => return self.smart,
+            _ => return false,
         };
         self.touches.values().any(|t| t.owner == owner)
     }
@@ -352,32 +360,59 @@ impl TouchPad {
         i8::from(self.held("zoom_in")) - i8::from(self.held("zoom_out"))
     }
 
-    /// 今の操作。切り替えは 1 度だけ返す。
+    /// 今の操作。1 度だけの出来事は、ここで消える。
     pub(crate) fn output(&mut self) -> PadOutput {
-        let radius = self.layout().radius();
+        let layout = self.layout();
         let mut out = PadOutput::default();
         for touch in self.touches.values() {
-            let (dx, dy) = (touch.now[0] - touch.start[0], touch.now[1] - touch.start[1]);
             match touch.owner {
                 Owner::Stick => {
-                    if dx.abs() > radius * WALK_ZONE {
+                    let dx = touch.now[0] - layout.stick[0];
+                    if dx.abs() > layout.stick_radius * WALK_ZONE {
                         out.horizontal = if dx > 0.0 { 1 } else { -1 };
                     }
-                    if dy < -radius * SWIPE_UP {
-                        out.jump = true;
-                    }
+                    // 上へ倒してもジャンプしない (仕様 18 §1)。
                 }
                 Owner::Jump => out.jump = true,
-                Owner::Hook => out.tool = true,
-                Owner::Dig => out.dig = true,
-                Owner::Use => out.use_item = true,
-                Owner::ZoomIn | Owner::ZoomOut | Owner::Paint => {}
+                Owner::Use => {
+                    out.use_item = true;
+                    let tilt = tilt_permille(touch.now, layout.use_button, layout.use_radius);
+                    out.cursor_tilt = Some(tilt);
+                    // 狙いの向き: 倒れが小さいときは、最後の向き。
+                    if tilt.0.abs().max(tilt.1.abs()) > 150 {
+                        self.last_aim = Some(tilt);
+                    }
+                }
+                Owner::Hook => {
+                    let tilt = tilt_permille(touch.now, layout.hook, layout.hook_radius);
+                    if (tilt.0 as f32).hypot(tilt.1 as f32) >= HOOK_TILT * 1000.0 {
+                        out.hook_aim = Some(tilt);
+                    }
+                }
+                Owner::ZoomIn
+                | Owner::ZoomOut
+                | Owner::Inventory
+                | Owner::Smart
+                | Owner::Slot(_)
+                | Owner::More => {}
             }
         }
-        if out.use_item || out.tool || out.dig {
-            out.aim = Some(self.aim());
+        if out.use_item {
+            out.aim = Some(self.last_aim.unwrap_or(DEFAULT_AIM));
         }
-        out.toggle_paint = std::mem::take(&mut self.toggle);
+        if let Some(release) = self.hook_release.take() {
+            let length = release.tilt[0].hypot(release.tilt[1]);
+            if length >= HOOK_TILT {
+                let k = 1000.0 / length;
+                let dir = ((release.tilt[0] * k) as i32, (release.tilt[1] * k) as i32);
+                out.hook_throw = Some(dir);
+                out.aim = Some(dir);
+            } else {
+                out.hook_detach = true;
+            }
+        }
+        out.select_slot = self.slot_tap.take();
+        out.toggle_inventory = std::mem::take(&mut self.inventory_tap);
         out.zoom = self.zoom_direction();
         out
     }
@@ -395,117 +430,127 @@ mod tests {
         pad
     }
 
-    /// 移動パッドは左下の 1/4 のどこに触れても、触れた場所が中心になる。横で歩き、上へずらすとジャンプ。
+    /// 固定のスティック: 横へ倒すと歩き、離すと止まる。中心は動かない。
     #[test]
-    fn floating_stick_walks_and_swipe_up_jumps() {
+    fn left_stick_is_fixed_and_walks() {
         let mut pad = pad();
-        let layout = pad.layout();
-        let r = layout.radius();
-        let start = [300.0, 600.0];
-        assert!(pad.update(1, TouchPhase::Started, start));
+        let l = pad.layout();
+        let r = l.radius();
+        assert!(pad.update(1, TouchPhase::Started, l.stick));
         assert_eq!(pad.output(), PadOutput::default(), "触れただけでは動かない");
-        assert_eq!(pad.stick_touch(), Some((start, start)), "触れた場所が中心");
-        pad.update(1, TouchPhase::Moved, [start[0] + r, start[1]]);
+        assert_eq!(pad.stick_touch(), Some((l.stick, l.stick)), "中心は固定");
+        pad.update(1, TouchPhase::Moved, [l.stick[0] + r, l.stick[1]]);
         assert_eq!(pad.output().horizontal, 1);
-        pad.update(1, TouchPhase::Moved, [start[0] - r, start[1]]);
+        pad.update(1, TouchPhase::Moved, [l.stick[0] - r, l.stick[1]]);
         assert_eq!(pad.output().horizontal, -1);
-        pad.update(1, TouchPhase::Moved, [start[0], start[1] - r]);
-        let up = pad.output();
-        assert!(up.jump && up.horizontal == 0);
-        assert!(pad.update(1, TouchPhase::Ended, start));
+        assert!(pad.update(1, TouchPhase::Ended, l.stick));
         assert_eq!(pad.output(), PadOutput::default(), "離したら止まる");
     }
 
-    /// 領域は画面の左下の 1/4 だけ。右半分や上半分は、パッドではない (ポインター・カメラの指)。
     #[test]
-    fn the_stick_zone_is_the_lower_left_quarter() {
+    fn left_stick_up_does_not_jump() {
         let mut pad = pad();
-        assert!(pad.update(1, TouchPhase::Started, [799.0, 451.0]), "角の内側");
-        assert!(!pad.update(2, TouchPhase::Started, [801.0, 700.0]), "右半分");
-        assert!(!pad.update(3, TouchPhase::Started, [400.0, 449.0]), "上半分");
-        assert!(!pad.update(4, TouchPhase::Started, [800.0, 100.0]));
-        assert!(!pad.update(2, TouchPhase::Moved, [810.0, 710.0]));
-        assert!(!pad.update(2, TouchPhase::Ended, [810.0, 710.0]));
-        assert!(pad.visible(), "タッチがあれば表示する");
-    }
-
-    /// 1 本指でなぞると、ずれ ÷ 拡大率 (セル) だけポインターが動く。範囲は円で、離しても残り、次のなぞりはそこから続く。
-    #[test]
-    fn the_pointer_moves_relative_to_the_drag_inside_a_circle_and_stays() {
-        let mut pad = pad();
-        let zoom = 4.0;
-        assert_eq!(pad.pointer_offset(), None);
-        pad.pointer_update(1, TouchPhase::Started, [1000.0, 300.0], zoom, false);
-        assert!(pad.pointer_active());
-        pad.pointer_update(1, TouchPhase::Moved, [1040.0, 280.0], zoom, false);
-        assert_eq!(pad.pointer_offset(), Some([10.0, -5.0]), "40 画素 ÷ 4 = 10 セル");
-        pad.pointer_update(1, TouchPhase::Ended, [1040.0, 280.0], zoom, false);
-        assert!(!pad.pointer_active());
-        assert_eq!(pad.pointer_offset(), Some([10.0, -5.0]), "離しても残る");
-        // 次のなぞりは、残った位置から。
-        pad.pointer_update(2, TouchPhase::Started, [500.0, 300.0], zoom, false);
-        pad.pointer_update(2, TouchPhase::Moved, [460.0, 300.0], zoom, false);
-        assert_eq!(pad.pointer_offset(), Some([0.0, -5.0]));
-        // 遠くまでなぞっても、円の中 (半径) で止まる。
-        pad.pointer_update(2, TouchPhase::Moved, [-5000.0, 3000.0], zoom, false);
-        let [x, y] = pad.pointer_offset().unwrap();
-        let reach = pad.pointer_radius(zoom);
-        assert!((x.hypot(y) - reach).abs() < 1e-3, "半径 {reach} の円の縁");
-        assert!(x < 0.0 && y > 0.0, "向きは保たれる");
-        // 拡大率が違えば、同じ指のずれでも、動くセルの数が違う。
-        let mut zoomed = self::pad();
-        zoomed.pointer_update(1, TouchPhase::Started, [1000.0, 300.0], 8.0, false);
-        zoomed.pointer_update(1, TouchPhase::Moved, [1040.0, 300.0], 8.0, false);
-        assert_eq!(zoomed.pointer_offset(), Some([5.0, 0.0]));
-    }
-
-    /// 2 本指 (カメラ操作) になったら、ポインターを動かさず、その前の位置にもどる。不正な値は無視する。
-    #[test]
-    fn a_second_finger_cancels_the_pointer_and_bad_values_are_ignored() {
-        let mut pad = pad();
-        pad.pointer_update(1, TouchPhase::Started, [1000.0, 300.0], 4.0, false);
-        pad.pointer_update(1, TouchPhase::Moved, [1040.0, 300.0], 4.0, false);
-        pad.pointer_update(1, TouchPhase::Ended, [1040.0, 300.0], 4.0, false);
-        pad.pointer_update(2, TouchPhase::Started, [1000.0, 300.0], 4.0, false);
-        pad.pointer_update(2, TouchPhase::Moved, [1100.0, 300.0], 4.0, false);
-        assert_eq!(pad.pointer_offset(), Some([35.0, 0.0]));
-        pad.pointer_update(2, TouchPhase::Moved, [1100.0, 300.0], 4.0, true);
-        assert_eq!(pad.pointer_offset(), Some([10.0, 0.0]), "なぞる前にもどる");
-        assert!(!pad.pointer_active());
-        pad.pointer_update(3, TouchPhase::Started, [f32::NAN, 0.0], 4.0, false);
-        assert!(!pad.pointer_active(), "NaN は無視する");
-        pad.pointer_update(4, TouchPhase::Started, [10.0, 10.0], f32::NAN, false);
-        pad.pointer_update(4, TouchPhase::Moved, [14.0, 10.0], f32::NAN, false);
-        assert_eq!(pad.pointer_offset(), Some([14.0, 0.0]), "拡大率が不正なら 1 とみなす");
-    }
-
-    /// ボタンは、ポインターのある方へ使う。まだ動かしていなければ既定の向き。押している間、押し続ける。
-    #[test]
-    fn buttons_use_toward_the_pointer_and_paint_toggles_once() {
-        let mut pad = pad();
-        let layout = pad.layout();
-        assert!(pad.update(1, TouchPhase::Started, layout.use_button));
-        let used = pad.output();
-        assert!(used.use_item && !used.fire && used.aim == Some(DEFAULT_AIM), "{used:?}");
-        // ポインターを左へ動かすと、向きが変わる。
-        pad.pointer_update(9, TouchPhase::Started, [1000.0, 300.0], 4.0, false);
-        pad.pointer_update(9, TouchPhase::Moved, [900.0, 300.0], 4.0, false);
-        assert_eq!(pad.output().aim, Some((-1000, 0)));
-        pad.update(1, TouchPhase::Ended, layout.use_button);
-        assert!(!pad.output().use_item && pad.output().aim.is_none());
-        assert!(pad.update(2, TouchPhase::Started, layout.hook));
-        let hook = pad.output();
-        assert!(hook.tool && !hook.use_item);
-        assert_eq!(hook.aim, Some((-1000, 0)));
-        assert!(pad.update(3, TouchPhase::Started, layout.dig));
-        assert!(pad.output().dig && pad.held("dig") && pad.held("hook"));
-        assert!(pad.update(4, TouchPhase::Started, layout.jump));
+        let l = pad.layout();
+        pad.update(1, TouchPhase::Started, l.stick);
+        pad.update(1, TouchPhase::Moved, [l.stick[0], l.stick[1] - l.radius()]);
+        let out = pad.output();
+        assert!(!out.jump && out.horizontal == 0, "{out:?}");
+        // ジャンプは右の `^^` ボタンだけ。
+        assert!(pad.update(2, TouchPhase::Started, l.jump));
         assert!(pad.output().jump);
-        assert!(pad.update(5, TouchPhase::Started, layout.paint));
-        assert!(pad.output().toggle_paint);
-        assert!(!pad.output().toggle_paint, "切り替えは 1 度だけ");
-        pad.update(4, TouchPhase::Cancelled, layout.jump);
+        pad.update(2, TouchPhase::Ended, l.jump);
         assert!(!pad.output().jump);
+    }
+
+    /// 使うボタンは、倒したずれ (千分率) でカーソルを動かし、触れている間、使う。
+    #[test]
+    fn use_button_tilts_the_cursor_and_holds() {
+        let mut pad = pad();
+        let l = pad.layout();
+        assert!(pad.update(1, TouchPhase::Started, l.use_button));
+        let out = pad.output();
+        assert!(out.use_item && out.cursor_tilt == Some((0, 0)));
+        assert_eq!(out.aim, Some(DEFAULT_AIM), "まだ倒していないときは既定の向き");
+        pad.update(1, TouchPhase::Moved, [l.use_button[0] - l.use_radius, l.use_button[1]]);
+        let out = pad.output();
+        assert_eq!(out.cursor_tilt, Some((-1000, 0)));
+        assert_eq!(out.aim, Some((-1000, 0)));
+        // 半径を超えて倒しても、千分率は 1000 まで。
+        pad.update(1, TouchPhase::Moved, [l.use_button[0], l.use_button[1] + l.use_radius * 5.0]);
+        assert_eq!(pad.output().cursor_tilt, Some((0, 1000)));
+        // つまみの描画位置は、円の縁に収まる。
+        let knob = pad.use_knob().unwrap();
+        assert!((knob[1] - (l.use_button[1] + l.use_radius)).abs() < 1.0);
+        pad.update(1, TouchPhase::Ended, l.use_button);
+        let out = pad.output();
+        assert!(!out.use_item && out.cursor_tilt.is_none() && out.aim.is_none());
+    }
+
+    /// フックのスティック: 傾けて離すと、離した向きへ 1 フレームだけ出る。傾けない離しは切り離し。使うボタンと同時に使える。
+    #[test]
+    fn hook_stick_throws_toward_the_release_direction() {
+        let mut pad = pad();
+        let l = pad.layout();
+        assert!(pad.update(1, TouchPhase::Started, l.hook));
+        assert!(pad.output().hook_throw.is_none() && pad.output().hook_aim.is_none());
+        pad.update(1, TouchPhase::Moved, [l.hook[0], l.hook[1] - l.hook_radius]);
+        assert_eq!(pad.output().hook_aim, Some((0, -1000)), "傾けている間は矢印の向き");
+        // 向きを変えて離す: 離した瞬間の傾きが向きになる。
+        pad.update(1, TouchPhase::Moved, [l.hook[0] + l.hook_radius, l.hook[1]]);
+        pad.update(1, TouchPhase::Ended, [l.hook[0] + l.hook_radius, l.hook[1]]);
+        let out = pad.output();
+        assert_eq!(out.hook_throw, Some((1000, 0)));
+        assert!(!out.hook_detach && out.aim == Some((1000, 0)));
+        assert_eq!(pad.output().hook_throw, None, "1 フレームだけ");
+    }
+
+    #[test]
+    fn hook_stick_tap_detaches_and_is_independent_of_the_use_button() {
+        let mut pad = pad();
+        let l = pad.layout();
+        pad.update(1, TouchPhase::Started, l.use_button);
+        pad.update(2, TouchPhase::Started, l.hook);
+        let out = pad.output();
+        assert!(out.use_item, "同時に使える");
+        pad.update(2, TouchPhase::Moved, [l.hook[0] + 0.1 * l.hook_radius, l.hook[1]]);
+        pad.update(2, TouchPhase::Ended, l.hook);
+        let out = pad.output();
+        assert!(out.hook_detach && out.hook_throw.is_none() && out.use_item);
+        // キャンセル (指が取り上げられた) では、飛ばさない。
+        pad.update(3, TouchPhase::Started, l.hook);
+        pad.update(3, TouchPhase::Moved, [l.hook[0], l.hook[1] - l.hook_radius]);
+        pad.update(3, TouchPhase::Cancelled, l.hook);
+        let out = pad.output();
+        assert!(out.hook_throw.is_none() && !out.hook_detach);
+    }
+
+    /// ホットバーの枠のタップ・格子 (インベントリ)・`+` (スマートカーソル) の切り替えは、触れたフレームに 1 度だけ出る。
+    #[test]
+    fn hotbar_selection_and_inventory_toggle() {
+        let mut pad = pad();
+        let l = pad.layout();
+        let center = |s: usize| {
+            let r = l.slot_rect(s);
+            [(r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0]
+        };
+        assert!(pad.update(1, TouchPhase::Started, center(3)));
+        pad.update(1, TouchPhase::Ended, center(3));
+        assert_eq!(pad.output().select_slot, Some(3));
+        assert_eq!(pad.output().select_slot, None, "1 度だけ");
+        // `...` と格子は、インベントリの開閉。
+        pad.update(2, TouchPhase::Started, center(HOTBAR_VISIBLE));
+        pad.update(2, TouchPhase::Ended, center(HOTBAR_VISIBLE));
+        assert!(pad.output().toggle_inventory);
+        pad.update(3, TouchPhase::Started, l.inventory);
+        pad.update(3, TouchPhase::Ended, l.inventory);
+        assert!(pad.output().toggle_inventory && !pad.output().toggle_inventory);
+        // `+` はスマートカーソルの入り切り。
+        assert!(!pad.smart());
+        pad.update(4, TouchPhase::Started, l.smart);
+        pad.update(4, TouchPhase::Ended, l.smart);
+        assert!(pad.smart());
+        pad.update(5, TouchPhase::Started, l.smart);
+        assert!(!pad.smart());
     }
 
     /// ズームのボタン: 押している間、拡大 (+1)・縮小 (-1)。離すと止まる。
@@ -525,68 +570,34 @@ mod tests {
         assert_eq!(pad.output().zoom, 0);
     }
 
-    /// 離したイベントを取りこぼしても (3 本以上の指で起こる)、同じ部品にもう一度触れれば古い指は捨てられ、
-    /// 押されたままにならない。移動パッドが固まって歩かなくなることもない。
+    /// 3 本の指を使っても、離したイベントを取りこぼしても、押されたままにならない。
     #[test]
-    fn lost_release_events_do_not_leave_buttons_or_the_stick_stuck() {
+    fn multi_touch_does_not_stick() {
         let mut pad = pad();
-        let layout = pad.layout();
-        // `JUMP` を押したまま、離したイベントが届かない。
-        assert!(pad.update(1, TouchPhase::Started, layout.jump));
+        let l = pad.layout();
+        assert!(pad.update(1, TouchPhase::Started, l.jump));
         assert!(pad.output().jump);
-        // 別の指でもう一度 `JUMP` に触れて、離す: 古い指は捨てられ、ジャンプは止まる。
-        assert!(pad.update(7, TouchPhase::Started, layout.jump));
-        assert!(pad.update(7, TouchPhase::Ended, layout.jump));
+        assert!(pad.update(7, TouchPhase::Started, l.jump));
+        assert!(pad.update(7, TouchPhase::Ended, l.jump));
         assert!(!pad.output().jump, "押されたままにならない");
-        // 移動パッド: 古い指が右へずれたまま残っても、新しく触れれば置き換わる。
-        let r = layout.radius();
-        pad.update(2, TouchPhase::Started, [300.0, 600.0]);
-        pad.update(2, TouchPhase::Moved, [300.0 + r, 600.0]);
+        let r = l.radius();
+        pad.update(2, TouchPhase::Started, l.stick);
+        pad.update(2, TouchPhase::Moved, [l.stick[0] + r, l.stick[1]]);
         assert_eq!(pad.output().horizontal, 1);
-        pad.update(8, TouchPhase::Started, [200.0, 700.0]);
-        assert_eq!(pad.output().horizontal, 0, "新しい指が中心になり、古い指は捨てられる");
-        pad.update(8, TouchPhase::Moved, [200.0 - r, 700.0]);
-        assert_eq!(pad.output().horizontal, -1);
-        // ポインターの指も、新しく触れた指に置き換わる。
-        pad.pointer_update(3, TouchPhase::Started, [1000.0, 300.0], 4.0, false);
-        pad.pointer_update(4, TouchPhase::Started, [1100.0, 300.0], 4.0, false);
-        pad.pointer_update(4, TouchPhase::Moved, [1140.0, 300.0], 4.0, false);
-        assert_eq!(pad.pointer_offset(), Some([10.0, 0.0]));
-        pad.pointer_update(3, TouchPhase::Moved, [1500.0, 300.0], 4.0, false);
-        assert_eq!(pad.pointer_offset(), Some([10.0, 0.0]), "古い指の動きは無視する");
-        // 3 本の指が、順に別の部品に触れ、順に離れる: すべてもとにもどる。
+        pad.update(8, TouchPhase::Started, l.stick);
+        assert_eq!(pad.output().horizontal, 0, "新しい指が置き換わり、古い指は捨てられる");
         pad.release_all();
-        for (id, at) in [(10, layout.use_button), (11, layout.hook), (12, [300.0, 600.0])] {
+        for (id, at) in [(10, l.use_button), (11, l.hook), (12, l.stick)] {
             assert!(pad.update(id, TouchPhase::Started, at));
         }
-        for (id, at) in [(11, layout.hook), (12, [300.0, 600.0]), (10, layout.use_button)] {
+        for (id, at) in [(11, l.hook), (12, l.stick), (10, l.use_button)] {
             assert!(pad.update(id, TouchPhase::Ended, at));
         }
-        assert_eq!(pad.output(), PadOutput::default());
+        let out = pad.output();
+        assert!(!out.use_item && out.horizontal == 0 && out.cursor_tilt.is_none());
     }
 
-    /// ポインターが真上・真下・近すぎるときの向きと、描画用の位置。
-    #[test]
-    fn aim_and_screen_position_follow_the_pointer() {
-        let mut pad = pad();
-        assert_eq!(pad.aim(), DEFAULT_AIM);
-        pad.set_view(4.0, Some([800.0, 450.0]));
-        assert_eq!(pad.pointer_screen(), None, "動かすまで出さない");
-        pad.pointer_update(1, TouchPhase::Started, [100.0, 100.0], 4.0, false);
-        pad.pointer_update(1, TouchPhase::Moved, [100.0, 60.0], 4.0, false);
-        assert_eq!(pad.aim(), (0, -1000), "真上");
-        assert_eq!(
-            pad.pointer_screen(),
-            Some([800.0, 450.0 - 40.0]),
-            "10 セル × 拡大率 4 = 40 画素"
-        );
-        pad.pointer_update(1, TouchPhase::Moved, [100.0, 100.0], 4.0, false);
-        assert_eq!(pad.aim(), DEFAULT_AIM, "近すぎるときは既定の向き");
-        pad.set_view(4.0, None);
-        assert_eq!(pad.pointer_screen(), None, "プレイヤーがいなければ出さない");
-    }
-
-    /// UI の大きさの倍率で、ボタンの半径とパッドの半径が変わる。
+    /// UI の大きさの倍率で、ボタンの半径とスティックの半径が変わる。
     #[test]
     fn scale_resizes_the_pad() {
         let mut pad = pad();
@@ -601,26 +612,52 @@ mod tests {
         assert_eq!(pad.layout(), normal, "有限でない値は 1 とみなす");
     }
 
-    /// ボタンは右下に並び、画面の外へ出ず、互いに重ならない。
+    /// 仕様 18 §1 の配置: 各部品が表のとおりの位置・大きさで、画面の中に収まり、主な部品は重ならない。
     #[test]
-    fn buttons_sit_in_the_lower_right_without_overlapping() {
+    fn terraria_layout_matches_the_reference_positions() {
         for view in [[1600.0, 900.0], [800.0, 400.0], [2400.0, 1080.0]] {
-            let layout = Layout::new(view, 1.0);
-            let buttons = [
-                layout.use_button,
-                layout.jump,
-                layout.hook,
-                layout.dig,
-                layout.paint,
-                layout.zoom_in,
-                layout.zoom_out,
+            let l = Layout::new(view, 1.0);
+            let u = l.unit;
+            let (w, h) = (view[0], view[1]);
+            assert_eq!(l.stick, [3.6 * u, h - 3.6 * u]);
+            assert_eq!(l.stick_radius, 3.0 * u);
+            assert_eq!(l.use_radius, 2.2 * u);
+            assert!(
+                (l.hook[0] - (l.use_button[0] - 3.6 * u)).abs() < 1e-3,
+                "フックは使うボタンの左隣"
+            );
+            assert!((l.hook[1] - (l.use_button[1] + 0.3 * u)).abs() < 1e-3);
+            assert_eq!(l.hook_radius, 1.1 * u);
+            assert!(
+                l.jump[0] > l.use_button[0] && l.jump[1] < l.use_button[1],
+                "ジャンプは使うボタンの右上"
+            );
+            assert!(l.zoom_out[0] < w * 0.5 && l.zoom_in[0] > w * 0.5, "ズームは下の中央");
+            let parts = [
+                (l.stick, l.stick_radius),
+                (l.use_button, l.use_radius),
+                (l.hook, l.hook_radius),
+                (l.jump, l.jump_radius),
+                (l.zoom_in, 0.8 * u),
+                (l.zoom_out, 0.8 * u),
+                (l.inventory, 0.9 * u),
+                (l.smart, 0.9 * u),
             ];
-            for (i, a) in buttons.iter().enumerate() {
-                assert!(a[0] > view[0] * 0.5 && a[1] > 0.0 && a[0] < view[0] && a[1] < view[1]);
-                for b in &buttons[i + 1..] {
-                    assert!((a[0] - b[0]).hypot(a[1] - b[1]) > layout.unit * 1.5, "{view:?}");
+            for (i, (a, ra)) in parts.iter().enumerate() {
+                assert!(a[0] - ra >= -0.1 && a[0] + ra <= w + 0.1, "{view:?}: 横に収まる {a:?}");
+                assert!(a[1] - ra >= -0.1 && a[1] + ra <= h + 0.1, "{view:?}: 縦に収まる {a:?}");
+                for (b, rb) in &parts[i + 1..] {
+                    assert!(
+                        (a[0] - b[0]).hypot(a[1] - b[1]) >= ra + rb - 0.1,
+                        "{view:?}: 重ならない"
+                    );
                 }
             }
+            // ホットバーは左上、横一列。
+            let first = l.slot_rect(0);
+            let last = l.slot_rect(HOTBAR_VISIBLE);
+            assert!(first[0] < u && first[1] < u);
+            assert_eq!(first[1], last[1], "横一列");
         }
     }
 }

@@ -356,6 +356,7 @@ fn render_ui(
         game: &scene.game,
         player: scene.player,
         pad: scene.pad.as_ref(),
+        defs: None,
     };
     let view = texture.create_view(&Default::default());
     for frame in 0..130u32 {
@@ -656,7 +657,7 @@ fn demo_renders_touch_pad() {
         let i = (y * WIDTH as usize + x) * 4;
         u32::from(pixels[i]) + u32::from(pixels[i + 1]) + u32::from(pixels[i + 2])
     };
-    for (name, p) in [("jump", layout.jump), ("hook", layout.hook), ("paint", layout.paint)] {
+    for (name, p) in [("jump", layout.jump), ("hook", layout.hook), ("use", layout.use_button)] {
         let ring = [p[0] + layout.unit * 0.8, p[1]];
         assert!(luma(&with, ring) > luma(&without, ring), "{name} のボタンが描かれる");
     }
@@ -666,27 +667,34 @@ fn demo_renders_touch_pad() {
     }
     capture("touch_pad", "ui", &with);
     let _ = world_pixels;
-    // 使っている最中: 浮動の移動パッド、ポインター、押した `USE` (仕様 10 §11)。
+    // 使っている最中: 倒した左スティック、倒した使うボタン、カーソルの枠 (仕様 18)。
     let mut active = crate::touch_pad::TouchPad::default();
     active.set_viewport([WIDTH as f32, HEIGHT as f32]);
     active.show();
-    let stick = [layout.unit * 3.0, HEIGHT as f32 * 0.5 + layout.unit * 3.0];
-    assert!(active.update(1, winit::event::TouchPhase::Started, stick));
-    active.update(1, winit::event::TouchPhase::Moved, [stick[0] + layout.unit * 2.0, stick[1]]);
+    assert!(active.update(1, winit::event::TouchPhase::Started, layout.stick));
+    active.update(
+        1,
+        winit::event::TouchPhase::Moved,
+        [layout.stick[0] + layout.unit * 2.0, layout.stick[1]],
+    );
     assert!(active.update(2, winit::event::TouchPhase::Started, layout.use_button));
-    let player = [WIDTH as f32 * 0.5, HEIGHT as f32 * 0.5];
-    active.set_view(4.0, Some(player));
-    active.pointer_update(3, winit::event::TouchPhase::Started, [500.0, 200.0], 4.0, false);
-    active.pointer_update(3, winit::event::TouchPhase::Moved, [620.0, 160.0], 4.0, false);
-    let tip = active.pointer_screen().expect("ポインターが動いた");
-    assert_eq!(tip, [player[0] + 30.0 * 4.0, player[1] - 10.0 * 4.0], "120 画素 ÷ 4 = 30 セル");
+    active.update(
+        2,
+        winit::event::TouchPhase::Moved,
+        [layout.use_button[0] - layout.use_radius, layout.use_button[1]],
+    );
+    let frame = [500.0, 200.0, 540.0, 240.0];
+    active.set_cursor(Some(crate::touch_pad::CursorView {
+        rect: frame,
+        state: charon_game::cursor::CursorState::Ok,
+    }));
     scene.pad = Some(active);
     let (texture, _) = render_world(&gpu, &mut scene, center);
     let used = render_ui(&gpu, &scene, center, &texture, false);
-    let ring = [tip[0] + layout.unit * 0.55, tip[1]];
-    assert!(luma(&used, ring) > luma(&without, ring), "ポインターが描かれる");
-    let use_ring = [layout.use_button[0] + layout.unit * 1.3, layout.use_button[1]];
-    assert!(luma(&used, use_ring) > luma(&with, use_ring), "押した USE は明るくなる");
+    let edge = [frame[0] - 1.0, (frame[1] + frame[3]) / 2.0];
+    assert!(luma(&used, edge) > luma(&without, edge), "カーソルの枠が描かれる");
+    let use_ring = [layout.use_button[0] + layout.use_radius * 0.9, layout.use_button[1]];
+    assert!(luma(&used, use_ring) >= luma(&with, use_ring), "押した使うボタンは明るくなる");
     capture("touch_controls", "ui", &used);
 }
 

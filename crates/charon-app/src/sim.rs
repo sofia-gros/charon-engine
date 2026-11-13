@@ -218,6 +218,31 @@ impl Sim<'_> {
 
     /// ゲームが渡した装備 (仕様 10 §7.4) があれば、プレイヤーに体力と杖を持たせる。
     /// 定義が足りないときは報告して、体力と杖なしで続ける。
+    /// 最初のアイテムを持ち物に入れて、ホットバーに並べる (仕様 19)。
+    fn give_loadout_items(
+        &mut self,
+        id: EntityId,
+        definitions: &Definitions,
+        loadout: &PlayerLoadout,
+    ) {
+        let materials = self.world.materials();
+        let Some(inventory) = self.game.inventories.get_mut(&id) else { return };
+        for (name, count) in &loadout.items {
+            match definitions.item_id(name, materials) {
+                Some(item) => {
+                    inventory.add_item(item, *count);
+                }
+                None => eprintln!("アイテム {name} は定義されていません"),
+            }
+        }
+        for (slot, name) in loadout.hotbar.iter().enumerate() {
+            if let Some(item) = definitions.item_id(name, materials) {
+                inventory.pin(slot, item);
+            }
+        }
+        inventory.select(0);
+    }
+
     fn register_character(&mut self, id: EntityId) {
         let (Some(definitions), Some(loadout)) = (self.definitions, self.loadout) else { return };
         if self.game.wands.contains_key(&id) {
@@ -244,6 +269,7 @@ impl Sim<'_> {
                 if let Err(err) = self.game.give_inventory(id) {
                     eprintln!("持ち物を持たせられません: {err}");
                 }
+                self.give_loadout_items(id, definitions, loadout);
             }
             (vitals, wand) => {
                 eprintln!(

@@ -11,7 +11,7 @@ use charon_game::EntityWorld;
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::LightQuality;
 
-use crate::ui::Controls;
+use crate::ui::{Controls, InvCommand};
 
 /// 計測グラフに残すフレーム数。
 pub(super) const HISTORY: usize = 120;
@@ -233,41 +233,113 @@ pub(super) struct Overlay<'a> {
     pub(super) player: Option<charon_game::EntityId>,
     /// 画面の仮想スティックとボタン (仕様 10 §10)。出さないときは `None`。
     pub(super) pad: Option<&'a crate::touch_pad::TouchPad>,
+    /// アイテムの名前を引く定義 (ホットバーの表示用)。
+    pub(super) defs: Option<&'a charon_game::defs::Definitions>,
 }
 
-/// 持ち物の画面 (仕様 10 §14): 持っている材質を多い順に、名前と数で。
+/// 持ち物の画面 (仕様 18・19): ホットバー・装備・アイテムの一覧 (ホットバーへ・装備)・作れるもの (`Craft`)・
+/// セル 64 個からのブロック。操作は `controls.inv_commands` に積み、App が次のフレームでゲームに反映する。
 fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut Controls) {
+    use charon_game::items::{EquipSlot, ItemClass};
     let mut open = true;
-    egui::Window::new("Inventory").open(&mut open).default_pos([40.0, 300.0]).show(context, |ui| {
-        let items: Vec<(u32, String)> = overlay
-            .player
-            .and_then(|id| overlay.game.inventories.get(&id))
-            .map(|inventory| {
-                let mut items: Vec<(u32, String)> = inventory
-                    .iter()
-                    .map(|(material, count)| {
-                        (count, overlay.world.materials().get(material).name.clone())
-                    })
-                    .collect();
-                items.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-                items
-            })
-            .unwrap_or_default();
-        if items.is_empty() {
-            ui.label("Empty — dig something with the laser.");
-            return;
-        }
-        let total: u64 = items.iter().map(|(count, _)| u64::from(*count)).sum();
-        ui.label(format!("{} kinds · {total} items", items.len()));
-        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-            egui::Grid::new("charon inventory").num_columns(2).show(ui, |ui| {
-                for (count, name) in &items {
-                    ui.label(name);
-                    ui.label(count.to_string());
-                    ui.end_row();
-                }
-            });
+    let slots_note = |n: usize| format!("{}", (n + 1) % 10);
+    let Some(inventory) = overlay.player.and_then(|id| overlay.game.inventories.get(&id)) else {
+        egui::Window::new("Inventory").open(&mut open).show(context, |ui| {
+            ui.label("No character.");
         });
+        controls.inventory_open = open;
+        return;
+    };
+    let name_of = |item: charon_game::items::ItemId| item_label(overlay, item).0;
+    let equipment = overlay.player.and_then(|id| overlay.game.equipment.get(&id));
+    egui::Window::new("Inventory").open(&mut open).default_pos([40.0, 120.0]).show(context, |ui| {
+        ui.label("Hotbar");
+        ui.horizontal_wrapped(|ui| {
+            for slot in 0..charon_game::inventory::HOTBAR_SLOTS {
+                let text = inventory
+                    .hotbar_active(slot)
+                    .map_or_else(|| "-".to_owned(), |i| short_name(&name_of(i)));
+                let label = format!("{}:{text}", slots_note(slot));
+                if ui.selectable_label(inventory.selected() == slot, label).clicked() {
+                    controls.inv_commands.push(InvCommand::Select(slot));
+                }
+            }
+        });
+        ui.separator();
+        ui.label("Equipment");
+        ui.horizontal_wrapped(|ui| {
+            for slot in EquipSlot::ALL {
+                let item = equipment.and_then(|e| e.get(slot));
+                let text = item.map_or_else(|| "-".to_owned(), name_of);
+                if ui.button(format!("{slot:?}: {text}")).clicked() && item.is_some() {
+                    controls.inv_commands.push(InvCommand::Unequip(slot));
+                }
+            }
+        });
+        if let Some(stats) = equipment.zip(overlay.defs).map(|(e, d)| e.stats(|i| d.item_def(i))) {
+            ui.label(format!(
+                "Defense {} · resist fire {}% poison {}% cold {}% · weapon damage {}",
+                stats.defense,
+                stats.resist.fire,
+                stats.resist.poison,
+                stats.resist.cold,
+                stats.damage
+            ));
+        }
+        ui.separator();
+        ui.label(format!("{} kinds · {} items", inventory.item_iter().count(), inventory.total()));
+        egui::ScrollArea::vertical().id_salt("charon inv items").max_height(200.0).show(ui, |ui| {
+            for (item, count) in inventory.item_iter() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} × {count}", name_of(item)));
+                    if ui.small_button("Hotbar").clicked() {
+                        controls.inv_commands.push(InvCommand::Pin(inventory.selected(), item));
+                    }
+                    let equippable = overlay
+                        .defs
+                        .and_then(|d| d.item_def(item))
+                        .is_some_and(|d| d.equip_slot().is_some());
+                    if equippable && ui.small_button("Equip").clicked() {
+                        controls.inv_commands.push(InvCommand::Equip(item));
+                    }
+                    if let ItemClass::Cells(m) = item.class()
+                        && count >= charon_game::blocks::BLOCK_CELLS as u32
+                        && matches!(
+                            overlay.world.materials().get(m).phase,
+                            charon_core::material::Phase::Solid
+                                | charon_core::material::Phase::Powder
+                        )
+                        && ui.small_button("→ Block (64)").clicked()
+                    {
+                        controls.inv_commands.push(InvCommand::CraftBlock(m));
+                    }
+                });
+            }
+        });
+        if let Some(defs) = overlay.defs {
+            ui.separator();
+            ui.label("Craft");
+            egui::ScrollArea::vertical().id_salt("charon inv recipes").max_height(160.0).show(
+                ui,
+                |ui| {
+                    for recipe in defs.recipes() {
+                        let have = recipe.inputs.iter().all(|&(i, n)| inventory.item_count(i) >= n);
+                        let needs: Vec<String> = recipe
+                            .inputs
+                            .iter()
+                            .map(|&(i, n)| format!("{} {n}", name_of(i)))
+                            .collect();
+                        ui.horizontal(|ui| {
+                            let text =
+                                format!("{} ({})", name_of(recipe.output.0), needs.join(", "));
+                            if ui.add_enabled(have, egui::Button::new(text)).clicked() {
+                                controls.inv_commands.push(InvCommand::Craft(recipe.name.clone()));
+                            }
+                        });
+                    }
+                },
+            );
+        }
     });
     controls.inventory_open = open;
 }
@@ -337,8 +409,13 @@ fn draw_pause_menu(context: &egui::Context, controls: &mut Controls) -> Option<D
     action
 }
 
-/// 仮想スティックとボタンを、半透明で描く (ピクセル → egui の点へ直す)。
-fn draw_touch_pad(context: &egui::Context, pad: &crate::touch_pad::TouchPad) {
+/// 仮想スティックとボタン・ホットバー・カーソルを、半透明で描く (ピクセル → egui の点へ直す)。仕様 18 §1。
+fn draw_touch_pad(
+    context: &egui::Context,
+    pad: &crate::touch_pad::TouchPad,
+    overlay: &Overlay<'_>,
+) {
+    use crate::touch_pad::HOTBAR_VISIBLE;
     let painter = context.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::unique("charon touch pad"),
@@ -346,67 +423,155 @@ fn draw_touch_pad(context: &egui::Context, pad: &crate::touch_pad::TouchPad) {
     let scale = 1.0 / context.pixels_per_point();
     let at = |p: [f32; 2]| egui::pos2(p[0] * scale, p[1] * scale);
     let layout = pad.layout();
-    let (unit, radius) = (layout.unit * scale, layout.radius() * scale);
+    let unit = layout.unit * scale;
     let line = egui::Stroke::new(2.0, egui::Color32::from_white_alpha(110));
     let fill = egui::Color32::from_white_alpha(28);
     let knob = egui::Color32::from_white_alpha(120);
-    // 移動パッド (左下の 1/4、浮動): 触れているときは、触れた場所を中心にして、指の位置に丸を描く。
-    // 触れていないときは、領域の目印だけを薄く描く。
-    let touch = pad.stick_touch();
-    let center = touch.map_or(layout.stick_home(), |(start, _)| start);
-    painter.circle(at(center), radius, fill, line);
-    if touch.is_none() {
+    let label = |center: [f32; 2], text: &str, size: f32| {
         painter.text(
             at(center),
             egui::Align2::CENTER_CENTER,
-            "MOVE",
-            egui::FontId::proportional(unit * 0.6),
-            egui::Color32::from_white_alpha(150),
+            text,
+            egui::FontId::proportional(unit * size),
+            egui::Color32::from_white_alpha(200),
         );
-    }
-    if let Some((start, now)) = touch {
-        let (dx, dy) = (now[0] - start[0], now[1] - start[1]);
+    };
+    // 左スティック (固定): 中心に十字の目印。触れているときは、指の位置につまみ。
+    painter.circle(at(layout.stick), layout.stick_radius * scale, fill, line);
+    label(layout.stick, "+", 1.0);
+    if let Some((center, now)) = pad.stick_touch() {
+        let (dx, dy) = (now[0] - center[0], now[1] - center[1]);
         let length = dx.hypot(dy).max(1.0);
         let reach = length.min(layout.radius());
-        let tip = [start[0] + dx / length * reach, start[1] + dy / length * reach];
-        painter.circle_filled(at(tip), unit * 0.9, knob);
+        painter.circle_filled(
+            at([center[0] + dx / length * reach, center[1] + dy / length * reach]),
+            unit * 0.9,
+            knob,
+        );
     }
-    // ポインター (Terraria のカーソル): プレイヤーの周りの円の中を、1 本指のなぞりで動く。
-    if let Some(p) = pad.pointer_screen() {
-        let color = if pad.pointer_active() {
-            egui::Color32::from_rgb(255, 230, 120)
-        } else {
-            egui::Color32::from_white_alpha(210)
-        };
-        let stroke = egui::Stroke::new(2.0, color);
-        let (c, r) = (at(p), unit * 0.55);
-        painter.circle_stroke(c, r, stroke);
-        for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-            painter.line_segment(
-                [c + egui::vec2(dx, dy) * r * 0.5, c + egui::vec2(dx, dy) * r * 1.5],
-                stroke,
+    // 使うボタン: つまみになる。
+    let using = pad.held("use");
+    painter.circle(
+        at(layout.use_button),
+        layout.use_radius * scale,
+        if using { knob } else { fill },
+        line,
+    );
+    if let Some(tip) = pad.use_knob() {
+        painter.circle_filled(at(tip), unit * 1.0, knob);
+    } else {
+        label(layout.use_button, "+", 1.4);
+    }
+    // フックのスティック: 傾けている向きを矢印で。
+    painter.circle(
+        at(layout.hook),
+        layout.hook_radius * scale,
+        if pad.held("hook") { knob } else { fill },
+        line,
+    );
+    label(layout.hook, "G", 0.9);
+    // ボタン。
+    for (center, text, held, radius) in [
+        (layout.jump, "^^", pad.held("jump"), layout.jump_radius),
+        (layout.zoom_in, "+", pad.held("zoom_in"), 0.8 * layout.unit),
+        (layout.zoom_out, "-", pad.held("zoom_out"), 0.8 * layout.unit),
+        (layout.inventory, "[]", overlay_inventory_open(overlay), 0.9 * layout.unit),
+        (layout.smart, "S", pad.smart(), 0.9 * layout.unit),
+    ] {
+        painter.circle(at(center), radius * scale, if held { knob } else { fill }, line);
+        label(center, text, 0.6);
+    }
+    // ホットバー (横一列): 見えている枠と `...`。選んでいる枠は黄色い枠。
+    if let Some(inventory) = overlay.player.and_then(|id| overlay.game.inventories.get(&id)) {
+        for slot in 0..=HOTBAR_VISIBLE {
+            let [l, t, r, b] = layout.slot_rect(slot);
+            let rect = egui::Rect::from_min_max(at([l, t]), at([r, b]));
+            if slot == HOTBAR_VISIBLE {
+                painter.rect(rect, 4.0, fill, line, egui::StrokeKind::Inside);
+                label([(l + r) / 2.0, (t + b) / 2.0], "...", 0.6);
+                continue;
+            }
+            let selected = inventory.selected() == slot;
+            let stroke = if selected {
+                egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 220, 60))
+            } else {
+                line
+            };
+            painter.rect(rect, 4.0, fill, stroke, egui::StrokeKind::Inside);
+            if let Some(item) = inventory.hotbar_active(slot) {
+                let (name, color) = item_label(overlay, item);
+                painter.rect_filled(rect.shrink(unit * 0.25), 3.0, color);
+                painter.text(
+                    rect.center_top() + egui::vec2(0.0, unit * 0.1),
+                    egui::Align2::CENTER_TOP,
+                    short_name(&name),
+                    egui::FontId::proportional(unit * 0.32),
+                    egui::Color32::WHITE,
+                );
+                painter.text(
+                    rect.right_bottom() - egui::vec2(unit * 0.1, unit * 0.1),
+                    egui::Align2::RIGHT_BOTTOM,
+                    inventory.item_count(item).to_string(),
+                    egui::FontId::proportional(unit * 0.38),
+                    egui::Color32::WHITE,
+                );
+            }
+        }
+        // 選んでいるアイテムの名前と数 (画面の上)。
+        if let Some(item) = inventory.selected_item() {
+            let (name, _) = item_label(overlay, item);
+            painter.text(
+                egui::pos2(context.content_rect().center().x, unit * 0.6),
+                egui::Align2::CENTER_CENTER,
+                format!("{name} ({})", inventory.item_count(item)),
+                egui::FontId::proportional(unit * 0.6),
+                egui::Color32::from_white_alpha(230),
             );
         }
     }
-    for (center, label, held, size) in [
-        (layout.use_button, "USE", pad.held("use"), 1.5),
-        (layout.jump, "JUMP", pad.held("jump"), 1.0),
-        (layout.hook, "HOOK", pad.held("hook"), 1.0),
-        (layout.dig, "DIG", pad.held("dig"), 1.0),
-        (layout.paint, "PAINT", pad.held("paint"), 1.0),
-        (layout.zoom_in, "+", pad.held("zoom_in"), 0.8),
-        (layout.zoom_out, "-", pad.held("zoom_out"), 0.8),
-    ] {
-        let color = if held { knob } else { fill };
-        painter.circle(at(center), unit * size, color, line);
-        painter.text(
-            at(center),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::FontId::proportional(unit * 0.5),
-            egui::Color32::from_white_alpha(200),
+    // カーソル (ブロックの格子に揃う枠。置けない・届かないときは赤)。
+    if let Some(view) = pad.cursor_view() {
+        let color = match view.state {
+            charon_game::cursor::CursorState::Ok => egui::Color32::from_rgb(255, 230, 90),
+            _ => egui::Color32::from_rgb(235, 70, 70),
+        };
+        let rect = egui::Rect::from_min_max(
+            at([view.rect[0], view.rect[1]]),
+            at([view.rect[2], view.rect[3]]),
         );
+        painter.rect_stroke(rect, 0.0, egui::Stroke::new(2.5, color), egui::StrokeKind::Outside);
     }
+}
+
+fn overlay_inventory_open(_overlay: &Overlay<'_>) -> bool {
+    false
+}
+
+/// アイテムの表示名と、枠の色 (素材なしの仮の絵)。
+fn item_label(overlay: &Overlay<'_>, item: charon_game::items::ItemId) -> (String, egui::Color32) {
+    use charon_game::items::ItemClass;
+    match item.class() {
+        ItemClass::Cells(m) => {
+            let name = overlay.world.materials().get(m).name.clone();
+            (name, egui::Color32::from_rgb(120, 110, 90))
+        }
+        ItemClass::Block(m) => {
+            let name = format!("{} block", overlay.world.materials().get(m).name);
+            (name, egui::Color32::from_rgb(90, 100, 130))
+        }
+        ItemClass::Def(index) => {
+            let name = overlay
+                .defs
+                .and_then(|d| d.item_names().nth(index).map(str::to_owned))
+                .unwrap_or_else(|| format!("item {index}"));
+            (name, egui::Color32::from_rgb(110, 90, 130))
+        }
+    }
+}
+
+/// 枠に収まる短い名前。
+fn short_name(name: &str) -> String {
+    name.chars().take(6).collect()
 }
 
 /// 参照画面の UI の状態。
@@ -491,7 +656,7 @@ impl DemoUi {
             action = Some(chosen);
         }
         if let Some(pad) = overlay.pad {
-            draw_touch_pad(context, pad);
+            draw_touch_pad(context, pad, overlay);
         }
 
         if show_stats {
@@ -1255,6 +1420,7 @@ mod tests {
             game: &game,
             player: None,
             pad: None,
+            defs: None,
         };
         let shapes = |pause: bool, inventory: bool, rebinding: bool| -> usize {
             let mut demo = DemoUi::new(world.materials());
@@ -1317,6 +1483,7 @@ mod tests {
             game: &game,
             player: None,
             pad,
+            defs: None,
         };
         let frames =
             |demo: &mut DemoUi, overlay: &Overlay<'_>, taps: &[(u32, egui::Pos2, bool)]| {
@@ -1393,6 +1560,7 @@ mod tests {
             game: &game,
             player: None,
             pad: None,
+            defs: None,
         };
         let mut demo = DemoUi::new(world.materials());
         demo.show_collision = true;

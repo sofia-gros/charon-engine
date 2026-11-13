@@ -1,10 +1,13 @@
 //! 仕様 19 §4〜§6: クラフト・装備・自動装備。持ち物と装備の出し入れ。失敗したときは何も変えない。
 
 use crate::EntityId;
+use charon_core::world::World;
+
+use crate::cursor::{Cursor, CursorState, CursorUse, center_of, cursor_state, usage_of};
 use crate::defs::Definitions;
-use crate::game::GameState;
+use crate::game::{BuildError, GameState};
 use crate::inventory::Inventory;
-use crate::items::{EquipSlot, Equipment, ItemId};
+use crate::items::{EquipSlot, Equipment, ItemClass, ItemId, ItemKind};
 
 /// 持ち物・装備の操作の失敗。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,5 +162,77 @@ impl GameState {
         trial.add_item(out, n);
         *inventory = trial;
         Ok(())
+    }
+}
+
+/// `use_selected` の結果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UseOutcome {
+    /// 使えるものを選んでいない (武器は `GameInput` で撃つ)。
+    Nothing,
+    Placed,
+    Broken,
+    /// 消耗品を使った。
+    Consumed,
+}
+
+/// `use_selected` の失敗。何も変わらない。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UseError {
+    NoCharacter,
+    OutOfReach,
+    /// 置けない・壊せない場所。
+    Invalid,
+    Build(BuildError),
+}
+
+impl GameState {
+    /// ホットバーで選んでいるアイテムを、カーソルの場所に使う (仕様 18 §2)。
+    /// ブロックは置く、つるはしはブロックを壊す、消耗品は体力・マナを回復して 1 個使う。
+    pub fn use_selected(
+        &mut self,
+        world: &mut World,
+        entities: &mut crate::EntityWorld,
+        id: crate::EntityId,
+        defs: &Definitions,
+        cursor: Cursor,
+    ) -> Result<UseOutcome, UseError> {
+        let inventory = self.inventories.get(&id).ok_or(UseError::NoCharacter)?;
+        let Some(item) = inventory.selected_item() else { return Ok(UseOutcome::Nothing) };
+        let usage = usage_of(Some(item), defs);
+        if matches!(usage, CursorUse::Place | CursorUse::Mine) {
+            let center = center_of(entities, id).ok_or(UseError::NoCharacter)?;
+            match cursor_state(world, center, cursor, usage) {
+                CursorState::Ok => {}
+                CursorState::OutOfReach => return Err(UseError::OutOfReach),
+                CursorState::Invalid => return Err(UseError::Invalid),
+            }
+        }
+        match item.class() {
+            ItemClass::Block(material) => self
+                .place_block_item(world, entities, id, cursor.block, material)
+                .map(|_| UseOutcome::Placed)
+                .map_err(UseError::Build),
+            ItemClass::Def(_) => match defs.item_def(item).map(|d| d.kind.clone()) {
+                Some(ItemKind::Tool { .. }) => self
+                    .break_block_item(world, id, cursor.block)
+                    .map(|_| UseOutcome::Broken)
+                    .map_err(UseError::Build),
+                Some(ItemKind::Consumable { heal, mana }) => {
+                    if let Some(vitals) = self.vitals.get_mut(id) {
+                        vitals.heal(i32::from(heal));
+                    }
+                    if let Some(wand) = self.wands.get_mut(&id) {
+                        wand.mana = wand.mana.saturating_add(u32::from(mana)).min(wand.mana_max);
+                    }
+                    if let Some(inventory) = self.inventories.get_mut(&id) {
+                        inventory.take_item(item, 1);
+                    }
+                    Ok(UseOutcome::Consumed)
+                }
+                _ => Ok(UseOutcome::Nothing),
+            },
+            ItemClass::Cells(_) => Ok(UseOutcome::Nothing),
+        }
     }
 }

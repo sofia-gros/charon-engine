@@ -81,8 +81,15 @@ fn the_prelude_covers_the_other_building_blocks() {
     let def = LevitationDef::default();
     assert_eq!(Levitation::new(def).fuel, def.fuel_max);
     let _ = (Collapse::new(), Drops::new(), StatusTable::new(), StatusKind::Wet);
-    let _ =
-        PlayerLoadout { max_hp: 10, wand: String::new(), hook: None, dig: None, levitation: None };
+    let _ = PlayerLoadout {
+        max_hp: 10,
+        wand: String::new(),
+        hook: None,
+        dig: None,
+        levitation: None,
+        items: Vec::new(),
+        hotbar: Vec::new(),
+    };
     let _ = EnemySpawn { name: String::new(), cell: [0, 0] };
     let _ = (GameInput::default(), Clips::STILL, Clip::still(0), SoundBank::procedural(44_100));
     let _: Option<(Cell, MaterialId, KeyBindings, RayHit, Definitions)> = None;
