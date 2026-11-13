@@ -225,6 +225,10 @@ impl Sim<'_> {
                 {
                     eprintln!("掘る道具 {dig} を持たせられません: {err}");
                 }
+                // 持ち物 (掘った材質を集める、仕様 10 §13)。
+                if let Err(err) = self.game.give_inventory(id) {
+                    eprintln!("持ち物を持たせられません: {err}");
+                }
             }
             (vitals, wand) => {
                 eprintln!(

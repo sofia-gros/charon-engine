@@ -294,7 +294,17 @@ T11.1〜T11.4、T11.6〜T11.8 は自動テストまで完了 (`charon-game` の 
 | T14.1 | `SpritePass`・`Sprite` (RGBA の画像、`scale` = 1 画素あたりのセル数、基準点・回転・反転・補間・光)、`PassList::render_with_sprites`、`AppOptions::player_sprite` (`SpriteAsset`)、デモの 32×64 の魔法使い | `scale_sets_the_size_in_cells`、`a_32_by_64_character_scales_to_5_by_10_cells`、`invalid_sprites_are_rejected`、`content_hash_tracks_pixels_and_size`、`demo_renders_sprite_with_scale` |
 | T14.2 | `UI scale` (egui の `zoom_factor`、仮想パッドも)、`Character scale` (`Debug` パネル) | `scale_resizes_the_pad` |
 
-アニメーション (スプライトシート)、敵・アイテムへの画像の割り当ては未着手。ウィンドウでの操作確認は未実施 (RTX 4060 のオフスクリーン描画で確認)。
+アニメーション (スプライトシート) は T15.1 で入った。アイテムへの画像の割り当ては未着手。ウィンドウでの操作確認は未実施 (RTX 4060 のオフスクリーン描画で確認)。
+
+## M15 アニメーション・掘る道具・持ち物
+
+2026-11-13 の依頼 (優先順に止まらず進める)。
+
+| タスク | 作るもの | 完了条件 |
+|---|---|---|
+| T15.1 | スプライトシートのアニメーション (立つ・歩く・跳ぶ・落ちる)、敵の種類ごとの画像 ([06 §10.4](spec/06-rendering-platform.md)) | `clips_advance_and_loop`、`pose_follows_the_entity`、`frames_pick_the_row_and_column_from_the_sheet`、`sprites_are_assigned_to_the_player_and_to_enemy_kinds`、`facing_flips_when_walking_left_and_is_remembered`、`frames_select_part_of_the_sheet` |
+| T15.2 (= T11.5 の掘る部分) | 掘る道具 (Starbound 型のレーザー、硬さ × 力) ([10 §12](spec/10-noita-like-game.md)) | `dig_*`、`hardness_defaults_by_phase`、`lockstep_packet_v4_roundtrip`、`demo_dig_in_scene` |
+| T15.3 | 持ち物とゲーム状態の保存 `game.ron` ([10 §13](spec/10-noita-like-game.md)) | `add_take_and_count` ほか、`game_state_roundtrips_through_ron`、`game_save_file_io`、`dig_collects_into_the_inventory` |
 
 ---
 

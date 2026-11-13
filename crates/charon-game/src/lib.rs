@@ -3,9 +3,11 @@
 pub mod defs;
 pub mod dig;
 pub mod game;
+pub mod inventory;
 pub mod lockstep;
 pub mod mods;
 pub mod projectile;
+pub mod save;
 pub mod vitals;
 pub mod wand;
 

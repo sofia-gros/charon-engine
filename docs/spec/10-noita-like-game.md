@@ -476,4 +476,32 @@ Android 実機での確認は未実施。
 
 ### 12.5 後続
 
-掘ったものを集める (持ち物、仕様は着手前に書く)、掘れない固体 (`hardness: Some(65535)`) の見た目、レーザーの光・音、道具の持ち替え。浮遊は未着手 (T11.5 の残り)。
+掘れない固体 (`hardness: Some(65535)`) の見た目、レーザーの光・音、道具の持ち替え。浮遊は未着手 (T11.5 の残り)。掘ったものを集める持ち物は §13。
+
+## 13. 持ち物とゲーム状態の保存 (M15)
+
+### 13.1 持ち物 (`charon-game::inventory`)
+
+- `Inventory`: 材質ごとの数 (`BTreeMap`)。`add(材質, 数) -> 入った数`、`take(材質, 数) -> bool` (足りなければ何も取らない)、`count`、`total`、`iter` (材質 ID の昇順)、`state_hash`。1 つの材質は `STACK_MAX = 99999` まで、種類は `KINDS_MAX = 256` まで (超えた分・新しい種類は入らない)。`empty`・`boundary` は持てない。
+- `GameState::give_inventory(id)` で、杖を持つキャラクターに空の持ち物を持たせる (すでにあれば中身を残す)。持ち物のあるキャラクターが掘ったセルは、**材質ごとに 1 個ずつ**集まる (`step_digs`)。持ち物のないキャラクターが掘ったセルは、集まらずに消える。集めたものを使う・置く・捨てるのは、ゲームが `take` と `World::set` で決める。同期のハッシュ (`state_hash`) に含める。
+- デモの `Wand` パネルに、多い順に 4 種類 (`Items (dig): stone 12 · sand 3`)。
+
+### 13.2 ゲーム状態の保存 (`charon-game::save`)
+
+- 世界の保存 (仕様 04) とは別の **`game.ron`** (世界の保存先のディレクトリ)。`GameSave { version, tick, player: Option<PlayerSave> }`、`PlayerSave { hp, breath, mana, x16, y16, inventory: Vec<(材質の名前, 数)> }`。材質は**名前**で保存する (表の順序が変わっても読める)。敵と弾は保存しない (読み込んだ世界で `AppOptions::enemies` から再び生まれる)。
+- `GameSave::capture(game, entities, id, materials, tick)`、`to_ron`・`from_ron` (版が違うと `SaveError::Version`、持ち物の種類が `KINDS_MAX` を超えると `Invalid`)、`write(root)` (一時ファイルへ書いてから入れ替え)、`read(root)` (ファイルがなければ `Ok(None)`、1 MiB 超は拒否)。
+- `GameSave::apply(game, entities, world, id)`: 体力は `max_hp` に収め、**0 (倒れていた) なら満タン**で戻す。息・マナは上限に収める。位置は、そこが固体と重ならないときだけ戻し (`Applied::moved`)、速度は 0 にする。持ち物は名前から材質を引いて足し、知らない名前は読み飛ばす。
+- アプリ (`charon-app`): 世界を保存するとき (終了・`Singleplayer`・`Random Seed`) に、プレイヤーがいれば `game.ron` を書く。世界を開いたとき (起動・作り直し) に読み、**プレイヤーが生まれた最初のフレーム**で `apply` する。`game.ron` がなければ新しく始める。壊れていれば報告して新しく始める。Web では保存しない。
+
+### 13.3 テスト
+
+| テスト | 確認 |
+|---|---|
+| `add_take_and_count` / `stacks_and_kinds_are_limited` / `empty_and_boundary_are_never_kept` / `hash_tracks_contents` | 持ち物の追加・取り出し・上限・ハッシュ |
+| `dig_collects_into_the_inventory` | 掘った数だけ材質が集まり、持ち物がなければ集めない |
+| `inventory_requires_a_character_with_a_wand` | 杖のないキャラクターには持たせず、すでにあれば中身を残す |
+| `game_state_roundtrips_through_ron` | 体力・息・マナ・位置・持ち物を RON に写して、新しいキャラクターへ戻せる |
+| `apply_is_careful_with_dead_players_solid_positions_and_limits` | 倒れていたら満タン、固体の中へは戻さない、上限に収める、知らない材質を読み飛ばす |
+| `bad_game_saves_are_rejected` | 版違い・壊れた RON・多すぎる種類を拒否する |
+| `game_save_file_io` | ないときは `None`、壊れていればエラー、書き直しても一時ファイルは残らない |
+| `demo_dig_in_scene` | デモで掘った石が持ち物に集まり、`game.ron` に写して読み戻せる |

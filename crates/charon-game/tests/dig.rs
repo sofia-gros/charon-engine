@@ -233,6 +233,30 @@ fn dig_reports_dug_cells() {
     assert_eq!(testkit::count(&arena.world, '#'), before - dug, "報告した数だけ消える");
 }
 
+/// 持ち物のあるキャラクターは、掘ったセルを材質ごとに集める。持ち物がなければ集めない (セルは消える)。
+#[test]
+fn dig_collects_into_the_inventory() {
+    let mut arena = Arena::new(1, '#', "strong");
+    let stone = testkit::material_of(&arena.world, '#');
+    arena.game.give_inventory(arena.player).unwrap();
+    let mut dug = 0u32;
+    for _ in 0..10 {
+        dug += arena.dig().dug.len() as u32;
+    }
+    assert!(dug > 15);
+    let inventory = &arena.game.inventories[&arena.player];
+    assert_eq!(inventory.count(stone), dug, "掘った数だけ集まる");
+    assert_eq!(inventory.total(), u64::from(dug));
+    // 持ち物をなくすと、集まらない。
+    arena.game.inventories.clear();
+    let before = testkit::count(&arena.world, '#');
+    for _ in 0..10 {
+        arena.dig();
+    }
+    assert!(testkit::count(&arena.world, '#') < before, "掘ったセルは消える");
+    assert!(arena.game.inventories.is_empty());
+}
+
 /// 光線の向き: 狙いの向きに進み、手から当たった点まで。`dig` を離すと消える。
 #[test]
 fn dig_beam_follows_the_aim() {

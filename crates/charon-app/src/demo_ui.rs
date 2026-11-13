@@ -824,6 +824,23 @@ fn draw_wand_panel(context: &egui::Context, overlay: &Overlay<'_>) {
                     };
                     ui.label(format!("Tool (right): {} · {state}", hook.def.name));
                 }
+                if let Some(inventory) = overlay.game.inventories.get(&id) {
+                    // 持ち物 (仕様 10 §13): 多い順に 4 種類まで。
+                    let mut items: Vec<(u32, &str)> = inventory
+                        .iter()
+                        .map(|(material, count)| {
+                            (count, overlay.world.materials().get(material).name.as_str())
+                        })
+                        .collect();
+                    items.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+                    let shown: Vec<String> = items
+                        .iter()
+                        .take(4)
+                        .map(|(count, name)| format!("{name} {count}"))
+                        .collect();
+                    let text = if shown.is_empty() { "-".to_owned() } else { shown.join(" · ") };
+                    ui.label(format!("Items (dig): {text}"));
+                }
                 ui.label(format!(
                     "Weapon (left) next: {next} · Shots: {} · Enemies: {}{}",
                     overlay.game.projectiles.len(),

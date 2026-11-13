@@ -13,6 +13,7 @@ use charon_physics::rope::{Rope, RopeEvent, RopeParams, RopePhase, tether_veloci
 
 use crate::defs::{Definitions, EnemyDef, HookDef};
 use crate::dig::{Beam, Dig, Dug};
+use crate::inventory::Inventory;
 use crate::projectile::{Hit, ProjectileWorld};
 use crate::vitals::{Vitals, VitalsError, VitalsTable, covered_cells, step_environment};
 use crate::wand::{CastError, CastOutcome, SpellTable, Wand, WandError};
@@ -123,6 +124,8 @@ pub struct GameState {
     pub hooks: BTreeMap<EntityId, Hook>,
     /// 掘る道具 (レーザー)。
     pub digs: BTreeMap<EntityId, Dig>,
+    /// 持ち物。持つキャラクターが掘ったセルは、材質ごとに数えて入る (仕様 10 §13)。
+    pub inventories: BTreeMap<EntityId, Inventory>,
     pub spells: SpellTable,
 }
 
@@ -199,6 +202,7 @@ impl GameState {
             enemies: BTreeMap::new(),
             hooks: BTreeMap::new(),
             digs: BTreeMap::new(),
+            inventories: BTreeMap::new(),
             spells,
         }
     }
@@ -241,6 +245,15 @@ impl GameState {
             return Err(GameError::InvalidAction);
         }
         self.digs.insert(id, Dig::new(def.clone()));
+        Ok(())
+    }
+
+    /// 杖を持つキャラクターに、空の持ち物を持たせる。すでにあるときは中身を残す。
+    pub fn give_inventory(&mut self, id: EntityId) -> Result<(), GameError> {
+        if !self.wands.contains_key(&id) {
+            return Err(GameError::InvalidAction);
+        }
+        self.inventories.entry(id).or_default();
         Ok(())
     }
 
@@ -389,7 +402,14 @@ impl GameState {
             let Some(entity) = entities.get(id) else { continue };
             let hand = center16(entity);
             if let Some(tool) = self.digs.get_mut(&id) {
-                dug.extend(tool.step(world, hand, input.aim, input.dig && alive));
+                let mine = tool.step(world, hand, input.aim, input.dig && alive);
+                // 持ち物のあるキャラクターは、掘った材質を集める (入りきらない分は消える)。
+                if let Some(inventory) = self.inventories.get_mut(&id) {
+                    for cell in &mine {
+                        inventory.add(cell.material, 1);
+                    }
+                }
+                dug.extend(mine);
             }
         }
         dug
@@ -627,6 +647,10 @@ impl GameState {
         for (&id, dig) in &self.digs {
             feed(&id.0.to_le_bytes());
             feed(&dig.state_hash().to_le_bytes());
+        }
+        for (&id, inventory) in &self.inventories {
+            feed(&id.0.to_le_bytes());
+            feed(&inventory.state_hash().to_le_bytes());
         }
         for (&id, enemy) in &self.enemies {
             feed(&id.0.to_le_bytes());

@@ -848,6 +848,28 @@ mod tests {
                 (99..=101).contains(&elapsed),
                 "seed {seed}: 硬さ 600 / 力 6 = 100 tick ({elapsed})"
             );
+            // 掘った石は持ち物に集まり (仕様 10 §13)、game.ron に写して読み戻せる。
+            let id = player.unwrap();
+            let stone = world.materials().id("stone").unwrap();
+            let held = game.inventories[&id].count(stone);
+            assert!(held > 15, "seed {seed}: 掘った石が集まる ({held})");
+            let save = charon_game::save::GameSave::capture(
+                &game,
+                &entities,
+                id,
+                world.materials(),
+                world.tick(),
+            );
+            assert!(
+                save.player
+                    .as_ref()
+                    .unwrap()
+                    .inventory
+                    .iter()
+                    .any(|(n, c)| n == "stone" && *c == held)
+            );
+            save.write(&dir.0).unwrap();
+            assert_eq!(charon_game::save::GameSave::read(&dir.0).unwrap(), Some(save));
             streaming.take().unwrap().streamer.finish().unwrap();
         }
     }

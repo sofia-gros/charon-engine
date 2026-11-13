@@ -45,6 +45,8 @@ use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::world::World;
 use charon_game::defs::Definitions;
 use charon_game::game::{GameInput, GameState};
+#[cfg(not(target_arch = "wasm32"))]
+use charon_game::save::GameSave;
 use charon_game::wand::SpellTable;
 use charon_game::{EntityId, EntityWorld};
 use charon_physics::{BodyRender, CELLS_PER_METER, PhysicsEngine};
@@ -308,6 +310,7 @@ pub fn run_with_streaming_options(
     app.reset_game();
     app.restart = restart;
     app.background = background;
+    app.pending_game_save = read_game_save(&save_root);
     app.streaming = Some(StreamingState { streamer, save_root, metadata });
     app.physics = physics;
     app.physics_initialized = false;
@@ -409,6 +412,9 @@ struct App {
     facing: i8,
     /// 画像のエンティティごとの向き (仕様 06 §10.4)。
     sprite_facing: BTreeMap<EntityId, i8>,
+    /// 読み込んだ `game.ron` (仕様 10 §13)。プレイヤーが生まれたら、体力・マナ・位置・持ち物を戻す。
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_game_save: Option<GameSave>,
     timer: FixedTimestep,
     previous: Option<Instant>,
     occluded: bool,
@@ -473,6 +479,8 @@ impl App {
             gamepad: gamepad::Gamepad::new(),
             facing: 1,
             sprite_facing: BTreeMap::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_game_save: None,
             timer: FixedTimestep::default(),
             previous: None,
             occluded: false,
@@ -589,6 +597,18 @@ impl App {
             .save_bodies(&state.save_root, self.world.materials(), &state.metadata.materials)
             .map_err(|err| err.to_string())?;
         state.metadata.tick = self.world.tick();
+        // ゲーム状態 (プレイヤーの体力・マナ・位置・持ち物) は、世界とは別の game.ron (仕様 10 §13)。
+        if let Some(id) = self.player {
+            GameSave::capture(
+                &self.game,
+                &self.entities,
+                id,
+                self.world.materials(),
+                self.world.tick(),
+            )
+            .write(&state.save_root)
+            .map_err(|err| err.to_string())?;
+        }
         state.metadata.save(&state.save_root).map_err(|err| err.to_string())
     }
 
@@ -733,6 +753,7 @@ impl App {
                 BackgroundWorld::new()
             });
         self.world = world;
+        self.pending_game_save = read_game_save(&save_root);
         self.streaming = Some(StreamingState { streamer, save_root, metadata });
         self.physics = physics;
         self.physics_initialized = false;
@@ -888,6 +909,13 @@ impl App {
         {
             gui.controls.step_once = false;
         }
+        // 保存したゲーム状態を、プレイヤーが生まれた最初のフレームで戻す (仕様 10 §13)。
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(id) = self.player
+            && let Some(save) = self.pending_game_save.take()
+        {
+            save.apply(&mut self.game, &mut self.entities, &self.world, id);
+        }
         if let Some(err) = stream_error {
             eprintln!("ワールドの読み書きに失敗: {err}");
             event_loop.exit();
@@ -985,6 +1013,18 @@ impl App {
         }
         gpu.queue.present(frame);
         self.process_actions(window.inner_size());
+    }
+}
+
+/// `save_root/game.ron` を読む。なければ `None`、読めなければ報告して `None` (新しく始める)。
+#[cfg(not(target_arch = "wasm32"))]
+fn read_game_save(save_root: &std::path::Path) -> Option<GameSave> {
+    match GameSave::read(save_root) {
+        Ok(save) => save,
+        Err(err) => {
+            eprintln!("{err}");
+            None
+        }
     }
 }
 
