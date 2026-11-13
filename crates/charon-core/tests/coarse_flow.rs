@@ -87,3 +87,23 @@ fn without_an_active_region_the_normal_simulation_runs() {
     }
     assert!(water_rows(&world).iter().all(|&y| y >= 378));
 }
+
+/// 範囲の外の気体は、上へ昇る (天井の手前で止まる)。数は変わらない。
+#[test]
+fn gases_rise_outside_the_active_region() {
+    let mut world = tall_world();
+    // 更新範囲は、いちばん下のチャンク。気体は、外の 1 つ下のチャンクにある。
+    world.set_active_region(Some((ChunkPos::new(0, 5), 0)));
+    testkit::fill(&mut world, 0, 0, 63, 0, '#');
+    for y in 250..254 {
+        testkit::place(&mut world, 10, y, 't');
+    }
+    let before = testkit::count(&world, 't');
+    for _ in 0..40 {
+        world.step();
+    }
+    assert_eq!(testkit::count(&world, 't'), before, "セルの数は変わらない");
+    let steam = testkit::material_of(&world, 't');
+    let top = (0..384).find(|&y| world.get(CellPos::new(10, y)).material == steam).unwrap();
+    assert!(top < 250, "上へ昇った: {top}");
+}

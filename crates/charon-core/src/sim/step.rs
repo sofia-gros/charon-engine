@@ -63,7 +63,7 @@ impl World {
 
     /// 更新範囲の外の読み込み済みチャンクで、液体を大雑把に下へ落とす (仕様 02 §9.5)。
     /// 範囲の外はセルの更新を止めているが、水が下へ下へと落ち続けられるように、`COARSE_INTERVAL` tick ごと (チャンクごとに
-    /// ずらす) に、液体のセルを、真下の続く空きセルの `COARSE_FALL` 個先まで一気に落とす。広がる・混ざる・反応は、範囲に入ってから。
+    /// ずらす) に、液体のセルを (気体は逆に上へ)、真下の続く空きセルの `COARSE_FALL` 個先まで一気に落とす。広がる・混ざる・反応は、範囲に入ってから。
     /// セルの数は変わらず、`swap` だけを使う。整数だけで決まる。
     fn coarse_flow(&mut self) {
         use crate::cell::{FLAG_BLOCK, FLAG_BODY};
@@ -104,6 +104,33 @@ impl World {
                         let b = self.get(below);
                         if b.material == MaterialId::EMPTY && !b.has(FLAG_BODY) {
                             target = Some(below);
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Some(target) = target {
+                        self.swap(at, target);
+                    }
+                }
+            }
+            // 気体は上へ (上の行から下へ調べ、真上に続く空きセルの先まで)。
+            for ly in 0..crate::coords::CHUNK_SIZE {
+                for lx in 0..crate::coords::CHUNK_SIZE {
+                    let at = CellPos::new(origin.x + lx, origin.y + ly);
+                    let cell = self.get(at);
+                    if cell.material == MaterialId::EMPTY
+                        || cell.has(FLAG_BODY)
+                        || cell.has(FLAG_BLOCK)
+                        || self.materials.get(cell.material).phase != Phase::Gas
+                    {
+                        continue;
+                    }
+                    let mut target = None;
+                    for step in 1..=COARSE_FALL {
+                        let above = CellPos::new(at.x, at.y - step);
+                        let b = self.get(above);
+                        if b.material == MaterialId::EMPTY && !b.has(FLAG_BODY) {
+                            target = Some(above);
                         } else {
                             break;
                         }
