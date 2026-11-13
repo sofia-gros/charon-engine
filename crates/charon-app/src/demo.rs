@@ -385,9 +385,31 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
             player_sprite: Some(demo_character_image()),
             enemy_sprites: demo_enemy_images(),
             settings_path: Some(config.settings.clone()),
+            logic: Some(crate::api::GameLogic::new(DemoGame)),
         },
         brush: demo_materials.rainbow_sand,
     })
+}
+
+/// デモのゲームロジック (仕様 14): 出来事に、画面の揺れと音で反応する。エンジンの `Game` API の使用例。
+#[derive(Clone, Copy, Debug)]
+pub struct DemoGame;
+
+impl crate::api::Game for DemoGame {
+    fn on_tick(
+        &mut self,
+        ctx: &mut crate::api::Context<'_>,
+        events: &[charon_game::game::GameEvent],
+    ) {
+        use charon_game::game::GameEvent;
+        for event in events {
+            match event {
+                GameEvent::Defeated(_) => ctx.shake(0.5),
+                GameEvent::Hit(hit) if hit.entity.is_some() => ctx.shake(0.15),
+                _ => {}
+            }
+        }
+    }
 }
 
 /// 再生記録用の世界。デモの UI には再生ボタンがなく、呼ばれない。

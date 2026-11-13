@@ -258,6 +258,22 @@ impl Audio {
         events
     }
 
+    /// 出来事を指定して鳴らす (ゲームのロジックが頼んだ音)。
+    pub fn play_events(&mut self, events: &[SoundEvent]) {
+        let mut mixer = lock(&self.mixer);
+        for event in events {
+            let (sound, volume) = match event {
+                SoundEvent::Jump => (&self.bank.jump, 0.5),
+                SoundEvent::Shoot => (&self.bank.shoot, 0.6),
+                SoundEvent::HookAnchor => (&self.bank.anchor, 0.7),
+                SoundEvent::Pickup => (&self.bank.pickup, 0.4),
+                // 掘る音は続くので、状態の変化で鳴らす。ここでは扱わない。
+                SoundEvent::DigStart | SoundEvent::DigStop => continue,
+            };
+            mixer.play(sound, PlayParams { volume, bus: Bus::Sfx, ..Default::default() });
+        }
+    }
+
     /// `out` (ステレオ) に混ぜる。
     pub fn render(&mut self, out: &mut [f32]) {
         lock(&self.mixer).render(out);

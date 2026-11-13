@@ -1,6 +1,7 @@
 //! 仕様 06 §6〜§7: 固定 tick と、ウィンドウ・サーフェスの復帰管理。
 
 mod animation;
+pub mod api;
 pub mod audio;
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
@@ -48,7 +49,7 @@ use charon_core::cell::MaterialId;
 use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::world::World;
 use charon_game::defs::Definitions;
-use charon_game::game::{GameEvent, GameInput, GameState};
+use charon_game::game::{GameInput, GameState};
 #[cfg(not(target_arch = "wasm32"))]
 use charon_game::save::GameSave;
 use charon_game::wand::SpellTable;
@@ -228,6 +229,8 @@ pub struct AppOptions {
     pub enemy_sprites: BTreeMap<String, SpriteAsset>,
     /// 設定 (`settings.ron`: UI の大きさ・キャラクターの大きさ・光・キー割り当て、仕様 10 §14) を読み書きする場所。`None` なら保存しない。
     pub settings_path: Option<std::path::PathBuf>,
+    /// ゲームのロジック (仕様 14)。毎 tick 呼ばれる。
+    pub logic: Option<api::GameLogic>,
 }
 
 /// ゲームがエンジンに渡す敵の生成の指定 (仕様 10 §8.5)。
@@ -431,6 +434,10 @@ struct App {
     audio: audio::Audio,
     /// カメラの追従と揺れ (仕様 06 §11)。
     camera_fx: camera::CameraFx,
+    /// `Game::on_start` を呼んだか。
+    logic_started: bool,
+    /// ゲームが頼んだ演出 (揺れ・音)。フレームの終わりに受け取る。
+    effects: api::Effects,
     /// 読み込んだ `game.ron` (仕様 10 §13)。プレイヤーが生まれたら、体力・マナ・位置・持ち物を戻す。
     #[cfg(not(target_arch = "wasm32"))]
     pending_game_save: Option<GameSave>,
@@ -501,6 +508,8 @@ impl App {
             settings: Settings::default(),
             audio: audio::Audio::new(),
             camera_fx: camera::CameraFx::default(),
+            logic_started: false,
+            effects: api::Effects::default(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_game_save: None,
             timer: FixedTimestep::default(),
@@ -965,11 +974,27 @@ impl App {
             loadout: self.options.player.as_ref(),
             enemy_spawns: &mut self.enemies_pending,
         };
+        let logic = self.options.logic.as_ref();
+        let (logic_started, effects) = (&mut self.logic_started, &mut self.effects);
         let step = || {
-            if stream_error.is_none()
-                && let Err(err) = sim.tick(camera, player_input, action, &mut physics_ms)
-            {
-                stream_error = Some(err);
+            if stream_error.is_none() {
+                let before = sim.game.event_count();
+                if let Err(err) = sim.tick(camera, player_input, action, &mut physics_ms) {
+                    stream_error = Some(err);
+                } else if let Some(logic) = logic {
+                    // ゲームのロジック (仕様 14): この tick に起きた出来事を渡して呼ぶ。
+                    let events = sim.game.events_since(before).to_vec();
+                    let tick = sim.world.tick();
+                    let mut ctx = api::Context {
+                        world: sim.world,
+                        game: sim.game,
+                        entities: sim.entities,
+                        player: *sim.player,
+                        tick,
+                        effects,
+                    };
+                    logic.run(logic_started, &mut ctx, &events);
+                }
             }
         };
         advance_frame(&mut self.timer, elapsed, paused, step_once, step);
@@ -1082,14 +1107,12 @@ impl App {
                     _ => {}
                 }
             }
-            // ゲームの出来事 (仕様 10 §15): 倒したら大きく、敵や自分に当たったら小さく揺らす。
-            for event in self.game.take_events() {
-                match event {
-                    GameEvent::Defeated(_) => self.camera_fx.shake(0.5),
-                    GameEvent::Hit(hit) if hit.entity.is_some() => self.camera_fx.shake(0.15),
-                    _ => {}
-                }
-            }
+            // ゲームの出来事 (仕様 10 §15) は、ロジックが tick ごとに見たので、ここで捨てる。
+            drop(self.game.take_events());
+            // ゲームのロジックが頼んだ演出 (仕様 14)。
+            let effects = std::mem::take(&mut self.effects);
+            self.camera_fx.shake(effects.shake);
+            self.audio.play_events(&effects.sounds);
             self.audio.pump();
         }
         let smooth = smooth_sprites(&self.physics);

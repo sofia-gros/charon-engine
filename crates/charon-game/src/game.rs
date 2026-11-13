@@ -228,6 +228,16 @@ impl GameState {
         }
     }
 
+    /// 溜まっている出来事の数。
+    pub fn event_count(&self) -> usize {
+        self.events.len()
+    }
+
+    /// `start` 番目以降の出来事を、取り出さずに見る (`event_count` を `start` に使うと、それ以降に起きた分)。
+    pub fn events_since(&self, start: usize) -> &[GameEvent] {
+        self.events.get(start..).unwrap_or(&[])
+    }
+
     /// 溜まった出来事を、起きた順に取り出す。
     pub fn take_events(&mut self) -> Vec<GameEvent> {
         std::mem::take(&mut self.events)
