@@ -7,6 +7,7 @@ pub mod cell;
 pub mod chunk;
 pub mod coords;
 pub mod material;
+pub mod query;
 pub mod reaction;
 pub mod rng;
 pub mod sim;

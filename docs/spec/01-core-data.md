@@ -327,3 +327,19 @@ pub struct World {
 
 `keep_awake(pos)`: セルの値は変えずに 1 だけを行う。「今回は動かなかったが次は動くかもしれない」
 セルが必ず呼ぶ (仕様 02、03 の各所で指示する)。
+
+## 7. 問い合わせ (`query`)
+
+読み取り専用。セルは書き換えず、浮動小数点数は使わない。
+
+- `World::raycast(from, to, Stop) -> Option<RayHit>`: Bresenham の線を始点から終点へたどり、最初に止まるセルを返す (始点も調べる)。`Stop::Solid` は固体と粉体、`Stop::NotEmpty` は空以外。読み込まれていない場所 (`BOUNDARY`) は常に止まる。`RayHit { pos, cell, before, steps }`。
+- `World::line_of_sight(from, to, Stop)`: 遮られなければ真。
+- `World::cells_in_circle(center, radius, keep)`: 円の中で `keep` が真のセルを、y の小さい順、x の小さい順に返す。`count_in_circle` は材質を数える。
+
+| テスト | 内容 |
+|---|---|
+| `raycast_stops_at_the_first_solid` | 最初の固体、手前のセル、歩数 |
+| `raycast_passes_liquid_unless_asked_not_to` | 液体を通す・通さない |
+| `raycast_works_in_every_direction_and_on_diagonals` | 向きに依らない、始点が当たる場合 |
+| `line_of_sight_and_the_outside_of_the_world` | 視線、世界の外は境界 |
+| `circle_search_is_ordered_and_counts` | 円の検索の順序と数 |
