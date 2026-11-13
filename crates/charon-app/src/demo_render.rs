@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use charon_core::cell::{Cell, MaterialId};
 use charon_core::coords::{CellPos, ChunkPos};
@@ -59,6 +60,8 @@ struct Scene {
     menu: bool,
     /// 画面の仮想スティックとボタン。`Some` なら UI の重ね描きに出す。
     pad: Option<crate::touch_pad::TouchPad>,
+    /// アイテムの名前を引く定義。
+    defs: Arc<charon_game::defs::Definitions>,
 }
 
 impl Scene {
@@ -81,6 +84,7 @@ impl Scene {
             light: LightQuality::High,
             menu: false,
             pad: None,
+            defs: Arc::new(pack.definitions.clone()),
         }
     }
 
@@ -356,7 +360,7 @@ fn render_ui(
         game: &scene.game,
         player: scene.player,
         pad: scene.pad.as_ref(),
-        defs: None,
+        defs: Some(&scene.defs),
     };
     let view = texture.create_view(&Default::default());
     for frame in 0..130u32 {
@@ -375,7 +379,7 @@ fn render_ui(
             phys_ms: 0.05 + 0.02 * wobble.abs(),
         };
         let output = context.run_pass(input, |context| {
-            demo.draw(context, &mut controls, &overlay, stats, 150);
+            demo.draw(context, &mut controls, &overlay, stats, 100_000);
         });
         let last = frame == 129;
         let shapes = if last { output.shapes } else { Vec::new() };
@@ -641,6 +645,10 @@ fn demo_renders_touch_pad() {
     let Some(gpu) = test_gpu() else { return };
     let pack = pack();
     let (mut scene, center) = room_scene(&pack);
+    // デスクトップのホットバー (画面の下の中央) は、ズームのボタンと同じ場所なので、この確認では外す。
+    if let Some(id) = scene.player {
+        scene.game.inventories.remove(&id);
+    }
     let (texture, world_pixels) = render_world(&gpu, &mut scene, center);
     let without = render_ui(&gpu, &scene, center, &texture, false);
     let mut pad = crate::touch_pad::TouchPad::default();
@@ -696,6 +704,67 @@ fn demo_renders_touch_pad() {
     let use_ring = [layout.use_button[0] + layout.use_radius * 0.9, layout.use_button[1]];
     assert!(luma(&used, use_ring) >= luma(&with, use_ring), "押した使うボタンは明るくなる");
     capture("touch_controls", "ui", &used);
+}
+
+/// 冒険の世界 (仕様 21): 表面の景色・ホットバー・ヒントが描かれる。`CHARON_DEMO_CAPTURE_DIR` があれば、画像を書き出す。
+#[test]
+fn adventure_world_renders_with_the_hotbar() {
+    use charon_world::generator::ChunkGenerator;
+    use charon_world::terrain::{AdventureGenerator, AdventureMaterials};
+    let Some(gpu) = test_gpu() else { return };
+    let pack = pack();
+    let mut scene = Scene::new(&pack);
+    // 冒険の世界には、デモの虹色の奥の背景はない。
+    scene.deep = None;
+    let adventure =
+        AdventureGenerator { materials: AdventureMaterials::from_table(&pack.materials).unwrap() };
+    let spawn = adventure.spawn_point(SEED);
+    let center = CellPos::new(spawn[0] + 8, spawn[1] + 12);
+    let middle = center.chunk();
+    for cy in -5..=5 {
+        for cx in -7..=7 {
+            let pos = ChunkPos::new(middle.x + cx, middle.y + cy);
+            let chunk = adventure.generate(SEED, pos, scene.world.materials());
+            scene.world.insert_loaded_chunk(pos, chunk);
+        }
+    }
+    let (mut initialized, mut player, mut spawn_pending, mut streaming) =
+        (false, None, Some(spawn), None);
+    let mut physics_ms = 0.0;
+    let loadout = demo_loadout();
+    let mut enemy_spawns = Vec::new();
+    for _ in 0..150 {
+        Sim {
+            world: &mut scene.world,
+            streaming: &mut streaming,
+            physics: &mut scene.physics,
+            initialized: &mut initialized,
+            entities: &mut scene.entities,
+            player: &mut player,
+            spawn: &mut spawn_pending,
+            game: &mut scene.game,
+            definitions: Some(&pack.definitions),
+            loadout: Some(&loadout),
+            enemy_spawns: &mut enemy_spawns,
+        }
+        .tick(middle, PlayerInput::default(), GameInput::default(), &mut physics_ms)
+        .unwrap();
+    }
+    scene.player = player;
+    assert!(scene.player.is_some(), "プレイヤーが生まれる");
+    let (texture, world_pixels) = render_world(&gpu, &mut scene, center);
+    let ui_pixels = render_ui(&gpu, &scene, center, &texture, false);
+    capture("adventure", "world", &world_pixels);
+    capture("adventure", "ui", &ui_pixels);
+    assert_ne!(ui_pixels, world_pixels, "ホットバーなどの UI が重なる");
+    // 空 (上) と地面 (下) で、色が違う。
+    let luma = |pixels: &[u8], x: usize, y: usize| {
+        let i = (y * WIDTH as usize + x) * 4;
+        u32::from(pixels[i]) + u32::from(pixels[i + 1]) + u32::from(pixels[i + 2])
+    };
+    let sky = luma(&world_pixels, WIDTH as usize / 2, 10);
+    let ground = luma(&world_pixels, WIDTH as usize / 2, HEIGHT as usize - 10);
+    assert_ne!(sky, ground, "空と地面");
 }
 
 /// スプライトの拡大率 (仕様 06 §10): 同じ 32x64 の画像を、拡大率を 2 倍にすると面積が約 4 倍になる。

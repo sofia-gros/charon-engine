@@ -481,7 +481,7 @@ fn draw_touch_pad(
         painter.circle(at(center), radius * scale, if held { knob } else { fill }, line);
         label(center, text, 0.6);
     }
-    draw_hotbar(context, &painter, scale, &layout, overlay, HOTBAR_VISIBLE, false);
+    draw_hotbar(context, &painter, scale, &layout, overlay, HOTBAR_VISIBLE, false, [0.0, 0.0]);
     // カーソル (ブロックの格子に揃う枠。置けない・届かないときは赤)。
     if let Some(view) = pad.cursor_view() {
         let color = match view.state {
@@ -1064,6 +1064,7 @@ pub(super) fn pointer_cell(pos: [f32; 2], zoom: f32, origin: [f32; 2]) -> Option
 /// 状態異常は、バーの下に小さな四角 (燃える = 橙、濡れる = 水色、毒 = 緑) で出す。杖を持つプレイヤーがいるときだけ。
 /// 文字の情報 (道具・持ち物・次の呪文など) は、`Debug` パネルの `player_info` に出す。
 /// ホットバー (横一列): `visible` 個の枠 (タッチは `...` も)。選んでいる枠は黄色い枠。`numbers` なら、枠に数字 (キー) を出す。
+#[allow(clippy::too_many_arguments)]
 fn draw_hotbar(
     context: &egui::Context,
     painter: &egui::Painter,
@@ -1072,8 +1073,9 @@ fn draw_hotbar(
     overlay: &Overlay<'_>,
     visible: usize,
     numbers: bool,
+    offset: [f32; 2],
 ) {
-    let at = |p: [f32; 2]| egui::pos2(p[0] * scale, p[1] * scale);
+    let at = |p: [f32; 2]| egui::pos2((p[0] + offset[0]) * scale, (p[1] + offset[1]) * scale);
     let unit = layout.unit * scale;
     let line = egui::Stroke::new(2.0, egui::Color32::from_white_alpha(110));
     let fill = egui::Color32::from_white_alpha(28);
@@ -1162,6 +1164,10 @@ fn draw_desktop_hotbar(context: &egui::Context, overlay: &Overlay<'_>) {
     let scale = 1.0 / context.pixels_per_point();
     let size = context.content_rect().size() * context.pixels_per_point();
     let layout = crate::touch_pad::Layout::new([size.x, size.y], 0.6);
+    // 画面の下の中央 (左のパネルと重ならない)。
+    let slots = charon_game::inventory::HOTBAR_SLOTS as f32;
+    let total = slots * 1.65 * layout.unit;
+    let offset = [(size.x - total) / 2.0 - 0.4 * layout.unit, size.y - 2.4 * layout.unit];
     draw_hotbar(
         context,
         &painter,
@@ -1170,6 +1176,7 @@ fn draw_desktop_hotbar(context: &egui::Context, overlay: &Overlay<'_>) {
         overlay,
         charon_game::inventory::HOTBAR_SLOTS,
         true,
+        offset,
     );
 }
 
@@ -1211,7 +1218,7 @@ fn draw_hints(context: &egui::Context, overlay: &Overlay<'_>, world_ticks: u64) 
         "A / D: walk  |  W: jump  |  Left click: use the selected item  |  1-0: hotbar  |  I: inventory & crafting  |  Esc: menu"
     };
     egui::Area::new(egui::Id::unique("charon hints"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -12.0))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -72.0))
         .order(egui::Order::Foreground)
         .interactable(false)
         .show(context, |ui| {
@@ -1220,6 +1227,7 @@ fn draw_hints(context: &egui::Context, overlay: &Overlay<'_>, world_ticks: u64) 
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
+                    ui.set_max_width(context.content_rect().width() * 0.92);
                     ui.label(egui::RichText::new(text).size(13.0).color(egui::Color32::WHITE));
                 });
         });
