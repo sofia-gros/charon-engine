@@ -1,0 +1,11 @@
+[package]
+name = "charon-audio"
+description = "Charon Engine の音: 依存なしのミキサー、効果音の生成、WAV の読み込み"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

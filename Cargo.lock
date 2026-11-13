@@ -362,6 +362,7 @@ name = "charon-app"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "charon-audio",
  "charon-core",
  "charon-game",
  "charon-physics",
@@ -381,6 +382,10 @@ dependencies = [
  "wgpu",
  "winit",
 ]
+
+[[package]]
+name = "charon-audio"
+version = "0.1.0"
 
 [[package]]
 name = "charon-core"

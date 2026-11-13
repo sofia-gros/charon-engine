@@ -308,6 +308,9 @@ fn draw_pause_menu(context: &egui::Context, controls: &mut Controls) -> Option<D
                     ui.selectable_value(&mut controls.light_quality, quality, name);
                 }
             });
+            ui.add(egui::Slider::new(&mut controls.master_volume, 0.0..=1.0).text("Master volume"));
+            ui.add(egui::Slider::new(&mut controls.sfx_volume, 0.0..=1.0).text("Effects volume"));
+            ui.add(egui::Slider::new(&mut controls.music_volume, 0.0..=1.0).text("Music volume"));
             ui.separator();
             ui.label("Keys (click, then press a key; Esc cancels)");
             egui::Grid::new("charon keys").num_columns(2).show(ui, |ui| {

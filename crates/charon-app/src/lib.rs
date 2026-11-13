@@ -1,6 +1,7 @@
 //! 仕様 06 §6〜§7: 固定 tick と、ウィンドウ・サーフェスの復帰管理。
 
 mod animation;
+pub mod audio;
 #[cfg(target_arch = "wasm32")]
 mod browser_storage;
 #[cfg(not(target_arch = "wasm32"))]
@@ -421,6 +422,8 @@ struct App {
     sprite_facing: BTreeMap<EntityId, i8>,
     /// 読み込んだ設定 (仕様 10 §14)。終了とメニューを閉じたときに、画面の値を写して書く。
     settings: Settings,
+    /// 効果音 (仕様 12)。出来事から音を作って混ぜる。
+    audio: audio::Audio,
     /// 読み込んだ `game.ron` (仕様 10 §13)。プレイヤーが生まれたら、体力・マナ・位置・持ち物を戻す。
     #[cfg(not(target_arch = "wasm32"))]
     pending_game_save: Option<GameSave>,
@@ -489,6 +492,7 @@ impl App {
             facing: 1,
             sprite_facing: BTreeMap::new(),
             settings: Settings::default(),
+            audio: audio::Audio::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_game_save: None,
             timer: FixedTimestep::default(),
@@ -520,6 +524,9 @@ impl App {
             self.settings.ui_scale = controls.ui_scale;
             self.settings.character_scale = controls.sprite_scale;
             self.settings.light = settings::light_name(controls.light_quality).to_owned();
+            self.settings.master_volume = controls.master_volume;
+            self.settings.sfx_volume = controls.sfx_volume;
+            self.settings.music_volume = controls.music_volume;
             self.settings.keys = controls.bindings.clone();
         }
         self.settings.sanitize();
@@ -1028,6 +1035,33 @@ impl App {
             sprite_scale,
         );
         let boxes = sprites(&self.entities, &self.game, &drawn.skip);
+        // 効果音 (仕様 12): 前のフレームとの状態の差から出来事を決めて、鳴らす。
+        {
+            let me = self.player.and_then(|id| self.entities.get(id).map(|entity| (id, entity)));
+            let snapshot = audio::Snapshot {
+                grounded: me.is_some_and(|(_, entity)| entity.grounded),
+                vy: me.map_or(0, |(_, entity)| entity.vy),
+                projectiles: self.game.projectiles.len(),
+                anchored: me.is_some_and(|(id, _)| {
+                    self.game.rope(id).is_some_and(|rope| rope.anchor().is_some())
+                }),
+                digging: me
+                    .is_some_and(|(id, _)| self.game.dig_beam(id).is_some_and(|beam| beam.hit)),
+                items: me
+                    .and_then(|(id, _)| self.game.inventories.get(&id))
+                    .map_or(0, charon_game::inventory::Inventory::total),
+            };
+            if let Some(gui) = self.gui.as_ref() {
+                let controls = &gui.controls;
+                self.audio.set_volumes(
+                    controls.master_volume,
+                    controls.sfx_volume,
+                    controls.music_volume,
+                );
+            }
+            self.audio.update(snapshot);
+            self.audio.pump();
+        }
         let smooth = smooth_sprites(&self.physics);
         if let Err(err) = passes.render_with_sprites(
             gpu,
@@ -1393,6 +1427,9 @@ impl ApplicationHandler for App {
                 gui.controls.ui_scale = self.settings.ui_scale;
                 gui.controls.sprite_scale = self.settings.character_scale;
                 gui.controls.light_quality = self.settings.light_quality();
+                gui.controls.master_volume = self.settings.master_volume;
+                gui.controls.sfx_volume = self.settings.sfx_volume;
+                gui.controls.music_volume = self.settings.music_volume;
                 gui.controls.bindings = self.keys.bindings().clone();
                 #[cfg(target_arch = "wasm32")]
                 {

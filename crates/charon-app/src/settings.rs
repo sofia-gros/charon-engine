@@ -235,6 +235,10 @@ pub struct Settings {
     pub character_scale: f32,
     /// 光の品質: `Off`・`Low`・`High`・`XHigh`。
     pub light: String,
+    /// 音量 (0.0..=1.0): 全体・効果音・音楽 (仕様 12)。
+    pub master_volume: f32,
+    pub sfx_volume: f32,
+    pub music_volume: f32,
     pub keys: KeyBindings,
 }
 
@@ -245,6 +249,9 @@ impl Default for Settings {
             ui_scale: 1.0,
             character_scale: 1.0,
             light: "High".to_owned(),
+            master_volume: 1.0,
+            sfx_volume: 1.0,
+            music_volume: 0.7,
             keys: KeyBindings::default(),
         }
     }
@@ -297,6 +304,9 @@ impl Settings {
         };
         self.ui_scale = clamp(self.ui_scale, 0.5, 3.0, 1.0);
         self.character_scale = clamp(self.character_scale, 0.25, 3.0, 1.0);
+        self.master_volume = clamp(self.master_volume, 0.0, 1.0, 1.0);
+        self.sfx_volume = clamp(self.sfx_volume, 0.0, 1.0, 1.0);
+        self.music_volume = clamp(self.music_volume, 0.0, 1.0, 0.7);
         self.keys.sanitize();
     }
 
@@ -403,6 +413,21 @@ mod tests {
         assert_eq!((wild.ui_scale, wild.character_scale), (3.0, 1.0));
         wild.light = "unknown".to_owned();
         assert_eq!(wild.light_quality(), LightQuality::High);
+    }
+
+    #[test]
+    fn volumes_are_clamped() {
+        let mut settings = Settings {
+            master_volume: 5.0,
+            sfx_volume: -1.0,
+            music_volume: f32::NAN,
+            ..Settings::default()
+        };
+        settings.sanitize();
+        assert_eq!(
+            (settings.master_volume, settings.sfx_volume, settings.music_volume),
+            (1.0, 0.0, 0.7)
+        );
     }
 
     #[test]

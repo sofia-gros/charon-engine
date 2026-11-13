@@ -30,6 +30,10 @@ pub(super) struct Controls {
     pub(super) ui_scale: f32,
     /// 画像のスプライトの大きさの倍率 (ゲームの `SpriteAsset::scale` に掛ける)。
     pub(super) sprite_scale: f32,
+    /// 音量 (0.0..=1.0): 全体・効果音・音楽 (仕様 12)。
+    pub(super) master_volume: f32,
+    pub(super) sfx_volume: f32,
+    pub(super) music_volume: f32,
     /// ポーズのメニューが開いている (開いている間、世界は止まる、仕様 10 §14)。
     pub(super) pause_menu: bool,
     /// 持ち物の画面が開いている。
@@ -64,6 +68,9 @@ impl Controls {
             show_debug: false,
             ui_scale: 1.0,
             sprite_scale: 1.0,
+            master_volume: 1.0,
+            sfx_volume: 1.0,
+            music_volume: 0.7,
             pause_menu: false,
             inventory_open: false,
             rebinding: None,
