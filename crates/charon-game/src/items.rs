@@ -71,6 +71,13 @@ pub struct Resist {
     pub cold: u8,
 }
 
+/// 3 部位がそろったときの補正。頭装備の定義にだけ持たせる (仕様 25 §3)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetBonus {
+    pub defense: u16,
+    pub resist: Resist,
+}
+
 /// アイテムの種類 (仕様 19 §2)。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ItemKind {
@@ -89,6 +96,10 @@ pub enum ItemKind {
         slot: ArmorSlot,
         defense: u16,
         resist: Resist,
+        /// 同じセットの頭・胴・脚でのみ発動する ID。アクセサリーでは使わない。
+        set: Option<String>,
+        /// 頭装備に限り、3 部位がそろったときに一度だけ加える。
+        set_bonus: SetBonus,
     },
     Consumable {
         heal: u16,
@@ -215,14 +226,24 @@ impl Equipment {
     pub fn stats<'a>(&self, lookup: impl Fn(ItemId) -> Option<&'a ItemDef>) -> EquipStats {
         let mut stats = EquipStats::default();
         let (mut fire, mut poison, mut cold) = (0u32, 0u32, 0u32);
-        for (_, item) in self.iter() {
+        let (mut head, mut body, mut legs) = (None, None, None);
+        let mut bonus = SetBonus::default();
+        for (equipped_slot, item) in self.iter() {
             let Some(def) = lookup(item) else { continue };
             match &def.kind {
-                ItemKind::Armor { defense, resist, .. } => {
+                ItemKind::Armor { slot, defense, resist, set, set_bonus } => {
                     stats.defense += u32::from(*defense);
                     fire += u32::from(resist.fire);
                     poison += u32::from(resist.poison);
                     cold += u32::from(resist.cold);
+                    if equipped_slot == EquipSlot::Head && *slot == ArmorSlot::Head {
+                        head = set.as_deref();
+                        bonus = *set_bonus;
+                    } else if equipped_slot == EquipSlot::Body && *slot == ArmorSlot::Body {
+                        body = set.as_deref();
+                    } else if equipped_slot == EquipSlot::Legs && *slot == ArmorSlot::Legs {
+                        legs = set.as_deref();
+                    }
                 }
                 ItemKind::Weapon { class, damage, .. } => {
                     stats.damage = u32::from(*damage);
@@ -231,6 +252,13 @@ impl Equipment {
                 _ => {}
             }
         }
+        if head.is_some() && head == body && body == legs {
+            stats.defense += u32::from(bonus.defense);
+            fire += u32::from(bonus.resist.fire);
+            poison += u32::from(bonus.resist.poison);
+            cold += u32::from(bonus.resist.cold);
+        }
+        stats.defense = stats.defense.min(5000);
         // 上限 100 に収まる値なので u8 に収まる。
         let cap = |v: u32| v.min(100) as u8;
         stats.resist = Resist { fire: cap(fire), poison: cap(poison), cold: cap(cold) };

@@ -11,7 +11,8 @@ use charon_core::world::World;
 use charon_game::combat::{MELEE_COOLDOWN, RANGED_COOLDOWN};
 use charon_game::defs::{DefinitionFiles, Definitions};
 use charon_game::game::{GameEvent, GameInput, GameState};
-use charon_game::items::WeaponClass;
+use charon_game::items::{EquipSlot, Equipment, ItemKind, WeaponClass};
+use charon_game::save::GameSave;
 use charon_game::vitals::{COMBAT_IMMUNITY_TICKS, DamageKind, MAX_HP, Vitals, step_environment};
 use charon_game::{EntityId, EntityWorld, PlayerInput};
 use charon_physics::PhysicsEngine;
@@ -420,6 +421,141 @@ fn combat_immunity_is_hashed_and_cleared_on_respawn() {
             (b.game.state_hash(), b.entities.state_hash(), b.world.state_hash())
         };
         assert_eq!(trace(seed), trace(seed), "seed {seed}: 決定性");
+    }
+}
+
+/// 頭・胴・脚の同じセットのみ頭の補正を一度加え、欠損や混成では付かない。
+#[test]
+fn armor_set_requires_all_three_pieces() {
+    for seed in 1..=8 {
+        let mut a = Arena::with_seed(seed);
+        a.give_and_equip("stone_helmet");
+        a.give_and_equip("stone_chestplate");
+        a.tick(false, (1000, 0));
+        assert_eq!(a.game.vitals.get(a.player).unwrap().armor.defense, 10, "seed {seed}: 2 部位");
+        a.give_and_equip("wood_greaves");
+        a.tick(false, (1000, 0));
+        assert_eq!(a.game.vitals.get(a.player).unwrap().armor.defense, 12, "seed {seed}: 混成");
+        a.give_and_equip("stone_greaves");
+        a.tick(false, (1000, 0));
+        let armor = a.game.vitals.get(a.player).unwrap().armor;
+        assert_eq!((armor.defense, armor.cold), (18, 10), "seed {seed}: 石 3 部位");
+        a.game.unequip(a.player, EquipSlot::Body).unwrap();
+        a.tick(false, (1000, 0));
+        let armor = a.game.vitals.get(a.player).unwrap().armor;
+        assert_eq!((armor.defense, armor.cold), (8, 0), "seed {seed}: 外した次 tick");
+        // MOD のセット ID は名前空間つきで照合し、上限の適用は最後に行う。
+        let mut defs = a.defs.clone();
+        let mod_set = r#"[
+            (name: "h", kind: Armor(slot: Head, defense: 1000, set: Some("heavy"), set_defense: 1000, set_fire: 60)),
+            (name: "b", kind: Armor(slot: Body, defense: 1000, set: Some("heavy"))),
+            (name: "l", kind: Armor(slot: Legs, defense: 1000, set: Some("heavy"))),
+            (name: "a", kind: Armor(slot: Accessory, defense: 1000, fire: 60)),
+        ]"#;
+        defs.layer(
+            DefinitionFiles { items: Some(mod_set), ..Default::default() },
+            a.world.materials(),
+            Some("test"),
+        )
+        .unwrap();
+        let mut equipment = Equipment::new();
+        for (slot, name) in [
+            (EquipSlot::Head, "test:h"),
+            (EquipSlot::Body, "test:b"),
+            (EquipSlot::Legs, "test:l"),
+            (EquipSlot::Accessory, "test:a"),
+        ] {
+            equipment.set(slot, defs.item_id(name, a.world.materials()));
+        }
+        let stats = equipment.stats(|id| defs.item_def(id));
+        assert_eq!((stats.defense, stats.resist.fire), (5000, 100));
+        let before = defs.content_hash();
+        for invalid in [
+            r#"[(name: "bad", kind: Armor(slot: Accessory, set: Some("heavy")))]"#,
+            r#"[(name: "bad", kind: Armor(slot: Body, set: Some("heavy"), set_defense: 1))]"#,
+            r#"[(name: "bad", kind: Armor(slot: Head, set_defense: 1))]"#,
+            r#"[(name: "bad", kind: Armor(slot: Head, set: Some("heavy"), set_fire: 101))]"#,
+            r#"[(name: "bad", kind: Armor(slot: Head, set: Some("")))]"#,
+            r#"[(name: "stone_helmet", replace: true, kind: Armor(slot: Head, set: Some("a::b")))]"#,
+        ] {
+            assert!(
+                defs.layer(
+                    DefinitionFiles { items: Some(invalid), ..Default::default() },
+                    a.world.materials(),
+                    Some("test")
+                )
+                .is_err()
+            );
+            assert_eq!(defs.content_hash(), before, "seed {seed}: 不正な層は原子的");
+        }
+        assert!(matches!(
+            defs.item_def(defs.item_id("test:h", a.world.materials()).unwrap()).unwrap().kind,
+            ItemKind::Armor { set: Some(_), .. }
+        ));
+    }
+}
+
+/// アクセサリーの補正は毎 tick 上書きされ、交換しても残らない。セット効果と合算する。
+#[test]
+fn accessory_bonus_does_not_stack_on_refresh() {
+    for seed in 1..=8 {
+        let mut a = Arena::with_seed(seed);
+        for name in ["wood_helmet", "wood_chestplate", "wood_greaves", "fire_ring"] {
+            a.give_and_equip(name);
+        }
+        for _ in 0..30 {
+            a.tick(false, (1000, 0));
+            let armor = a.game.vitals.get(a.player).unwrap().armor;
+            assert_eq!((armor.defense, armor.fire), (9, 25), "seed {seed}: 加算し続けない");
+        }
+        a.give_and_equip("poison_charm");
+        a.tick(false, (1000, 0));
+        let armor = a.game.vitals.get(a.player).unwrap().armor;
+        assert_eq!((armor.defense, armor.fire, armor.poison), (9, 0, 25));
+        a.game.unequip(a.player, EquipSlot::Accessory).unwrap();
+        a.tick(false, (1000, 0));
+        let armor = a.game.vitals.get(a.player).unwrap().armor;
+        assert_eq!((armor.defense, armor.poison), (9, 0));
+    }
+}
+
+/// 装備名だけを旧版の game.ron に保存し、復帰後の tick に新しい定義から補正を復元する。
+#[test]
+fn equipment_bonuses_survive_item_save() {
+    for seed in 1..=8 {
+        let mut a = Arena::with_seed(seed);
+        for name in ["stone_helmet", "stone_chestplate", "stone_greaves", "fire_ring"] {
+            a.give_and_equip(name);
+        }
+        a.tick(false, (1000, 0));
+        let expected = a.game.vitals.get(a.player).unwrap().armor;
+        let saved = GameSave::capture(&a.game, &a.entities, a.player, a.world.materials(), a.tick)
+            .with_items(&a.game, a.player, &a.defs, a.world.materials());
+        assert_eq!(saved.version, 1);
+        let saved = GameSave::from_ron(&saved.to_ron().unwrap()).unwrap();
+        assert_eq!(saved.player.as_ref().unwrap().equipment[1].as_deref(), Some("stone_helmet"));
+        let mut b = Arena::with_seed(seed);
+        saved.apply(&mut b.game, &mut b.entities, &b.world, b.player);
+        assert_eq!(saved.apply_items(&mut b.game, b.player, &b.defs, b.world.materials()), 4);
+        b.tick(false, (1000, 0));
+        assert_eq!(b.game.vitals.get(b.player).unwrap().armor, expected, "seed {seed}");
+        assert_eq!((expected.defense, expected.fire, expected.cold), (18, 25, 10));
+        // セット補正は保存された数値ではなく、現在の MOD の定義に従う。
+        let mut replacement = b.defs.clone();
+        replacement.layer(DefinitionFiles {
+            items: Some(r#"[(name: "stone_helmet", replace: true, kind: Armor(slot: Head, defense: 4, set: Some("stone"), set_defense: 6))]"#),
+            ..Default::default()
+        }, b.world.materials(), Some("test")).unwrap();
+        assert_ne!(replacement.content_hash(), b.defs.content_hash());
+        let restored = b.game.equipment[&b.player].stats(|id| replacement.item_def(id));
+        assert_eq!((restored.defense, restored.resist.cold), (20, 0));
+        // セットのない古い定義と、未知の名前は引き続き読み飛ばす。
+        let mut unknown = saved.clone();
+        unknown.player.as_mut().unwrap().equipment[1] = Some("not_defined".to_owned());
+        let mut c = Arena::with_seed(seed);
+        assert_eq!(unknown.apply_items(&mut c.game, c.player, &c.defs, c.world.materials()), 3);
+        c.tick(false, (1000, 0));
+        assert_eq!(c.game.vitals.get(c.player).unwrap().armor.defense, 10);
     }
 }
 

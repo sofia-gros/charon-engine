@@ -30,12 +30,12 @@
     (name: "bomb_wand", kind: Weapon(class: Wand, wand: Some("bomber"))),
 
     // ---- 防具 ----
-    (name: "wood_helmet",     kind: Armor(slot: Head, defense: 2)),
-    (name: "wood_chestplate", kind: Armor(slot: Body, defense: 3)),
-    (name: "wood_greaves",    kind: Armor(slot: Legs, defense: 2)),
-    (name: "stone_helmet",     kind: Armor(slot: Head, defense: 4)),
-    (name: "stone_chestplate", kind: Armor(slot: Body, defense: 6)),
-    (name: "stone_greaves",    kind: Armor(slot: Legs, defense: 4)),
+    (name: "wood_helmet",     kind: Armor(slot: Head, defense: 2, set: Some("wood"), set_defense: 2)),
+    (name: "wood_chestplate", kind: Armor(slot: Body, defense: 3, set: Some("wood"))),
+    (name: "wood_greaves",    kind: Armor(slot: Legs, defense: 2, set: Some("wood"))),
+    (name: "stone_helmet",     kind: Armor(slot: Head, defense: 4, set: Some("stone"), set_defense: 4, set_cold: 10)),
+    (name: "stone_chestplate", kind: Armor(slot: Body, defense: 6, set: Some("stone"))),
+    (name: "stone_greaves",    kind: Armor(slot: Legs, defense: 4, set: Some("stone"))),
     (name: "fire_ring",   kind: Armor(slot: Accessory, fire: 25)),
     (name: "poison_charm", kind: Armor(slot: Accessory, poison: 25)),
 

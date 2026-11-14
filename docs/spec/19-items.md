@@ -32,7 +32,7 @@
 | `Misc` | なし | |
 | `Tool(pick)` | `pick`: つるはしの力 (ブロックを壊す速さ、M22) | 0..=1000 |
 | `Weapon(class, damage, wand)` | `class`: `Melee`・`Ranged`・`Wand`。`damage`: 1 回の攻撃の基本のダメージ。`wand`: 杖の定義の名前 (`Wand` のとき) | `damage` 0..=10000。`wand` は定義済みの杖 |
-| `Armor(slot, defense, fire, poison, cold)` | `slot`: `Head`・`Body`・`Legs`・`Accessory`。`defense`: 受けるダメージを減らす量。`fire`・`poison`・`cold`: その属性への耐性 (%) | `defense` 0..=1000、耐性 0..=100 |
+| `Armor(slot, defense, fire, poison, cold)` | `slot`: `Head`・`Body`・`Legs`・`Accessory`。`defense`: 受けるダメージを減らす量。`fire`・`poison`・`cold`: その属性への耐性 (%)。省略可能な `set` と頭装備の `set_defense`・`set_fire`・`set_poison`・`set_cold` は [仕様 25 §3](25-combat-extension.md#3-t312-防具セットとアクセサリー) | `defense` と `set_defense` 0..=1000、耐性とセット耐性 0..=100 |
 | `Consumable(heal, mana)` | 使うと回復する体力・マナ (M23 で使い方をつなぐ) | 0..=10000 |
 
 **強さの点数** (`rating`、自動装備・並べ替えに使う): `Weapon` は `damage`。`Armor` は `defense × 2 + fire + poison + cold`。`Tool` は `pick`。ほかは 0。
@@ -79,7 +79,7 @@
 5 つの枠: `Weapon`・`Head`・`Body`・`Legs`・`Accessory`。`GameState::equipment` に、キャラクターごとに持つ。
 
 - `equip(item)`: 持ち物から 1 個を、そのアイテムの枠へ移す。枠に入っていたものは、持ち物へもどる。装備できない (`Weapon`・`Armor` 以外) ものは失敗。`unequip(slot)`: 持ち物へもどす (持ち切れなければ失敗)。
-- **能力値** (`EquipStats`): 防具の `defense` の合計、耐性 (`fire`・`poison`・`cold`) の合計 (上限 100)、武器の `damage` と `class`。戦闘へのつなぎは M23。
+- **能力値** (`EquipStats`): 防具の `defense` の合計、耐性 (`fire`・`poison`・`cold`) の合計 (上限 100)、武器の `damage` と `class`。戦闘へのつなぎは M23。仕様 25 §3 からは、頭・胴・脚が同じセットのとき頭定義の補正を 1 回だけ加え、アクセサリーは常に通常の防具として加算する (防御の最終上限 5000、各耐性 100)。
 
 ## 6. 自動装備 (敵も使う)
 

@@ -6,7 +6,7 @@ use charon_core::cell::MaterialId;
 use charon_core::material::{MaterialTable, Phase};
 use serde::Deserialize;
 
-use crate::items::{ArmorSlot, ItemDef, ItemId, ItemKind, Resist, WeaponClass};
+use crate::items::{ArmorSlot, ItemDef, ItemId, ItemKind, Resist, SetBonus, WeaponClass};
 use crate::wand::{Fnv, SpellError, SpellTable, Wand, WandError};
 
 const ENGINE_SPELLS: &str = include_str!("../../../assets/spells.ron");
@@ -252,6 +252,16 @@ enum RawKind {
         poison: i64,
         #[serde(default)]
         cold: i64,
+        #[serde(default)]
+        set: Option<String>,
+        #[serde(default)]
+        set_defense: i64,
+        #[serde(default)]
+        set_fire: i64,
+        #[serde(default)]
+        set_poison: i64,
+        #[serde(default)]
+        set_cold: i64,
     },
     Consumable {
         #[serde(default)]
@@ -701,7 +711,18 @@ impl Definitions {
                     };
                     ItemKind::Weapon { class, damage, wand }
                 }
-                RawKind::Armor { slot, defense, fire, poison, cold } => {
+                RawKind::Armor {
+                    slot,
+                    defense,
+                    fire,
+                    poison,
+                    cold,
+                    set,
+                    set_defense,
+                    set_fire,
+                    set_poison,
+                    set_cold,
+                } => {
                     let defense =
                         range(&name, defense, 0, 1000, "defense は 0..=1000 です")? as u16;
                     let resist = Resist {
@@ -709,13 +730,53 @@ impl Definitions {
                         poison: range(&name, poison, 0, 100, "耐性は 0..=100 です")? as u8,
                         cold: range(&name, cold, 0, 100, "耐性は 0..=100 です")? as u8,
                     };
+                    let set_bonus = SetBonus {
+                        defense: range(&name, set_defense, 0, 1000, "set_defense は 0..=1000 です")?
+                            as u16,
+                        resist: Resist {
+                            fire: range(&name, set_fire, 0, 100, "セット耐性は 0..=100 です")?
+                                as u8,
+                            poison: range(&name, set_poison, 0, 100, "セット耐性は 0..=100 です")?
+                                as u8,
+                            cold: range(&name, set_cold, 0, 100, "セット耐性は 0..=100 です")?
+                                as u8,
+                        },
+                    };
                     let slot = match slot {
                         RawSlot::Head => ArmorSlot::Head,
                         RawSlot::Body => ArmorSlot::Body,
                         RawSlot::Legs => ArmorSlot::Legs,
                         RawSlot::Accessory => ArmorSlot::Accessory,
                     };
-                    ItemKind::Armor { slot, defense, resist }
+                    if (slot == ArmorSlot::Accessory && set.is_some())
+                        || ((slot != ArmorSlot::Head || set.is_none())
+                            && set_bonus != SetBonus::default())
+                    {
+                        return Err(DefsError::Invalid {
+                            owner: name,
+                            reason: "セットは頭・胴・脚のみ、セット補正は set のある頭装備のみです",
+                        });
+                    }
+                    let set = set
+                        .map(|id| {
+                            if raw.replace
+                                && (id.split(':').count() > 2
+                                    || id.split(':').any(|part| {
+                                        !(1..=64).contains(&part.len())
+                                            || !part
+                                                .chars()
+                                                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                                    }))
+                            {
+                                return Err(DefsError::Invalid {
+                                    owner: name.clone(),
+                                    reason: "セット ID は ASCII 英数字と _ の名前です",
+                                });
+                            }
+                            qualify("セット", &id, raw.replace, namespace)
+                        })
+                        .transpose()?;
+                    ItemKind::Armor { slot, defense, resist, set, set_bonus }
                 }
                 RawKind::Consumable { heal, mana } => ItemKind::Consumable {
                     heal: range(&name, heal, 0, 10_000, "heal は 0..=10000 です")? as u16,
@@ -1030,10 +1091,21 @@ impl Definitions {
                     hash.bytes(wand.as_deref().unwrap_or("").as_bytes());
                     hash.bytes(&[0]);
                 }
-                ItemKind::Armor { slot, defense, resist } => {
+                ItemKind::Armor { slot, defense, resist, set, set_bonus } => {
                     hash.bytes(&[3, *slot as u8]);
                     hash.bytes(&defense.to_le_bytes());
                     hash.bytes(&[resist.fire, resist.poison, resist.cold]);
+                    if let Some(set) = set {
+                        hash.bytes(&[0xA2]);
+                        hash.bytes(set.as_bytes());
+                        hash.bytes(&[0]);
+                        hash.bytes(&set_bonus.defense.to_le_bytes());
+                        hash.bytes(&[
+                            set_bonus.resist.fire,
+                            set_bonus.resist.poison,
+                            set_bonus.resist.cold,
+                        ]);
+                    }
                 }
                 ItemKind::Consumable { heal, mana } => {
                     hash.bytes(&[4]);
