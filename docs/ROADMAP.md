@@ -378,7 +378,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | タスク | 読む仕様 | 完了条件 | 状態 |
 |---|---|---|---|
 | **T29.1 App のアイテム保存** | [19 §7–8](spec/19-items.md)、[10 §13](spec/10-noita-like-game.md)、[TESTING](TESTING.md) | `app_save_reloads_items_hotbar_and_equipment`、`legacy_game_save_preserves_starter_items`、`scripts/check.sh` | 🟡 実装・自動テスト済み (実機の保存→再起動は未確認) |
-| **T29.2 スロットの移動・入れ替え** | 19 §3・§5、18 §1、[TERRARIA_PARITY](TERRARIA_PARITY.md) (新しい操作の詳細は実装前に確定) | 持ち物・ホットバー・装備間の移動、失敗時は何も変えない、UI 入力と保存の往復 | 🔴 未 |
+| **T29.2 スロットの移動・入れ替え** | [19 §3.1・§5・§8](spec/19-items.md)、[18 §1](spec/18-terraria-touch.md)、[TERRARIA_PARITY](TERRARIA_PARITY.md)、[TESTING](TESTING.md) | `inventory_slot_moves_swap_and_keep_counts`、`inventory_slot_failures_are_atomic`、`inventory_slot_ui_routes_drag`、`inventory_slot_drop_rejects_invalid_targets`、`inventory_slot_save_roundtrip`、`scripts/check.sh`。現行の印モデル内の移動であり、全スタックを持つ Terraria 型の完全再現ではない | 🟡 実装・自動テスト済み (Windows/Android 実機のドラッグは未検証) |
 
 | 順番 | 段階 (提案) | 必須の完了条件 |
 |---|---|---|

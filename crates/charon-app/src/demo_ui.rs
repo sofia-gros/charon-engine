@@ -11,7 +11,7 @@ use charon_game::EntityWorld;
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::LightQuality;
 
-use crate::ui::{Controls, InvCommand};
+use crate::ui::{Controls, InvCommand, InvSlot, slot_drop_command};
 
 /// 計測グラフに残すフレーム数。
 pub(super) const HISTORY: usize = 120;
@@ -237,6 +237,41 @@ pub(super) struct Overlay<'a> {
     pub(super) defs: Option<&'a charon_game::defs::Definitions>,
 }
 
+/// ドラッグ元をフレーム間で記憶し、離した位置の枠を見つける (仕様 19 §3.1)。
+fn inventory_drag_slot(
+    context: &egui::Context,
+    response: &egui::Response,
+    slot: InvSlot,
+    released_over: &mut Option<InvSlot>,
+) {
+    #[allow(deprecated)]
+    let drag_id = egui::Id::new("charon inventory drag source");
+    if response.drag_started() && !matches!(slot, InvSlot::Bag(None)) {
+        context.data_mut(|d| d.insert_temp(drag_id, slot));
+    }
+    if context.input(|i| {
+        i.pointer.any_released()
+            && i.pointer.latest_pos().is_some_and(|pos| response.rect.contains(pos))
+    }) {
+        *released_over = Some(slot);
+    }
+}
+
+/// 指を離したフレームで、ドラッグの元と先を 1 つの操作へ変える。
+fn take_inventory_drop(context: &egui::Context, target: Option<InvSlot>) -> Option<InvCommand> {
+    if !context.input(|i| i.pointer.any_released()) {
+        return None;
+    }
+    let source: Option<InvSlot> = context.data_mut(|d| {
+        #[allow(deprecated)]
+        let id = egui::Id::new("charon inventory drag source");
+        let source = d.get_temp(id);
+        d.remove::<InvSlot>(id);
+        source
+    });
+    source.and_then(|source| slot_drop_command(source, target))
+}
+
 /// 持ち物の画面 (仕様 18 §1、Terraria Android 型): 右上の半透明の格子 (10 列 × 5 行、1 行目 = ホットバー)・格子の下の
 /// `Filter: ...` と装備・作れるもののリスト (左) と `Craft` ボタン (右端)。ゲームは止めない。操作は `controls.inv_commands`。
 #[allow(deprecated)]
@@ -273,6 +308,7 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
     };
     let slot_size = 34.0;
     let (cols, rows) = (10usize, 5usize);
+    let mut released_over = None;
     egui::Area::new(egui::Id::new("charon inventory grid"))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 70.0))
         .order(egui::Order::Foreground)
@@ -308,7 +344,14 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                 let selected = slot == Some(inventory.selected());
                                 let (rect, response) = ui.allocate_exact_size(
                                     egui::vec2(slot_size, slot_size),
-                                    egui::Sense::click(),
+                                    egui::Sense::click_and_drag(),
+                                );
+                                let location = slot.map_or(InvSlot::Bag(item), InvSlot::Hotbar);
+                                inventory_drag_slot(
+                                    context,
+                                    &response,
+                                    location,
+                                    &mut released_over,
                                 );
                                 let stroke = if selected {
                                     egui::Stroke::new(2.5, egui::Color32::from_rgb(255, 220, 60))
@@ -386,12 +429,20 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                         for slot in EquipSlot::ALL {
                             let item = equipment.and_then(|e| e.get(slot));
                             let text = item.map_or_else(|| "-".to_owned(), name_of);
-                            if ui
-                                .small_button(short_name(&text))
-                                .on_hover_text(format!("{slot:?}: {text}"))
-                                .clicked()
-                                && item.is_some()
-                            {
+                            let response = ui
+                                .add(
+                                    egui::Button::new(short_name(&text))
+                                        .small()
+                                        .sense(egui::Sense::click_and_drag()),
+                                )
+                                .on_hover_text(format!("{slot:?}: {text}"));
+                            inventory_drag_slot(
+                                context,
+                                &response,
+                                InvSlot::Equipment(slot),
+                                &mut released_over,
+                            );
+                            if response.clicked() && item.is_some() {
                                 controls.inv_commands.push(InvCommand::Unequip(slot));
                             }
                         }
@@ -470,6 +521,9 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                     }
                 });
         });
+    if let Some(command) = take_inventory_drop(context, released_over) {
+        controls.inv_commands.push(command);
+    }
 }
 
 /// ポーズのメニュー (仕様 10 §14): 再開・設定 (UI の大きさ・キャラクターの大きさ・光)・キー割り当て・持ち物・終了。
@@ -1677,6 +1731,72 @@ fn draw_dock(context: &egui::Context, open: &mut [bool; PANELS.len()]) {
 mod tests {
     use super::*;
     use charon_core::testkit::{box_art, fill, material_of, to_ascii, world_from_ascii};
+
+    /// 仕様 19 §3.1: 実際の egui pointer down → move → up が 1 件のスロット移動を発行する。
+    #[test]
+    fn inventory_slot_ui_routes_drag() {
+        let context = egui::Context::default();
+        let source = InvSlot::Bag(Some(charon_game::items::ItemId::def(0)));
+        let target = InvSlot::Hotbar(1);
+        let (mut start, mut end) = (egui::Pos2::ZERO, egui::Pos2::ZERO);
+        let mut commands = Vec::new();
+        for frame in 0..6 {
+            let events = match frame {
+                1 => vec![egui::Event::PointerMoved(start)],
+                2 => vec![egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+                3 => vec![egui::Event::PointerMoved(start + egui::vec2(14.0, 0.0))],
+                4 => vec![egui::Event::PointerMoved(end)],
+                5 => vec![egui::Event::PointerButton {
+                    pos: end,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+                _ => Vec::new(),
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                time: Some(f64::from(frame) / 60.0),
+                events,
+                ..Default::default()
+            };
+            let mut output = context.run_pass(input, |context| {
+                let mut released_over = None;
+                #[allow(deprecated)]
+                egui::Area::new(egui::Id::new("inventory drag test"))
+                    .fixed_pos(egui::pos2(50.0, 50.0))
+                    .show(context, |ui| {
+                        ui.horizontal(|ui| {
+                            let (r, response) = ui.allocate_exact_size(
+                                egui::vec2(40.0, 40.0),
+                                egui::Sense::click_and_drag(),
+                            );
+                            start = r.center();
+                            inventory_drag_slot(context, &response, source, &mut released_over);
+                            let (r, response) = ui.allocate_exact_size(
+                                egui::vec2(40.0, 40.0),
+                                egui::Sense::click_and_drag(),
+                            );
+                            end = r.center();
+                            inventory_drag_slot(context, &response, target, &mut released_over);
+                        });
+                    });
+                if let Some(command) = take_inventory_drop(context, released_over) {
+                    commands.push(command);
+                }
+            });
+            output.textures_delta.clear();
+        }
+        assert_eq!(commands, vec![InvCommand::Move(source, target)]);
+    }
 
     #[test]
     fn perf_history_is_bounded() {

@@ -56,9 +56,28 @@ pub(super) struct Controls {
     pub(super) web_status: String,
 }
 
+/// 持ち物の画面に表示する移動元・移動先 (仕様 19 §3.1)。持ち物の枠は種類別の表示で、物理スタックではない。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum InvSlot {
+    Bag(Option<charon_game::items::ItemId>),
+    Hotbar(usize),
+    Equipment(charon_game::items::EquipSlot),
+}
+
+/// 枠外・同じ枠・空の持ち物からのドラッグは操作を出さない。
+pub(super) fn slot_drop_command(source: InvSlot, target: Option<InvSlot>) -> Option<InvCommand> {
+    let target = target?;
+    if source == target || matches!(source, InvSlot::Bag(None)) {
+        return None;
+    }
+    Some(InvCommand::Move(source, target))
+}
+
 /// 持ち物の画面の操作 (仕様 19)。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum InvCommand {
+    /// 2 枠の間を移動または交換する。失敗したら両方そのまま。
+    Move(InvSlot, InvSlot),
     /// ホットバーの枠を選ぶ。
     Select(usize),
     /// 枠にアイテムを置く。

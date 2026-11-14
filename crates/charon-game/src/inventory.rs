@@ -185,6 +185,15 @@ impl Inventory {
         }
     }
 
+    /// 二つのホットバーの印を交換する。範囲外では何も変えない。
+    pub fn swap_hotbar(&mut self, a: usize, b: usize) -> bool {
+        if a >= HOTBAR_SLOTS || b >= HOTBAR_SLOTS {
+            return false;
+        }
+        self.hotbar.swap(a, b);
+        true
+    }
+
     /// 枠が指しているアイテム (持っていなくても、印は残っている)。
     pub fn hotbar(&self, slot: usize) -> Option<ItemId> {
         self.hotbar.get(slot).copied().flatten()
