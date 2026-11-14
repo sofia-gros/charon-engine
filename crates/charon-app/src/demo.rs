@@ -521,17 +521,29 @@ impl crate::api::Game for DemoGame {
         for event in events {
             match event {
                 GameEvent::Defeated(..) => ctx.shake(0.5),
-                GameEvent::BossDefeated(..) => {
+                GameEvent::BossDefeated(_, cell) => {
                     ctx.shake(1.2);
-                    ctx.play(crate::audio::SoundEvent::Hit);
+                    ctx.play_at(crate::audio::SoundEvent::Hit, *cell);
                 }
                 GameEvent::Hit(hit) if hit.entity.is_some() => ctx.shake(0.15),
-                GameEvent::Melee { .. } => {
+                GameEvent::Melee { target, .. } => {
                     ctx.shake(0.2);
-                    ctx.play(crate::audio::SoundEvent::Hit);
+                    if let Some(cell) =
+                        ctx.entities.get(*target).map(charon_game::cursor::center_cell)
+                    {
+                        ctx.play_at(crate::audio::SoundEvent::Hit, cell);
+                    }
                 }
-                GameEvent::BlockPlaced(..) => ctx.play(crate::audio::SoundEvent::Place),
-                GameEvent::BlockBroken(..) => ctx.play(crate::audio::SoundEvent::Break),
+                GameEvent::BlockPlaced(pos, _) => {
+                    if let Some(cell) = pos.origin() {
+                        ctx.play_at(crate::audio::SoundEvent::Place, cell);
+                    }
+                }
+                GameEvent::BlockBroken(pos, _) => {
+                    if let Some(cell) = pos.origin() {
+                        ctx.play_at(crate::audio::SoundEvent::Break, cell);
+                    }
+                }
                 _ => {}
             }
         }

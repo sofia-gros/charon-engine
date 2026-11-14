@@ -430,7 +430,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | タスク | 読む仕様 | 完了条件 | 状態 |
 |---|---|---|---|
 | **T33.0 第5段階の契約** | [PRODUCT_REVIEW §4.8–4.9・§4.14・§9](PRODUCT_REVIEW.md)、[12](spec/12-audio.md)、[15](spec/15-assets.md)、[18](spec/18-terraria-touch.md)、[23](spec/23-polish.md)、[TESTING](TESTING.md) | [仕様 27](spec/27-experience.md) に依存順・境界・テスト名を記録し `scripts/check.sh` が通る | 🟡 仕様を記述 (コード未着手) |
-| **T33.1 空間音** | [27 §1–2](spec/27-experience.md)、[12](spec/12-audio.md)、[TESTING](TESTING.md) | `spatial_sound_uses_position_and_distance`、`spatial_sound_follows_the_listener_without_changing_state`、`scripts/check.sh` | 未着手 |
+| **T33.1 空間音** | [27 §1–2](spec/27-experience.md)、[12](spec/12-audio.md)、[TESTING](TESTING.md) | `spatial_sound_uses_position_and_distance`、`spatial_sound_follows_the_listener_without_changing_state`、`scripts/check.sh` | 🟡 効果音の位置と距離を実装・自動テスト済み (実機で聞こえるかは未検証) |
 | **T33.2 BGM** | [27 §1・§3](spec/27-experience.md)、[12](spec/12-audio.md)、[15 §3](spec/15-assets.md)、[TESTING](TESTING.md) | `music_transitions_without_overlapping_forever`、`music_missing_asset_is_silent_and_sfx_continue`、`scripts/check.sh` | 未着手 |
 | **T33.3 日本語の UI** | [27 §1・§4](spec/27-experience.md)、[18](spec/18-terraria-touch.md)、[15](spec/15-assets.md)、[TESTING](TESTING.md) | `ui_language_falls_back_for_missing_strings`、`japanese_glyphs_render_in_the_ui`、`scripts/check.sh` | 未着手 |
 | **T33.4 演出・UI** | [27 §1・§5](spec/27-experience.md)、[18](spec/18-terraria-touch.md)、[23](spec/23-polish.md)、[TESTING](TESTING.md) | `item_tooltips_show_definition_values`、`combat_feedback_uses_real_events`、`scripts/check.sh` | 未着手 |

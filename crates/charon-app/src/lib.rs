@@ -1385,6 +1385,12 @@ impl App {
             let effects = std::mem::take(&mut self.effects);
             self.camera_fx.shake(effects.shake);
             self.audio.play_events(&effects.sounds);
+            if let Some((_, listener)) = me {
+                let listener = charon_game::cursor::center_cell(listener);
+                for request in effects.spatial_sounds {
+                    self.audio.play_at(request.event, request.cell, listener);
+                }
+            }
             self.audio.pump();
         }
         let smooth = smooth_sprites(&self.physics);

@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use charon_core::coords::CellPos;
 use charon_core::world::World;
 use charon_game::game::{GameEvent, GameState};
 use charon_game::{EntityId, EntityWorld};
@@ -28,8 +29,16 @@ pub struct Context<'a> {
 pub struct Effects {
     /// 画面の揺れの強さ (足し合わせ、1 で頭打ち)。
     pub shake: f32,
-    /// 鳴らす効果音。
+    /// 位置を持たない効果音。
     pub sounds: Vec<SoundEvent>,
+    /// 世界に位置を持つ効果音。描画時のプレイヤーを聴取位置とする。
+    pub spatial_sounds: Vec<SpatialSound>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpatialSound {
+    pub event: SoundEvent,
+    pub cell: CellPos,
 }
 
 /// 溜められる演出の音の数の上限 (ゲームが暴走しても増え続けない)。
@@ -45,8 +54,15 @@ impl Context<'_> {
 
     /// 効果音を鳴らす。
     pub fn play(&mut self, sound: SoundEvent) {
-        if self.effects.sounds.len() < SOUNDS_MAX {
+        if self.effects.sounds.len() + self.effects.spatial_sounds.len() < SOUNDS_MAX {
             self.effects.sounds.push(sound);
+        }
+    }
+
+    /// 世界のセルからの効果音を頼む。位置は音だけに使い、ゲーム状態は変更しない。
+    pub fn play_at(&mut self, sound: SoundEvent, cell: CellPos) {
+        if self.effects.sounds.len() + self.effects.spatial_sounds.len() < SOUNDS_MAX {
+            self.effects.spatial_sounds.push(SpatialSound { event: sound, cell });
         }
     }
 }
@@ -180,6 +196,56 @@ mod tests {
         }
         assert_eq!(effects.sounds, vec![SoundEvent::Pickup]);
         assert!((effects.shake - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn spatial_sound_follows_the_listener_without_changing_state() {
+        for seed in 1..=8 {
+            let mut world = charon_core::testkit::world_from_ascii("....\n####", seed);
+            let mut game = GameState::new(Default::default());
+            let mut entities = EntityWorld::new();
+            let before = (world.state_hash(), game.state_hash(), entities.state_hash());
+            let mut effects = Effects::default();
+            let source = CellPos::new(64, 8);
+            {
+                let mut ctx =
+                    Context::for_test(&mut world, &mut game, &mut entities, None, &mut effects);
+                ctx.play(SoundEvent::Jump);
+                ctx.play_at(SoundEvent::Place, source);
+                ctx.play_at(SoundEvent::Hit, CellPos::new(0, 8));
+                for _ in 0..SOUNDS_MAX {
+                    ctx.play_at(SoundEvent::Break, source);
+                    ctx.play(SoundEvent::Pickup);
+                }
+            }
+            assert_eq!(effects.sounds.first(), Some(&SoundEvent::Jump));
+            assert!(effects.sounds[1..].iter().all(|&event| event == SoundEvent::Pickup));
+            assert_eq!(effects.sounds.len() + effects.spatial_sounds.len(), SOUNDS_MAX);
+            assert_eq!(
+                effects.spatial_sounds[0],
+                SpatialSound { event: SoundEvent::Place, cell: source }
+            );
+            assert_eq!(effects.spatial_sounds[1].event, SoundEvent::Hit);
+            let left_listener = CellPos::new(0, 8);
+            let right_listener = CellPos::new(96, 8);
+            let rendered = |listener| {
+                let mut audio = crate::audio::Audio::new();
+                assert!(audio.play_at(SoundEvent::Place, source, listener).is_some());
+                let mut out = [0.0; 200];
+                audio.render(&mut out);
+                out
+            };
+            assert_ne!(
+                rendered(left_listener),
+                rendered(right_listener),
+                "聴取位置だけで出力が変わる"
+            );
+            assert_eq!(
+                (world.state_hash(), game.state_hash(), entities.state_hash()),
+                before,
+                "seed {seed}: 音だけはシミュレーションを変えない"
+            );
+        }
     }
 
     #[test]

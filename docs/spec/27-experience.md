@@ -17,7 +17,16 @@
 
 ## 2. T33.1: 空間音
 
-着手前に具体化する。音源の位置がある出来事だけを対象にし、ゲームの状態ハッシュとセルに影響を与えない。既存の中央定位の音と、仕様 12 のミキサー・32 音上限・音量の規則を維持する。
+既存の `charon-audio::Mixer` のパンと音量 (仕様 12) を使い、効果音だけに位置を付ける。音源・聴取者は世界の `CellPos`。`charon-app::audio::spatial_params(source, listener) -> Option<(f32, f32)>` は `dx = source.x - listener.x`、`dy = source.y - listener.y` を **i64** で計算し、`distance = max(abs(dx), abs(dy))` とする。`distance >= 128` なら `None` (鳴らさない)。そのほかは `pan = clamp(dx, -64, 64) / 64`、`gain = (128 - distance) / 128`。除算は音の演出に限り `f32` で行い、セル・ゲームのシミュレーションへ渡さない。音源と聴取者が同じときは中央、音量 1。距離 64 では音量 1/2、128 以上では無音。極端な座標でも桁あふれせず、常に有限の値になる。
+
+`Audio::play_at(event, source, listener)` は、効果音の既存の基準音量に `gain` を掛け、`pan` を `PlayParams` に渡す。`Bus::Sfx`、ミキサーの 32 音上限、設定の master/sfx/music 音量、音声デバイス有無の挙動はそのまま。位置がない `Audio::play_events` / `Audio::update` は中央のままで、既存の再生順・音量を変えない。掘る音の開始/停止は従来どおり `update` でのみ処理し、`play_at` に渡されたら何もしない。ゲームロジックには `Context::play_at(SoundEvent, CellPos)` を加え、`Effects::spatial_sounds` に順序どおり蓄積する。既存 `Effects::sounds` と合わせて `SOUNDS_MAX = 64` を超えない。従来の `Context::play` / スクリプトは変更しない。描画の音処理では、既存 `update`、位置なしの `effects.sounds`、位置つきの `effects.spatial_sounds` の順に再生し、聴取者はそのフレームのプレイヤーの中心セルとする。プレイヤー不在なら位置つき音は再生しない。
+
+デモの `GameEvent::BlockPlaced` / `BlockBroken` はブロックの左上セル (`BlockPos::origin`、桁あふれなら音なし)、`BossDefeated` はイベントのセル、`Melee` は対象エンティティの中心セルを音源として `Context::play_at` を呼ぶ。対象がすでに存在しなければ音は出さない。従来の揺れと GameEvent の内容・個数は維持し、他の出来事の音を増やさない。音だけの位置づけはゲームの状態ハッシュ・セル・同期入力に影響しない。`SoundEvent` は追加・変更しない。
+
+| テスト (`charon-app`) | 確認 |
+|---|---|
+| `spatial_sound_uses_position_and_distance` (`audio.rs`) | 同じ位置は中央・元の音量、右左でパンが反転し、64 セルで半分、128 以上は無音。極端な i32 座標でも有限。2 チャンネルの出力を聴取位置と比較する |
+| `spatial_sound_follows_the_listener_without_changing_state` (`api.rs`) | seed 1..=8。ロジックから位置つきの音を積み、順序・合計 64 の上限と位置なしの音を確認。聴取位置の違いだけで出力が変わり、世界・エンティティ・ゲームのハッシュが変わらない |
 
 ## 3. T33.2: BGM
 

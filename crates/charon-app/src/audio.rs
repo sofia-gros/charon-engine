@@ -7,6 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use charon_audio::{AudioOutput, Bus, Mixer, PlayParams, Shape, Sound, VoiceId};
+use charon_core::coords::CellPos;
 
 /// 混ぜる音の出力レート (Hz)。
 pub const RATE: u32 = 44_100;
@@ -94,6 +95,35 @@ impl SoundBank {
             hit: Sound::sweep(Shape::Saw, 320.0, 90.0, 0.1, rate),
         }
     }
+}
+
+impl SoundBank {
+    /// 位置の有無で同じ基準音量を使う。
+    fn sound_for(&self, event: SoundEvent) -> Option<(&Sound, f32)> {
+        match event {
+            SoundEvent::Jump => Some((&self.jump, 0.5)),
+            SoundEvent::Shoot => Some((&self.shoot, 0.6)),
+            SoundEvent::HookAnchor => Some((&self.anchor, 0.7)),
+            SoundEvent::Pickup => Some((&self.pickup, 0.4)),
+            SoundEvent::Place => Some((&self.place, 0.5)),
+            SoundEvent::Break => Some((&self.breaks, 0.5)),
+            SoundEvent::Hit => Some((&self.hit, 0.6)),
+            SoundEvent::DigStart | SoundEvent::DigStop => None,
+        }
+    }
+}
+
+/// セル座標での定位と距離減衰。音の演出だけに使い、シミュレーションには渡さない。
+pub fn spatial_params(source: CellPos, listener: CellPos) -> Option<(f32, f32)> {
+    let dx = i64::from(source.x) - i64::from(listener.x);
+    let dy = i64::from(source.y) - i64::from(listener.y);
+    let distance = dx.abs().max(dy.abs());
+    if distance >= 128 {
+        return None;
+    }
+    let pan = dx.clamp(-64, 64) as f32 / 64.0;
+    let gain = (128 - distance) as f32 / 128.0;
+    Some((pan, gain))
 }
 
 impl SoundBank {
@@ -312,20 +342,26 @@ impl Audio {
     /// 出来事を指定して鳴らす (ゲームのロジックが頼んだ音)。
     pub fn play_events(&mut self, events: &[SoundEvent]) {
         let mut mixer = lock(&self.mixer);
-        for event in events {
-            let (sound, volume) = match event {
-                SoundEvent::Jump => (&self.bank.jump, 0.5),
-                SoundEvent::Shoot => (&self.bank.shoot, 0.6),
-                SoundEvent::HookAnchor => (&self.bank.anchor, 0.7),
-                SoundEvent::Pickup => (&self.bank.pickup, 0.4),
-                SoundEvent::Place => (&self.bank.place, 0.5),
-                SoundEvent::Break => (&self.bank.breaks, 0.5),
-                SoundEvent::Hit => (&self.bank.hit, 0.6),
-                // 掘る音は続くので、状態の変化で鳴らす。ここでは扱わない。
-                SoundEvent::DigStart | SoundEvent::DigStop => continue,
-            };
-            mixer.play(sound, PlayParams { volume, bus: Bus::Sfx, ..Default::default() });
+        for &event in events {
+            if let Some((sound, volume)) = self.bank.sound_for(event) {
+                mixer.play(sound, PlayParams { volume, bus: Bus::Sfx, ..Default::default() });
+            }
         }
+    }
+
+    /// 世界の音源をそのフレームの聴取者からの距離・向きで鳴らす。
+    pub fn play_at(
+        &mut self,
+        event: SoundEvent,
+        source: CellPos,
+        listener: CellPos,
+    ) -> Option<VoiceId> {
+        let (pan, gain) = spatial_params(source, listener)?;
+        let (sound, volume) = self.bank.sound_for(event)?;
+        lock(&self.mixer).play(
+            sound,
+            PlayParams { volume: volume * gain, pan, bus: Bus::Sfx, ..Default::default() },
+        )
     }
 
     /// `out` (ステレオ) に混ぜる。
@@ -359,6 +395,44 @@ mod tests {
 
     fn standing() -> Snapshot {
         Snapshot { grounded: true, ..Default::default() }
+    }
+
+    #[test]
+    fn spatial_sound_uses_position_and_distance() {
+        let center = CellPos::new(0, 0);
+        assert_eq!(spatial_params(center, center), Some((0.0, 1.0)));
+        assert_eq!(spatial_params(CellPos::new(64, 0), center), Some((1.0, 0.5)));
+        assert_eq!(spatial_params(CellPos::new(-64, 0), center), Some((-1.0, 0.5)));
+        assert_eq!(spatial_params(CellPos::new(0, 128), center), None);
+        assert_eq!(spatial_params(CellPos::new(-128, 0), center), None);
+        assert_eq!(spatial_params(CellPos::new(i32::MAX, i32::MIN), center), None);
+        assert_eq!(spatial_params(CellPos::new(i32::MIN, i32::MAX), center), None);
+        let make_audio = || {
+            let mut audio = Audio::new();
+            let mut bank = SoundBank::procedural(RATE);
+            bank.place = Sound::new(RATE, vec![0.25; 512]);
+            audio.set_bank(bank);
+            audio
+        };
+        let render = |source, listener| {
+            let mut audio = make_audio();
+            assert!(audio.play_at(SoundEvent::Place, source, listener).is_some());
+            let mut out = [0.0; 8];
+            audio.render(&mut out);
+            out
+        };
+        let centered = render(center, center);
+        let right = render(CellPos::new(64, 0), center);
+        let left = render(CellPos::new(-64, 0), center);
+        assert!(centered[0] > 0.0 && (centered[0] - centered[1]).abs() < 1e-6);
+        assert!(right[0].abs() < 1e-6 && right[1] > 0.0);
+        assert!(left[1].abs() < 1e-6 && left[0] > 0.0);
+        assert!((right[1] - 0.0625).abs() < 1e-6, "半分の距離減衰 × 基準音量");
+        assert_eq!(right, render(center, CellPos::new(-64, 0)));
+        let mut audio = make_audio();
+        assert!(audio.play_at(SoundEvent::Place, CellPos::new(128, 0), center).is_none());
+        assert!(audio.play_at(SoundEvent::DigStart, center, center).is_none());
+        assert_eq!(audio.active_voices(), 0);
     }
 
     #[test]
