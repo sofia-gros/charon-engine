@@ -1,0 +1,18 @@
+(
+    en: {
+        "menu.title": "Main Menu", "menu.singleplayer": "Singleplayer", "menu.random_seed": "Random Seed", "menu.quit": "Quit",
+        "pause.title": "Pause", "pause.resume": "Resume", "pause.inventory": "Inventory", "pause.ui_scale": "UI scale", "pause.character_scale": "Character scale", "pause.light": "Light",
+        "pause.master_volume": "Master volume", "pause.effects_volume": "Effects volume", "pause.music_volume": "Music volume", "pause.keys": "Keys (click, then press a key; Esc cancels)", "pause.press_key": "press a key…", "pause.reset_keys": "Reset keys", "pause.language": "Language", "pause.sim_distance": "Sim distance (chunks)", "pause.auto": "Auto", "pause.sim_hint": "Chunks farther than this from the camera are frozen (not simulated).",
+        "inventory.title": "Inventory", "inventory.no_character": "No character.", "inventory.filter": "Filter", "inventory.all": "All", "inventory.weapons": "Weapons", "inventory.armor": "Armor", "inventory.blocks": "Blocks", "inventory.other": "Other", "inventory.stations": "Stations", "inventory.none": "none", "inventory.needs_station": "Needs station", "inventory.craft": "Craft", "inventory.to_block": "→ Block", "inventory.chest": "Chest", "inventory.close_chest": "Close chest", "inventory.inactive": "Chest inactive — contents preserved", "inventory.amount": "Amount", "inventory.take": "Take", "inventory.deposit": "Deposit from inventory", "inventory.store": "Store", "inventory.close": "Close",
+        "death.title": "You died", "death.respawn": "Respawning in",
+        "action.left": "Move left", "action.right": "Move right", "action.jump": "Jump", "action.dig": "Dig", "action.free_camera": "Free camera", "action.paint": "Weapon / Paint", "action.inventory": "Inventory", "action.pause": "Pause menu",
+    },
+    ja: {
+        "menu.title": "メインメニュー", "menu.singleplayer": "ひとりで遊ぶ", "menu.random_seed": "新しい世界", "menu.quit": "終了",
+        "pause.title": "一時停止", "pause.resume": "再開", "pause.inventory": "持ち物", "pause.ui_scale": "画面の大きさ", "pause.character_scale": "キャラクターの大きさ", "pause.light": "光",
+        "pause.master_volume": "全体の音量", "pause.effects_volume": "効果音の音量", "pause.music_volume": "音楽の音量", "pause.keys": "キー設定（クリック後に押す・Esc で中止）", "pause.press_key": "キーを押す…", "pause.reset_keys": "キーを戻す", "pause.language": "言語", "pause.sim_distance": "更新距離（チャンク）", "pause.auto": "自動", "pause.sim_hint": "カメラから遠いチャンクの更新を止めます。",
+        "inventory.title": "持ち物", "inventory.no_character": "キャラクターがいません。", "inventory.filter": "絞り込み", "inventory.all": "すべて", "inventory.weapons": "武器", "inventory.armor": "防具", "inventory.blocks": "ブロック", "inventory.other": "その他", "inventory.stations": "設備", "inventory.none": "なし", "inventory.needs_station": "必要な設備", "inventory.craft": "作る", "inventory.to_block": "→ ブロック", "inventory.chest": "箱", "inventory.close_chest": "箱を閉じる", "inventory.inactive": "箱は使えません — 中身は保持", "inventory.amount": "個数", "inventory.take": "取り出す", "inventory.deposit": "持ち物から入れる", "inventory.store": "入れる", "inventory.close": "閉じる",
+        "death.title": "倒れました", "death.respawn": "復活まで",
+        "action.left": "左へ移動", "action.right": "右へ移動", "action.jump": "ジャンプ", "action.dig": "掘る", "action.free_camera": "自由カメラ", "action.paint": "武器 / 描画", "action.inventory": "持ち物", "action.pause": "一時停止",
+    },
+)

@@ -277,12 +277,14 @@ fn take_inventory_drop(context: &egui::Context, target: Option<InvSlot>) -> Opti
 #[allow(deprecated)]
 fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut Controls) {
     use charon_game::items::{EquipSlot, ItemKind};
+    let strings = crate::localization::ui_strings();
+    let lang = controls.language;
     let Some(inventory) = overlay.player.and_then(|id| overlay.game.inventories.get(&id)) else {
         egui::Area::new(egui::Id::unique("charon inventory none"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 70.0))
             .order(egui::Order::Foreground)
             .show(context, |ui| {
-                ui.label("No character.");
+                ui.label(strings.text(lang, "inventory.no_character"));
             });
         return;
     };
@@ -293,7 +295,13 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
     let filter_id = egui::Id::new("charon inv filter");
     let recipe_id = egui::Id::new("charon inv recipe");
     let filter: usize = context.data(|d| d.get_temp(filter_id)).unwrap_or(0);
-    const FILTERS: [&str; 5] = ["All", "Weapons", "Armor", "Blocks", "Other"];
+    const FILTERS: [&str; 5] = [
+        "inventory.all",
+        "inventory.weapons",
+        "inventory.armor",
+        "inventory.blocks",
+        "inventory.other",
+    ];
     let passes = |item: charon_game::items::ItemId| match filter {
         1 => matches!(kind_of(item), Some(ItemKind::Weapon { .. } | ItemKind::Tool { .. })),
         2 => matches!(kind_of(item), Some(ItemKind::Armor { .. })),
@@ -323,6 +331,7 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                         .id_salt("charon inventory full")
                         .max_height((context.content_rect().height() - 80.0).max(120.0))
                         .show(ui, |ui| {
+                            ui.heading(strings.text(lang, "inventory.title"));
                             // 1 行目: ホットバー。残りの行: 持ち物のアイテム (ホットバーにないもの、ID の昇順)。
                             let pinned: Vec<Option<charon_game::items::ItemId>> =
                                 (0..cols).map(|s| inventory.hotbar(s)).collect();
@@ -433,7 +442,11 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                             // 格子の下: 絞り込みと装備。
                             ui.horizontal(|ui| {
                                 if ui
-                                    .button(format!("Filter: {}", FILTERS[filter % FILTERS.len()]))
+                                    .button(format!(
+                                        "{}: {}",
+                                        strings.text(lang, "inventory.filter"),
+                                        strings.text(lang, FILTERS[filter % FILTERS.len()])
+                                    ))
                                     .clicked()
                                 {
                                     context.data_mut(|d| {
@@ -499,9 +512,10 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                 let stations =
                                     nearby.iter().map(|&item| name_of(item)).collect::<Vec<_>>();
                                 ui.label(format!(
-                                    "Stations: {}",
+                                    "{}: {}",
+                                    strings.text(lang, "inventory.stations"),
                                     if stations.is_empty() {
-                                        "none".to_owned()
+                                        strings.text(lang, "inventory.none").to_owned()
                                     } else {
                                         stations.join(", ")
                                     }
@@ -543,12 +557,22 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                             );
                                             let ok = craftable(r);
                                             ui.label(format!(
-                                                "Needs station: {}",
-                                                r.station
-                                                    .map_or_else(|| "none".to_owned(), name_of)
+                                                "{}: {}",
+                                                strings.text(lang, "inventory.needs_station"),
+                                                r.station.map_or_else(
+                                                    || strings
+                                                        .text(lang, "inventory.none")
+                                                        .to_owned(),
+                                                    name_of
+                                                )
                                             ));
                                             if ui
-                                                .add_enabled(ok, egui::Button::new("Craft"))
+                                                .add_enabled(
+                                                    ok,
+                                                    egui::Button::new(
+                                                        strings.text(lang, "inventory.craft"),
+                                                    ),
+                                                )
                                                 .clicked()
                                             {
                                                 controls
@@ -568,8 +592,9 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                                 )
                                                 && ui
                                                     .small_button(format!(
-                                                        "{} → Block",
-                                                        name_of(item)
+                                                        "{} {}",
+                                                        name_of(item),
+                                                        strings.text(lang, "inventory.to_block")
                                                     ))
                                                     .clicked()
                                             {
@@ -586,8 +611,16 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                             {
                                 ui.separator();
                                 ui.horizontal(|ui| {
-                                    ui.label(format!("Chest ({}, {})", pos.bx, pos.by));
-                                    if ui.small_button("Close chest").clicked() {
+                                    ui.label(format!(
+                                        "{} ({}, {})",
+                                        strings.text(lang, "inventory.chest"),
+                                        pos.bx,
+                                        pos.by
+                                    ));
+                                    if ui
+                                        .small_button(strings.text(lang, "inventory.close_chest"))
+                                        .clicked()
+                                    {
                                         controls
                                             .inv_commands
                                             .push(InvCommand::Fixture(FixtureCommand::Close));
@@ -595,13 +628,13 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                 });
                                 let active = overlay.game.fixtures.active(overlay.world, pos);
                                 if !active {
-                                    ui.label("Chest inactive — contents preserved");
+                                    ui.label(strings.text(lang, "inventory.inactive"));
                                 }
                                 let amount_id = egui::Id::new("charon chest amount");
                                 let mut amount: u32 =
                                     context.data(|d| d.get_temp(amount_id)).unwrap_or(1);
                                 ui.horizontal(|ui| {
-                                    ui.label("Amount");
+                                    ui.label(strings.text(lang, "inventory.amount"));
                                     ui.add(egui::DragValue::new(&mut amount).range(1..=99_999));
                                 });
                                 context.data_mut(|d| d.insert_temp(amount_id, amount));
@@ -618,7 +651,10 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                                 if ui
                                                     .add_enabled(
                                                         active && item.is_some(),
-                                                        egui::Button::new("Take").small(),
+                                                        egui::Button::new(
+                                                            strings.text(lang, "inventory.take"),
+                                                        )
+                                                        .small(),
                                                     )
                                                     .clicked()
                                                     && let Some(item) = item
@@ -634,7 +670,7 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                             });
                                         }
                                     });
-                                ui.label("Deposit from inventory");
+                                ui.label(strings.text(lang, "inventory.deposit"));
                                 egui::ScrollArea::vertical()
                                     .id_salt("charon chest deposit")
                                     .max_height(72.0)
@@ -645,7 +681,10 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                                 if ui
                                                     .add_enabled(
                                                         active,
-                                                        egui::Button::new("Store").small(),
+                                                        egui::Button::new(
+                                                            strings.text(lang, "inventory.store"),
+                                                        )
+                                                        .small(),
                                                     )
                                                     .clicked()
                                                 {
@@ -661,7 +700,7 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                         }
                                     });
                             }
-                            if ui.small_button("Close").clicked() {
+                            if ui.small_button(strings.text(lang, "inventory.close")).clicked() {
                                 if controls.open_chest.is_some() {
                                     controls
                                         .inv_commands
@@ -680,31 +719,37 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
 /// ポーズのメニュー (仕様 10 §14): 再開・設定 (UI の大きさ・キャラクターの大きさ・光)・キー割り当て・持ち物・終了。
 fn draw_pause_menu(context: &egui::Context, controls: &mut Controls) -> Option<DemoAction> {
     let mut action = None;
-    egui::Window::new("Pause")
+    let strings = crate::localization::ui_strings();
+    let lang = controls.language;
+    egui::Window::new(strings.text(lang, "pause.title"))
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .collapsible(false)
         .resizable(false)
         .show(context, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Resume").clicked() {
+                if ui.button(strings.text(lang, "pause.resume")).clicked() {
                     controls.pause_menu = false;
                     controls.rebinding = None;
                 }
-                if ui.button("Inventory").clicked() {
+                if ui.button(strings.text(lang, "pause.inventory")).clicked() {
                     controls.inventory_open = !controls.inventory_open;
                 }
-                if ui.button("Quit").clicked() {
+                if ui.button(strings.text(lang, "menu.quit")).clicked() {
                     action = Some(DemoAction::Quit);
                 }
             });
             ui.separator();
-            ui.add(egui::Slider::new(&mut controls.ui_scale, 0.5..=3.0).text("UI scale"));
             ui.add(
-                egui::Slider::new(&mut controls.sprite_scale, 0.25..=3.0).text("Character scale"),
+                egui::Slider::new(&mut controls.ui_scale, 0.5..=3.0)
+                    .text(strings.text(lang, "pause.ui_scale")),
             );
-            sim_distance_slider(ui, &mut controls.sim_distance);
+            ui.add(
+                egui::Slider::new(&mut controls.sprite_scale, 0.25..=3.0)
+                    .text(strings.text(lang, "pause.character_scale")),
+            );
+            sim_distance_slider(ui, &mut controls.sim_distance, lang);
             ui.horizontal(|ui| {
-                ui.label("Light");
+                ui.label(strings.text(lang, "pause.light"));
                 for (quality, name) in [
                     (LightQuality::Off, "Off"),
                     (LightQuality::Low, "Low"),
@@ -714,17 +759,39 @@ fn draw_pause_menu(context: &egui::Context, controls: &mut Controls) -> Option<D
                     ui.selectable_value(&mut controls.light_quality, quality, name);
                 }
             });
-            ui.add(egui::Slider::new(&mut controls.master_volume, 0.0..=1.0).text("Master volume"));
-            ui.add(egui::Slider::new(&mut controls.sfx_volume, 0.0..=1.0).text("Effects volume"));
-            ui.add(egui::Slider::new(&mut controls.music_volume, 0.0..=1.0).text("Music volume"));
+            ui.add(
+                egui::Slider::new(&mut controls.master_volume, 0.0..=1.0)
+                    .text(strings.text(lang, "pause.master_volume")),
+            );
+            ui.add(
+                egui::Slider::new(&mut controls.sfx_volume, 0.0..=1.0)
+                    .text(strings.text(lang, "pause.effects_volume")),
+            );
+            ui.add(
+                egui::Slider::new(&mut controls.music_volume, 0.0..=1.0)
+                    .text(strings.text(lang, "pause.music_volume")),
+            );
+            ui.horizontal(|ui| {
+                ui.label(strings.text(lang, "pause.language"));
+                ui.selectable_value(
+                    &mut controls.language,
+                    crate::settings::Language::English,
+                    "English",
+                );
+                ui.selectable_value(
+                    &mut controls.language,
+                    crate::settings::Language::Japanese,
+                    "日本語",
+                );
+            });
             ui.separator();
-            ui.label("Keys (click, then press a key; Esc cancels)");
+            ui.label(strings.text(lang, "pause.keys"));
             egui::Grid::new("charon keys").num_columns(2).show(ui, |ui| {
                 for key_action in crate::settings::Action::ALL {
-                    ui.label(key_action.label());
+                    ui.label(strings.text(lang, key_action.ui_key()));
                     let waiting = controls.rebinding == Some(key_action);
                     let text = if waiting {
-                        "press a key…".to_owned()
+                        strings.text(lang, "pause.press_key").to_owned()
                     } else {
                         controls.bindings.describe(key_action)
                     };
@@ -734,7 +801,7 @@ fn draw_pause_menu(context: &egui::Context, controls: &mut Controls) -> Option<D
                     ui.end_row();
                 }
             });
-            if ui.button("Reset keys").clicked() {
+            if ui.button(strings.text(lang, "pause.reset_keys")).clicked() {
                 controls.bindings.reset();
                 controls.rebinding = None;
             }
@@ -939,6 +1006,8 @@ impl DemoUi {
         world_ticks: u64,
     ) -> Option<DemoAction> {
         self.history.push(stats);
+        let strings = crate::localization::ui_strings();
+        let lang = controls.language;
         let mut action = None;
         // パネルの開閉の初期値: タッチの画面 (仮想パッドが出る) では、画面を隠さないようにすべて閉じる。
         // デスクトップでは、`Main Menu` と `Draw` を開く。
@@ -956,7 +1025,7 @@ impl DemoUi {
         draw_hearts_and_stars(context, overlay);
         draw_hud_bars(context, overlay);
         draw_boss_bar(context, overlay);
-        draw_death_overlay(context, overlay);
+        draw_death_overlay(context, overlay, lang);
         draw_hints(context, overlay, world_ticks);
         if overlay.pad.is_none() {
             draw_desktop_hotbar(context, overlay);
@@ -1007,7 +1076,11 @@ impl DemoUi {
                     egui::Slider::new(&mut controls.sprite_scale, 0.25..=3.0)
                         .text("Character scale"),
                 );
-                sim_distance_slider(ui, &mut controls.sim_distance);
+                sim_distance_slider(
+                    ui,
+                    &mut controls.sim_distance,
+                    crate::settings::Language::English,
+                );
                 ui.horizontal(|ui| {
                     ui.label("Light");
                     for (quality, name) in [
@@ -1033,19 +1106,19 @@ impl DemoUi {
                 player_info(ui, overlay);
             });
 
-        egui::Window::new("Main Menu")
+        egui::Window::new(strings.text(lang, "menu.title"))
             .default_pos([92.0, 14.0])
             .open(&mut open[1])
             .collapsible(false)
             .resizable(false)
             .show(context, |ui| {
-                if ui.button("Singleplayer").clicked() {
+                if ui.button(strings.text(lang, "menu.singleplayer")).clicked() {
                     action = Some(DemoAction::Singleplayer);
                 }
-                if ui.button("Random Seed").clicked() {
+                if ui.button(strings.text(lang, "menu.random_seed")).clicked() {
                     action = Some(DemoAction::RandomSeed);
                 }
-                if ui.button("Quit").clicked() {
+                if ui.button(strings.text(lang, "menu.quit")).clicked() {
                     action = Some(DemoAction::Quit);
                 }
             });
@@ -1536,7 +1609,11 @@ fn draw_desktop_hotbar(context: &egui::Context, overlay: &Overlay<'_>) {
 }
 
 /// 倒れたときの表示 (仕様 23 §1): 画面の中央に、復活までの秒数。
-fn draw_death_overlay(context: &egui::Context, overlay: &Overlay<'_>) {
+fn draw_death_overlay(
+    context: &egui::Context,
+    overlay: &Overlay<'_>,
+    lang: crate::settings::Language,
+) {
     let Some(id) = overlay.player else { return };
     let Some(ticks) = overlay.game.death_ticks(id) else { return };
     let left = charon_game::respawn::RESPAWN_TICKS.saturating_sub(ticks) / 60 + 1;
@@ -1549,14 +1626,14 @@ fn draw_death_overlay(context: &egui::Context, overlay: &Overlay<'_>) {
     painter.text(
         center,
         egui::Align2::CENTER_CENTER,
-        "You died",
+        crate::localization::ui_strings().text(lang, "death.title"),
         egui::FontId::proportional(40.0),
         egui::Color32::from_rgb(230, 70, 70),
     );
     painter.text(
         center + egui::vec2(0.0, 40.0),
         egui::Align2::CENTER_CENTER,
-        format!("Respawning in {left}"),
+        format!("{} {left}", crate::localization::ui_strings().text(lang, "death.respawn")),
         egui::FontId::proportional(18.0),
         egui::Color32::from_white_alpha(220),
     );
@@ -1832,20 +1909,30 @@ fn player_info(ui: &mut egui::Ui, overlay: &Overlay<'_>) {
 
 /// 更新距離 (チャンク) のスライダー: 0 は `Auto` (画面のまわりだけ)。カメラからこの距離の外のチャンクは、
 /// コールドフリーズする (砂・水・煙・熱の更新を一切しない、仕様 02 §9.4)。
-fn sim_distance_slider(ui: &mut egui::Ui, distance: &mut u32) {
-    let response =
-        ui.add(
-            egui::Slider::new(distance, 0..=charon_world::streaming::MAX_SIM_DISTANCE)
-                .text("Sim distance (chunks)")
-                .custom_formatter(|value, _| {
-                    if value < 0.5 { "Auto".to_owned() } else { format!("{value:.0}") }
-                })
-                .custom_parser(|text| {
-                    let text = text.trim();
-                    if text.eq_ignore_ascii_case("auto") { Some(0.0) } else { text.parse().ok() }
-                }),
-        );
-    response.on_hover_text("Chunks farther than this from the camera are frozen (not simulated).");
+fn sim_distance_slider(ui: &mut egui::Ui, distance: &mut u32, lang: crate::settings::Language) {
+    let strings = crate::localization::ui_strings();
+    let response = ui.add(
+        egui::Slider::new(distance, 0..=charon_world::streaming::MAX_SIM_DISTANCE)
+            .text(strings.text(lang, "pause.sim_distance"))
+            .custom_formatter(|value, _| {
+                if value < 0.5 {
+                    strings.text(lang, "pause.auto").to_owned()
+                } else {
+                    format!("{value:.0}")
+                }
+            })
+            .custom_parser(|text| {
+                let text = text.trim();
+                if text.eq_ignore_ascii_case("auto")
+                    || text == strings.text(crate::settings::Language::Japanese, "pause.auto")
+                {
+                    Some(0.0)
+                } else {
+                    text.parse().ok()
+                }
+            }),
+    );
+    response.on_hover_text(strings.text(lang, "pause.sim_hint"));
 }
 
 /// 閉じたパネルを、画面の左端に縦に並べた細いタブ (`|▸ 名前`) にする。触れると、そのパネルが開く (仕様 10 §14)。

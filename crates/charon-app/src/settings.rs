@@ -36,6 +36,20 @@ impl Action {
         Self::Pause,
     ];
 
+    /// エンジンの UI 辞書にある操作名のキー。
+    pub fn ui_key(self) -> &'static str {
+        match self {
+            Self::Left => "action.left",
+            Self::Right => "action.right",
+            Self::Jump => "action.jump",
+            Self::Dig => "action.dig",
+            Self::FreeCamera => "action.free_camera",
+            Self::TogglePaint => "action.paint",
+            Self::Inventory => "action.inventory",
+            Self::Pause => "action.pause",
+        }
+    }
+
     /// 画面に出す名前。
     pub fn label(self) -> &'static str {
         match self {
@@ -221,6 +235,14 @@ impl KeyBindings {
     }
 }
 
+/// 表示するエンジンの文字列の言語。MOD の名前は変更しない。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Language {
+    #[default]
+    English,
+    Japanese,
+}
+
 /// 設定ファイルの版。
 pub const SETTINGS_VERSION: u32 = 1;
 /// 設定ファイルの大きさの上限 (バイト)。
@@ -239,6 +261,9 @@ pub struct Settings {
     pub master_volume: f32,
     pub sfx_volume: f32,
     pub music_volume: f32,
+    /// 旧設定では英語を使う。
+    #[serde(default)]
+    pub language: Language,
     /// セルを更新する範囲の半径 (チャンク、0 = 自動、最大 16)。この外のチャンクは**コールドフリーズ**する (仕様 02 §9.4)。
     /// 古い設定ファイルにはない項目なので、なければ 0。
     #[serde(default)]
@@ -256,6 +281,7 @@ impl Default for Settings {
             master_volume: 1.0,
             sfx_volume: 1.0,
             music_volume: 0.7,
+            language: Language::English,
             sim_distance: 0,
             keys: KeyBindings::default(),
         }

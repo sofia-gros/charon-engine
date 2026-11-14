@@ -18,6 +18,7 @@ mod gamepad;
 mod gesture;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod headless_tests;
+pub mod localization;
 mod player;
 mod pointer;
 mod replay;
@@ -639,6 +640,7 @@ impl App {
             self.settings.master_volume = controls.master_volume;
             self.settings.sfx_volume = controls.sfx_volume;
             self.settings.music_volume = controls.music_volume;
+            self.settings.language = controls.language;
             self.settings.sim_distance = controls.sim_distance;
             self.settings.keys = controls.bindings.clone();
         }
@@ -1795,6 +1797,7 @@ impl ApplicationHandler for App {
                 gui.controls.master_volume = self.settings.master_volume;
                 gui.controls.sfx_volume = self.settings.sfx_volume;
                 gui.controls.music_volume = self.settings.music_volume;
+                gui.controls.language = self.settings.language;
                 gui.controls.sim_distance = self.settings.sim_distance;
                 gui.controls.bindings = self.keys.bindings().clone();
                 #[cfg(target_arch = "wasm32")]

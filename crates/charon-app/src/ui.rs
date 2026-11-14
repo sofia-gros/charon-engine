@@ -9,7 +9,7 @@ use winit::event::WindowEvent;
 use winit::window::Window;
 
 use crate::demo_ui::{DemoAction, DemoUi, FrameStats, Overlay};
-use crate::settings::{Action, KeyBindings};
+use crate::settings::{Action, KeyBindings, Language};
 
 #[derive(Debug)]
 pub(super) struct Controls {
@@ -34,6 +34,8 @@ pub(super) struct Controls {
     pub(super) master_volume: f32,
     pub(super) sfx_volume: f32,
     pub(super) music_volume: f32,
+    /// デモ UI の表示言語。
+    pub(super) language: Language,
     /// セルを更新する範囲の半径 (チャンク、0 = 自動)。この外はコールドフリーズする (仕様 02 §9.4)。
     pub(super) sim_distance: u32,
     /// ポーズのメニューが開いている (開いている間、世界は止まる、仕様 10 §14)。
@@ -123,6 +125,7 @@ impl Controls {
             master_volume: 1.0,
             sfx_volume: 1.0,
             music_volume: 0.7,
+            language: Language::English,
             sim_distance: 0,
             pause_menu: false,
             inventory_open: false,
@@ -165,6 +168,9 @@ impl Gui {
         demo: Option<&MaterialTable>,
     ) -> Self {
         let context = egui::Context::default();
+        if demo.is_some() {
+            crate::localization::install_japanese_font(&context);
+        }
         let state = egui_winit::State::new(
             context.clone(),
             egui::ViewportId::ROOT,

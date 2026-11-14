@@ -43,7 +43,14 @@
 
 ## 4. T33.3: 日本語とフォント
 
-着手前に具体化する。使用する字体の出典・ライセンスを確認してからファイルを同梱する。既存の英語画面と MOD の文字列を壊さず、利用できない文字列は安全に戻す。
+エンジンが所有するデモの主要な画面 (Main Menu、Pause、持ち物の見出し、死亡・復活の案内) の固定文字列を `assets/strings.ron` の英語・日本語の辞書に置く。`UiStrings::from_ron(text) -> Result` は辞書を読み、`UiStrings::text(language, key) -> &str` は日本語のキーがない・空なら英語、英語もない・空ならキーそのものを返す。`Language` は `English` / `Japanese` の二値、`Settings::language` は `#[serde(default)]` で旧設定では `English`、保存時は変更後の値を使う。デモのポーズ画面で English / 日本語を切り替え、描画の次フレームから反映する。Sandbox と Debug/Draw などの開発パネル、MOD の名前・説明・スクリプトの文字列は変更しない。未知のキーはキーを表示し、MOD の文字列を翻訳表のキーとして扱わない。言語は UI・設定だけに作用し、世界の tick やゲームのハッシュを変えない。
+
+日本語フォントは Google Fonts の [Noto Sans JP 可変 TTF](https://github.com/google/fonts/blob/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf) を原本のまま `assets/fonts/noto-sans-jp/NotoSansJP.ttf` に同梱し、[同じ場所の OFL.txt](https://github.com/google/fonts/blob/main/ofl/notosansjp/OFL.txt) を同梱する。原本は SIL Open Font License 1.1 (Adobe 2014–2021、Reserved Font Name `Source`) で、ソフトウェアと一緒の再配布には著作権表示とライセンス文の添付が必要。加工・改名はしない。egui の `FontDefinitions::default()` にフォントを追加し、Proportional/Monospace の**末尾**に追加して英語の既存の字形を優先する。全字形を事前にアトラスへ入れず、必要な文字だけ描画で読み込む。現物の視認性と APK の容量は実機未検証として残す。フォントがないときの無言の文字化けは許さず、ビルド時の `include_bytes!` で欠損を検出する。
+
+| テスト (`charon-app`) | 確認 |
+|---|---|
+| `ui_language_falls_back_for_missing_strings` | 英日辞書、欠けた/空の日本語→英語、英語もなければキー。旧 `settings.ron` の言語なし→English、Japanese の保存復帰。MOD の名前はそのまま |
+| `japanese_glyphs_render_in_the_ui` | 実際の同梱フォントを egui に登録し、デモの日本語メニュー・ポーズ・死亡の文字に使う漢字・仮名が `has_glyphs` で真、レイアウトが空でない。英語・数字の既存字形も保つ (GPU の実画面や実機の視認性の代用とはしない) |
 
 ## 5. T33.4: 演出と画面
 
