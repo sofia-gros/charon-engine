@@ -42,6 +42,10 @@ impl Arena {
     }
 
     fn with_seed(seed: u64) -> Self {
+        Self::with_seed_and_items(seed, None)
+    }
+
+    fn with_seed_and_items(seed: u64, items: Option<&str>) -> Self {
         let materials = MaterialTable::builtin().unwrap();
         let mut defs = Definitions::engine_defaults(&materials).unwrap();
         let files = DefinitionFiles {
@@ -50,6 +54,14 @@ impl Arena {
             ..Default::default()
         };
         defs.layer(files, &materials, Some("t")).unwrap();
+        if let Some(items) = items {
+            defs.layer(
+                DefinitionFiles { items: Some(items), ..Default::default() },
+                &materials,
+                Some("m"),
+            )
+            .unwrap();
+        }
         let mut world = World::new(Arc::new(materials), seed);
         world.insert_chunk(ChunkPos::new(0, 0));
         testkit::fill(&mut world, 0, 40, 63, 40, '#');
@@ -557,6 +569,162 @@ fn equipment_bonuses_survive_item_save() {
         c.tick(false, (1000, 0));
         assert_eq!(c.game.vitals.get(c.player).unwrap().armor.defense, 10);
     }
+}
+
+const MOD_WEAPONS: &str = r#"[
+    (name: "bolt", kind: Misc),
+    (name: "flame_blade", kind: Weapon(class: Melee, damage: 9, interval: 3, kind: Fire)),
+    (name: "frost_bow", kind: Weapon(class: Ranged, damage: 14, interval: 4, kind: Cold, ammo: Some("bolt"))),
+]"#;
+
+/// 武器の定義ごとに間隔を変え、火の斬撃と冷気の矢は対応する耐性で軽減する。
+#[test]
+fn weapon_interval_and_damage_kind_follow_definition() {
+    for seed in 1..=8 {
+        let mut a = Arena::with_seed_and_items(seed, Some(MOD_WEAPONS));
+        a.give_and_equip("m:flame_blade");
+        let target = a.dummy(36);
+        a.game.vitals.get_mut(target).unwrap().armor.fire = 50;
+        a.game.take_events();
+        a.tick(true, (1000, 0));
+        assert_eq!(a.hp(target), 95, "seed {seed}: 火の耐性が 9 を 5 にする");
+        for _ in 0..2 {
+            a.tick(true, (1000, 0));
+        }
+        assert_eq!(
+            a.game.take_events().iter().filter(|e| matches!(e, GameEvent::Melee { .. })).count(),
+            1
+        );
+        a.tick(true, (1000, 0));
+        assert_eq!(
+            a.game.take_events().iter().filter(|e| matches!(e, GameEvent::Melee { .. })).count(),
+            1,
+            "seed {seed}: 3 tick 目に次の斬撃"
+        );
+
+        let mut b = Arena::with_seed_and_items(seed, Some(MOD_WEAPONS));
+        b.give_and_equip("m:frost_bow");
+        let target = b.dummy(36);
+        b.game.vitals.get_mut(target).unwrap().armor.cold = 100;
+        let ammo = b.defs.item_id("m:bolt", b.world.materials()).unwrap();
+        b.game.inventories.get_mut(&b.player).unwrap().add_item(ammo, 2);
+        b.tick(true, (1000, 0));
+        let arrow = *b.game.projectiles.iter().next().unwrap();
+        assert_eq!((arrow.damage, arrow.kind), (14, DamageKind::Cold));
+        for _ in 0..5 {
+            b.tick(false, (1000, 0));
+        }
+        assert!(
+            b.game.take_events().iter().any(|event| matches!(event,
+            GameEvent::Hit(hit) if hit.projectile == arrow.id && hit.entity == Some(target)
+                && hit.damage == 14)),
+            "seed {seed}: 冷気の矢が命中"
+        );
+        assert_eq!(b.hp(target), 100, "seed {seed}: 冷気の直撃は耐性 100% で無効");
+        assert_eq!(b.game.vitals.get(target).unwrap().combat_immunity(), 0);
+    }
+}
+
+/// 弾薬は発射が成立したときだけ 1 個消費し、失敗した入力・弾数上限では消費しない。
+#[test]
+fn ammunition_is_consumed_only_on_shot() {
+    for seed in 1..=8 {
+        let mut a = Arena::with_seed_and_items(seed, Some(MOD_WEAPONS));
+        a.give_and_equip("m:frost_bow");
+        let ammo = a.defs.item_id("m:bolt", a.world.materials()).unwrap();
+        a.tick(true, (1000, 0));
+        assert_eq!(a.game.projectiles.len(), 0, "seed {seed}: 未所持");
+        a.game.inventories.get_mut(&a.player).unwrap().add_item(ammo, 2);
+        a.tick(true, (0, 0));
+        assert_eq!(a.game.inventories[&a.player].item_count(ammo), 2, "向きなし");
+        assert_eq!(a.game.projectiles.len(), 0);
+        a.tick(true, (1000, 0));
+        assert_eq!(a.game.inventories[&a.player].item_count(ammo), 1);
+        a.tick(true, (1000, 0));
+        assert_eq!(a.game.inventories[&a.player].item_count(ammo), 1, "待ち時間");
+        for _ in 0..4 {
+            a.tick(false, (1000, 0));
+        }
+        a.tick(true, (1000, 0));
+        assert_eq!(a.game.inventories[&a.player].item_count(ammo), 0);
+        a.tick(true, (1000, 0));
+        assert_eq!(a.game.inventories[&a.player].item_count(ammo), 0, "弾切れ");
+        let mut full = Arena::with_seed_and_items(seed, Some(MOD_WEAPONS));
+        full.give_and_equip("m:frost_bow");
+        full.game.inventories.get_mut(&full.player).unwrap().add_item(ammo, 1);
+        for _ in 0..charon_game::projectile::MAX_PROJECTILES {
+            full.game
+                .projectiles
+                .spawn(&full.world, 0, 0, 0, 0, 0, 30, 0, charon_game::projectile::Payload::None)
+                .unwrap();
+        }
+        full.tick(true, (1000, 0));
+        assert_eq!(full.game.inventories[&full.player].item_count(ammo), 1, "上限でも消費しない");
+        assert_eq!(full.game.projectiles.len(), charon_game::projectile::MAX_PROJECTILES);
+    }
+}
+
+/// 押し続けたときの弾薬・弾 ID・世界とゲームのハッシュは seed ごとに再現できる。
+#[test]
+fn held_weapon_input_is_deterministic() {
+    for seed in 1..=8 {
+        let trace = || {
+            let mut a = Arena::with_seed_and_items(seed, Some(MOD_WEAPONS));
+            a.give_and_equip("m:frost_bow");
+            let ammo = a.defs.item_id("m:bolt", a.world.materials()).unwrap();
+            a.game.inventories.get_mut(&a.player).unwrap().add_item(ammo, 8);
+            let mut trace = Vec::new();
+            for _ in 0..30 {
+                a.tick(true, (1000, 0));
+                trace.push((
+                    a.game.state_hash(),
+                    a.world.state_hash(),
+                    a.entities.state_hash(),
+                    a.game.inventories[&a.player].item_count(ammo),
+                ));
+            }
+            trace
+        };
+        assert_eq!(trace(), trace(), "seed {seed}");
+    }
+    let materials = MaterialTable::builtin().unwrap();
+    let mut defs = Definitions::engine_defaults(&materials).unwrap();
+    let original = defs.content_hash();
+    for invalid in [
+        r#"[(name: "invalid", kind: Weapon(class: Ranged, damage: 2, ammo: Some("missing")))]"#,
+        r#"[(name: "invalid", kind: Weapon(class: Ranged, damage: 2, ammo: Some("wood_sword")))]"#,
+        r#"[(name: "invalid", kind: Weapon(class: Melee, damage: 2, ammo: Some("wood_arrow")))]"#,
+        r#"[(name: "invalid", kind: Weapon(class: Wand, wand: Some("basic"), interval: 2))]"#,
+        r#"[(name: "invalid", kind: Weapon(class: Melee, damage: 2, interval: 601))]"#,
+    ] {
+        assert!(
+            defs.layer(
+                DefinitionFiles { items: Some(invalid), ..Default::default() },
+                &materials,
+                Some("m")
+            )
+            .is_err()
+        );
+        assert_eq!(defs.content_hash(), original, "失敗した層は変更しない");
+    }
+    defs.layer(
+        DefinitionFiles { items: Some(MOD_WEAPONS), ..Default::default() },
+        &materials,
+        Some("m"),
+    )
+    .unwrap();
+    let with_ammo = defs.content_hash();
+    assert_ne!(with_ammo, original, "武器属性・間隔・弾薬が定義ハッシュに入る");
+    let replacement = r#"[(name: "m:bolt", replace: true, kind: Weapon(class: Melee, damage: 1))]"#;
+    assert!(
+        defs.layer(
+            DefinitionFiles { items: Some(replacement), ..Default::default() },
+            &materials,
+            None
+        )
+        .is_err()
+    );
+    assert_eq!(defs.content_hash(), with_ammo, "後続の上書きで弾薬を壊せない");
 }
 
 /// 同じ入力なら、同じ結果 (近接・遠距離・ノックバックを含めて)。

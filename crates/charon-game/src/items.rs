@@ -2,6 +2,8 @@
 
 use charon_core::cell::MaterialId;
 
+use crate::vitals::DamageKind;
+
 /// アイテムの識別子 (仕様 19 §1)。保存は名前で行う。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ItemId(pub u32);
@@ -91,6 +93,11 @@ pub enum ItemKind {
         class: WeaponClass,
         damage: u16,
         wand: Option<String>,
+        /// 0 は種類ごとの既定間隔。杖は cast_delay を使う。
+        interval: u16,
+        kind: DamageKind,
+        /// 必要なら発射時に 1 個消費する定義アイテム。
+        ammo: Option<ItemId>,
     },
     Armor {
         slot: ArmorSlot,

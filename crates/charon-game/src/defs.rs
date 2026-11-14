@@ -7,6 +7,7 @@ use charon_core::material::{MaterialTable, Phase};
 use serde::Deserialize;
 
 use crate::items::{ArmorSlot, ItemDef, ItemId, ItemKind, Resist, SetBonus, WeaponClass};
+use crate::vitals::DamageKind;
 use crate::wand::{Fnv, SpellError, SpellTable, Wand, WandError};
 
 const ENGINE_SPELLS: &str = include_str!("../../../assets/spells.ron");
@@ -218,6 +219,15 @@ enum RawWeaponClass {
     Wand,
 }
 
+#[derive(Default, Deserialize)]
+enum RawDamageKind {
+    #[default]
+    Physical,
+    Fire,
+    Poison,
+    Cold,
+}
+
 #[derive(Deserialize)]
 enum RawSlot {
     Head,
@@ -241,6 +251,12 @@ enum RawKind {
         damage: i64,
         #[serde(default)]
         wand: Option<String>,
+        #[serde(default)]
+        interval: i64,
+        #[serde(default)]
+        kind: RawDamageKind,
+        #[serde(default)]
+        ammo: Option<String>,
     },
     Armor {
         slot: RawSlot,
@@ -479,6 +495,17 @@ impl Definitions {
         }
         if let Some(text) = files.items {
             next.layer_items(text, namespace)?;
+            // 後続の replace で弾薬が Misc 以外に変わった場合も、層全体を拒否する。
+            for item in &next.items {
+                if let ItemKind::Weapon { ammo: Some(ammo), .. } = &item.kind
+                    && !matches!(next.item_def(*ammo).map(|def| &def.kind), Some(ItemKind::Misc))
+                {
+                    return Err(DefsError::Invalid {
+                        owner: item.name.clone(),
+                        reason: "ammo は Misc の定義アイテムです",
+                    });
+                }
+            }
         }
         if let Some(text) = files.fixtures {
             next.layer_fixtures(text, materials, namespace)?;
@@ -676,9 +703,17 @@ impl Definitions {
                     pick: range(&name, pick, 0, 1000, "pick は 0..=1000 です")? as u16,
                     axe: range(&name, axe, 0, 1000, "axe は 0..=1000 です")? as u16,
                 },
-                RawKind::Weapon { class, damage, wand } => {
+                RawKind::Weapon { class, damage, wand, interval, kind, ammo } => {
                     let damage =
                         range(&name, damage, 0, 10_000, "damage は 0..=10000 です")? as u16;
+                    let interval =
+                        range(&name, interval, 0, 600, "interval は 0..=600 です")? as u16;
+                    let kind = match kind {
+                        RawDamageKind::Physical => DamageKind::Physical,
+                        RawDamageKind::Fire => DamageKind::Fire,
+                        RawDamageKind::Poison => DamageKind::Poison,
+                        RawDamageKind::Cold => DamageKind::Cold,
+                    };
                     let class = match class {
                         RawWeaponClass::Melee => WeaponClass::Melee,
                         RawWeaponClass::Ranged => WeaponClass::Ranged,
@@ -709,7 +744,41 @@ impl Definitions {
                         }
                         (_, None) => None,
                     };
-                    ItemKind::Weapon { class, damage, wand }
+                    if (class == WeaponClass::Wand
+                        && (interval != 0 || kind != DamageKind::Physical || ammo.is_some()))
+                        || (class != WeaponClass::Ranged && ammo.is_some())
+                    {
+                        return Err(DefsError::Invalid {
+                            owner: name,
+                            reason: "杖は interval・kind・ammo、近接は ammo を指定できません",
+                        });
+                    }
+                    let ammo = ammo
+                        .map(|raw_ammo| {
+                            let index = namespace
+                                .map(|id| format!("{id}:{raw_ammo}"))
+                                .and_then(|full| {
+                                    self.items.iter().position(|item| item.name == full)
+                                })
+                                .or_else(|| {
+                                    self.items.iter().position(|item| item.name == raw_ammo)
+                                })
+                                .ok_or_else(|| DefsError::UnknownItem {
+                                    owner: name.clone(),
+                                    item: raw_ammo.clone(),
+                                })?;
+                            if !matches!(self.items[index].kind, ItemKind::Misc) {
+                                return Err(DefsError::Invalid {
+                                    owner: name.clone(),
+                                    reason: "ammo は Misc の定義アイテムです",
+                                });
+                            }
+                            u16::try_from(index)
+                                .map(ItemId::def)
+                                .map_err(|_| DefsError::TooMany("アイテム"))
+                        })
+                        .transpose()?;
+                    ItemKind::Weapon { class, damage, wand, interval, kind, ammo }
                 }
                 RawKind::Armor {
                     slot,
@@ -1085,11 +1154,17 @@ impl Definitions {
                     hash.bytes(&pick.to_le_bytes());
                     hash.bytes(&axe.to_le_bytes());
                 }
-                ItemKind::Weapon { class, damage, wand } => {
+                ItemKind::Weapon { class, damage, wand, interval, kind, ammo } => {
                     hash.bytes(&[2, *class as u8]);
                     hash.bytes(&damage.to_le_bytes());
                     hash.bytes(wand.as_deref().unwrap_or("").as_bytes());
                     hash.bytes(&[0]);
+                    if *interval != 0 || *kind != DamageKind::Physical || ammo.is_some() {
+                        hash.bytes(&[0xA3]);
+                        hash.bytes(&interval.to_le_bytes());
+                        hash.bytes(&[*kind as u8]);
+                        hash.bytes(&ammo.map_or(u32::MAX, |id| id.0).to_le_bytes());
+                    }
                 }
                 ItemKind::Armor { slot, defense, resist, set, set_bonus } => {
                     hash.bytes(&[3, *slot as u8]);

@@ -614,14 +614,15 @@ impl GameState {
                 continue;
             }
             // 装備している武器 (仕様 20): 近接は斬る、遠距離は矢を撃つ。杖・何も持たないときは、杖で撃つ。
-            match self.equipped_weapon(id) {
-                Some((crate::items::WeaponClass::Melee, damage)) => {
-                    self.try_melee(entities, id, damage, input.aim);
+            match self.equipped_attack(id) {
+                Some((crate::items::WeaponClass::Melee, damage, interval, kind, _)) => {
+                    self.try_melee(entities, id, damage, interval, kind, input.aim);
                     continue;
                 }
-                Some((crate::items::WeaponClass::Ranged, damage)) => {
-                    if let Some(pid) = self.try_shoot_ranged(world, entities, id, damage, input.aim)
-                    {
+                Some((crate::items::WeaponClass::Ranged, damage, interval, kind, ammo)) => {
+                    if let Some(pid) = self.try_shoot_ranged(
+                        world, entities, id, damage, interval, kind, ammo, input.aim,
+                    ) {
                         shooters.insert((pid, id));
                     }
                     continue;
@@ -971,21 +972,23 @@ impl GameState {
                 let (mcx, mcy) = center16(&me);
                 let (tcx, tcy) = center16(target);
                 let (dx, dy) = ((tcx - mcx) / 16, (tcy - mcy) / 16);
-                match self.equipped_weapon(id) {
-                    Some((crate::items::WeaponClass::Melee, damage))
+                match self.equipped_attack(id) {
+                    Some((crate::items::WeaponClass::Melee, damage, interval, kind, _))
                         if dx.abs() <= i64::from(me.width) / 2 + crate::combat::MELEE_REACH - 2
                             && dy.abs() <= crate::combat::MELEE_HALF_HEIGHT =>
                     {
                         let aim = (i32::try_from(dx).unwrap_or(0), 0);
-                        self.try_melee(entities, id, damage, aim);
+                        self.try_melee(entities, id, damage, interval, kind, aim);
                     }
-                    Some((crate::items::WeaponClass::Ranged, damage)) => {
+                    Some((crate::items::WeaponClass::Ranged, damage, interval, kind, ammo)) => {
                         // 重力で落ちる分、遠いほど上を狙う。
                         let aim = (
                             i32::try_from(dx * 16).unwrap_or(0),
                             i32::try_from((dy - dx.abs() / 3) * 16).unwrap_or(0),
                         );
-                        if let Some(pid) = self.try_shoot_ranged(world, entities, id, damage, aim) {
+                        if let Some(pid) = self.try_shoot_ranged(
+                            world, entities, id, damage, interval, kind, ammo, aim,
+                        ) {
                             self.projectiles.set_grace(pid, id);
                         }
                     }

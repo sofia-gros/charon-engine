@@ -8,7 +8,7 @@ use charon_core::material::Phase;
 use charon_core::world::World;
 use charon_physics::PhysicsEngine;
 
-use crate::vitals::{VitalsTable, covered_cells};
+use crate::vitals::{DamageKind, VitalsTable, covered_cells};
 use crate::{Entity, EntityId, EntityWorld};
 
 /// 同時に存在できる弾の数。
@@ -48,6 +48,8 @@ pub struct Projectile {
     pub gravity: i16,
     pub life: u16,
     pub damage: i32,
+    /// 直撃の属性。爆風は従来どおり火。
+    pub kind: DamageKind,
     pub payload: Payload,
     /// 発射した tick に限り、このエンティティには当たらない (仕様 10 §6.1)。
     pub grace: Option<EntityId>,
@@ -148,6 +150,35 @@ impl ProjectileWorld {
         damage: i32,
         payload: Payload,
     ) -> Result<ProjectileId, ProjectileError> {
+        self.spawn_kind(
+            world,
+            x16,
+            y16,
+            vx,
+            vy,
+            gravity,
+            life,
+            damage,
+            DamageKind::Physical,
+            payload,
+        )
+    }
+
+    /// 武器の矢に属性を付ける。失敗時は弾・次の ID を変更しない。
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_kind(
+        &mut self,
+        world: &World,
+        x16: i64,
+        y16: i64,
+        vx: i16,
+        vy: i16,
+        gravity: i16,
+        life: u16,
+        damage: i32,
+        kind: DamageKind,
+        payload: Payload,
+    ) -> Result<ProjectileId, ProjectileError> {
         if !(1..=MAX_LIFE).contains(&life) {
             return Err(ProjectileError::InvalidLife);
         }
@@ -180,7 +211,7 @@ impl ProjectileWorld {
         let id = ProjectileId(self.next_id);
         self.projectiles.insert(
             id,
-            Projectile { id, x16, y16, vx, vy, gravity, life, damage, payload, grace: None },
+            Projectile { id, x16, y16, vx, vy, gravity, life, damage, kind, payload, grace: None },
         );
         self.next_id = next_id;
         Ok(id)
@@ -277,7 +308,7 @@ impl ProjectileWorld {
             self.projectiles.remove(&id);
             let dealt = entity
                 .and_then(|target| vitals.get_mut(target))
-                .map_or(0, |v| v.damage_combat(p.damage, crate::vitals::DamageKind::Physical));
+                .map_or(0, |v| v.damage_combat(p.damage, p.kind));
             match p.payload {
                 Payload::None => {}
                 Payload::Explode { radius } => {
@@ -337,6 +368,9 @@ impl ProjectileWorld {
             feed(&p.life.to_le_bytes());
             feed(&p.damage.to_le_bytes());
             feed(&p.grace.map_or(0, |id| id.0).to_le_bytes());
+            if p.kind != DamageKind::Physical {
+                feed(&[0xC3, p.kind as u8]);
+            }
             match p.payload {
                 Payload::None => feed(&[0]),
                 Payload::Explode { radius } => feed(&[1, radius]),

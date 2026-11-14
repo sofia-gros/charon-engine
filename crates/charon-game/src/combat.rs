@@ -6,7 +6,7 @@
 use charon_core::world::World;
 
 use crate::game::{GameEvent, GameState};
-use crate::items::WeaponClass;
+use crate::items::{ItemClass, ItemId, ItemKind, WeaponClass};
 use crate::projectile::{Payload, ProjectileId};
 use crate::vitals::{Armor, DamageKind};
 use crate::{Entity, EntityId, EntityWorld};
@@ -73,6 +73,30 @@ impl GameState {
         }
     }
 
+    /// 近接・遠隔で使う武器の全パラメータ。杖と未装備は既存経路へ渡す。
+    pub(crate) fn equipped_attack(
+        &self,
+        id: EntityId,
+    ) -> Option<(WeaponClass, i32, u16, DamageKind, Option<ItemId>)> {
+        let item = self.equipment.get(&id)?.get(crate::items::EquipSlot::Weapon)?;
+        let ItemClass::Def(index) = item.class() else { return None };
+        match &self.item_defs.get(index)?.kind {
+            ItemKind::Weapon { class, damage, interval, kind, ammo, .. } => {
+                let interval = if *interval == 0 {
+                    match class {
+                        WeaponClass::Melee => MELEE_COOLDOWN,
+                        WeaponClass::Ranged => RANGED_COOLDOWN,
+                        WeaponClass::Wand => 0,
+                    }
+                } else {
+                    *interval
+                };
+                Some((*class, i32::from(*damage), interval, *kind, *ammo))
+            }
+            _ => None,
+        }
+    }
+
     /// 武器の間隔を 1 tick 進める。
     pub(crate) fn tick_weapon_cooldowns(&mut self) {
         for left in self.weapon_cooldown.values_mut() {
@@ -87,13 +111,15 @@ impl GameState {
         entities: &mut EntityWorld,
         id: EntityId,
         damage: i32,
+        interval: u16,
+        kind: DamageKind,
         aim: (i32, i32),
     ) -> usize {
         if self.weapon_cooldown.contains_key(&id) {
             return 0;
         }
         let Some(me) = entities.get(id).cloned() else { return 0 };
-        self.weapon_cooldown.insert(id, MELEE_COOLDOWN);
+        self.weapon_cooldown.insert(id, interval);
         let facing: i64 = if aim.0 < 0 { -1 } else { 1 };
         let (cx, cy) = center16(&me);
         // 攻撃の箱 (1/16 セル): 体の端から前へ `MELEE_REACH`。
@@ -118,10 +144,7 @@ impl GameState {
             .map(|e| e.id)
             .collect();
         for &target in &targets {
-            let applied = self
-                .vitals
-                .get_mut(target)
-                .map_or(0, |v| v.damage_combat(damage, DamageKind::Physical));
+            let applied = self.vitals.get_mut(target).map_or(0, |v| v.damage_combat(damage, kind));
             if applied > 0 {
                 self.knockback(entities, target, facing, applied);
             }
@@ -131,15 +154,24 @@ impl GameState {
     }
 
     /// 遠距離の攻撃: 重力のある矢を撃つ。間隔の間・向きが (0, 0) のときは `None`。
+    #[allow(clippy::too_many_arguments)] // 武器定義の攻撃値・属性・弾薬と発射位置を、既存の呼び口へ渡す。
     pub(crate) fn try_shoot_ranged(
         &mut self,
         world: &World,
         entities: &EntityWorld,
         id: EntityId,
         damage: i32,
+        interval: u16,
+        kind: DamageKind,
+        ammo: Option<ItemId>,
         aim: (i32, i32),
     ) -> Option<ProjectileId> {
         if self.weapon_cooldown.contains_key(&id) {
+            return None;
+        }
+        if let Some(ammo) = ammo
+            && !self.inventories.get(&id).is_some_and(|inv| inv.item_count(ammo) > 0)
+        {
             return None;
         }
         let me = entities.get(id)?;
@@ -147,9 +179,16 @@ impl GameState {
         let (x, y) = center16(me);
         let pid = self
             .projectiles
-            .spawn(world, x, y, vx, vy, ARROW_GRAVITY, ARROW_LIFE, damage, Payload::None)
+            .spawn_kind(world, x, y, vx, vy, ARROW_GRAVITY, ARROW_LIFE, damage, kind, Payload::None)
             .ok()?;
-        self.weapon_cooldown.insert(id, RANGED_COOLDOWN);
+        if let Some(ammo) = ammo
+            && let Some(inventory) = self.inventories.get_mut(&id)
+        {
+            // 発射まで同じ固定 tick 内で個数は変わらない。事前に 1 個以上と確認済み。
+            let consumed = inventory.take_item(ammo, 1);
+            debug_assert!(consumed);
+        }
+        self.weapon_cooldown.insert(id, interval);
         Some(pid)
     }
 

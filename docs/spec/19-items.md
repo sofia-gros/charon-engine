@@ -31,7 +31,7 @@
 |---|---|---|
 | `Misc` | なし | |
 | `Tool(pick)` | `pick`: つるはしの力 (ブロックを壊す速さ、M22) | 0..=1000 |
-| `Weapon(class, damage, wand)` | `class`: `Melee`・`Ranged`・`Wand`。`damage`: 1 回の攻撃の基本のダメージ。`wand`: 杖の定義の名前 (`Wand` のとき) | `damage` 0..=10000。`wand` は定義済みの杖 |
+| `Weapon(class, damage, wand)` | `class`: `Melee`・`Ranged`・`Wand`。`damage`: 1 回の攻撃の基本のダメージ。`wand`: 杖の定義の名前 (`Wand` のとき)。`interval`・`kind`・`ammo` は [仕様 25 §4](25-combat-extension.md#4-t313-武器と弾薬) | `damage` 0..=10000、`interval` 0..=600。`wand` は定義済みの杖、`ammo` は定義済みの Misc |
 | `Armor(slot, defense, fire, poison, cold)` | `slot`: `Head`・`Body`・`Legs`・`Accessory`。`defense`: 受けるダメージを減らす量。`fire`・`poison`・`cold`: その属性への耐性 (%)。省略可能な `set` と頭装備の `set_defense`・`set_fire`・`set_poison`・`set_cold` は [仕様 25 §3](25-combat-extension.md#3-t312-防具セットとアクセサリー) | `defense` と `set_defense` 0..=1000、耐性とセット耐性 0..=100 |
 | `Consumable(heal, mana)` | 使うと回復する体力・マナ (M23 で使い方をつなぐ) | 0..=10000 |
 
