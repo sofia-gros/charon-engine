@@ -287,7 +287,7 @@ impl<'a> Lockstep<'a> {
             .filter(|(id, _)| game.wands.contains_key(id))
             .map(|(&id, &(_, action))| (id, action))
             .collect();
-        entities.step_players(&inputs, world).map_err(LockstepError::Entity)?;
+        game.step_players(entities, &inputs, world).map_err(LockstepError::Entity)?;
         game.step(world, physics, entities, &actions, world.tick(), world.seed())
             .map_err(LockstepError::Game)?;
         physics.step(world).map_err(LockstepError::Body)?;

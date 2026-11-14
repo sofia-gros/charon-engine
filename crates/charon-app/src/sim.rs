@@ -163,7 +163,9 @@ impl Sim<'_> {
         let alive = self.player.and_then(|id| self.game.vitals.get(id)).is_none_or(Vitals::alive);
         let input = if alive { input } else { PlayerInput::default() };
         let inputs: Vec<_> = self.player.iter().map(|&id| (id, input)).collect();
-        self.entities.step_players(&inputs, self.world).map_err(|err| err.to_string())?;
+        self.game
+            .step_players(self.entities, &inputs, self.world)
+            .map_err(|err| err.to_string())?;
         // エンティティは砂に勝つ: 楕円に重なった粉体は、近くの空きへ押し出される。
         self.entities.push_out_powder(self.world);
         // 浮遊 (仕様 10 §18): ジャンプのボタンを押している間、燃料で上へ。

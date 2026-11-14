@@ -1,4 +1,4 @@
-//! 状態異常 (仕様 10 §17): 燃える・濡れる・毒。整数だけで、決定的に進む。
+//! 状態異常 (仕様 10 §17・25 §5): 燃える・濡れる・毒・減速。整数だけで、決定的に進む。
 
 use std::collections::BTreeMap;
 
@@ -20,6 +20,8 @@ pub enum StatusKind {
     Wet,
     /// 毒: `POISON_INTERVAL` tick ごとに 1 ダメージ。
     Poison,
+    /// 冷気の直撃後、歩く速さを整数の半分にする。ダメージなし。
+    Slow,
 }
 
 /// 燃えているときのダメージの間隔 (tick)。
@@ -30,6 +32,8 @@ pub const POISON_INTERVAL: u16 = 30;
 pub const BURN_TICKS: u16 = 180;
 /// 液体に浸かったときに濡れている長さ (tick)。
 pub const WET_TICKS: u16 = 300;
+/// 冷気の直撃による減速の長さ (tick)。
+pub const SLOW_TICKS: u16 = 120;
 /// 1 つの状態の長さの上限 (tick)。
 pub const TICKS_MAX: u16 = 3600;
 
@@ -74,6 +78,13 @@ impl StatusTable {
         self.remaining(id, kind) > 0
     }
 
+    /// 同期ハッシュへ含める減速だけを ID 順に取り出す。
+    pub(crate) fn slowed(&self) -> impl Iterator<Item = (EntityId, u16)> + '_ {
+        self.map
+            .iter()
+            .filter_map(|(&id, entries)| entries.get(&StatusKind::Slow).map(|&left| (id, left)))
+    }
+
     /// 状態をすべて消す。
     pub fn clear(&mut self, id: EntityId) {
         self.map.remove(&id);
@@ -112,13 +123,13 @@ impl StatusTable {
             let interval = match kind {
                 StatusKind::Burning => BURN_INTERVAL,
                 StatusKind::Poison => POISON_INTERVAL,
-                StatusKind::Wet => 0,
+                StatusKind::Wet | StatusKind::Slow => 0,
             };
             if interval != 0 && *left % interval == 0 {
                 match kind {
                     StatusKind::Burning => fire += 1,
                     StatusKind::Poison => poison += 1,
-                    StatusKind::Wet => {}
+                    StatusKind::Wet | StatusKind::Slow => {}
                 }
             }
             *left -= 1;

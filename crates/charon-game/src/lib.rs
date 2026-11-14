@@ -210,6 +210,16 @@ impl EntityWorld {
         inputs: &[(EntityId, PlayerInput)],
         world: &World,
     ) -> Result<(), EntityError> {
+        self.step_players_with_speed(inputs, world, |_| PLAYER_WALK_SPEED)
+    }
+
+    /// 入力検査後、ID ごとの歩く速さで更新する。ゲームの状態異常は呼ぶ側が速さへ写す。
+    pub fn step_players_with_speed(
+        &mut self,
+        inputs: &[(EntityId, PlayerInput)],
+        world: &World,
+        walk_speed: impl Fn(EntityId) -> i16,
+    ) -> Result<(), EntityError> {
         let mut by_id = BTreeMap::new();
         for &(id, input) in inputs {
             if !self.entities.contains_key(&id)
@@ -220,7 +230,13 @@ impl EntityWorld {
             }
         }
         for (&id, entity) in &mut self.entities {
-            step_player(entity, by_id.get(&id).copied().unwrap_or_default(), world);
+            step_entity(
+                entity,
+                by_id.get(&id).copied().unwrap_or_default(),
+                walk_speed(id),
+                PLAYER_JUMP_SPEED,
+                world,
+            );
         }
         Ok(())
     }

@@ -19,7 +19,7 @@ use crate::drops::{Drops, MAX_DROPS, Pickup};
 use crate::inventory::Inventory;
 use crate::levitation::{Levitation, LevitationDef};
 use crate::projectile::{Hit, ProjectileWorld};
-use crate::status::StatusTable;
+use crate::status::{SLOW_TICKS, StatusKind, StatusTable};
 use crate::vitals::{Vitals, VitalsError, VitalsTable, covered_cells, step_environment};
 use crate::wand::{CastError, CastOutcome, SpellTable, Wand, WandError};
 use crate::{Entity, EntityError, EntityId, EntityWorld, PlayerInput, collides, step_entity};
@@ -571,6 +571,22 @@ impl GameState {
         Ok(id)
     }
 
+    /// ゲーム状態を反映した速さでプレイヤーを移動する。従来の裸の `EntityWorld` API は変えない。
+    pub fn step_players(
+        &self,
+        entities: &mut EntityWorld,
+        inputs: &[(EntityId, PlayerInput)],
+        world: &World,
+    ) -> Result<(), EntityError> {
+        entities.step_players_with_speed(inputs, world, |id| {
+            if self.statuses.has(id, StatusKind::Slow) {
+                crate::PLAYER_WALK_SPEED / 2
+            } else {
+                crate::PLAYER_WALK_SPEED
+            }
+        })
+    }
+
     /// 仕様 10 §6.1・§8.3 の順序で 1 tick 進める。
     /// 入力の検査に失敗したときは何も更新しない。
     pub fn step(
@@ -668,12 +684,16 @@ impl GameState {
         let (hits, applied) =
             self.projectiles.step_with_damage(world, physics, entities, &mut self.vitals);
         // 実際に直撃の体力が減ったときだけ弾き飛ばす。Hit.damage は基本ダメージのまま。
-        for (hit, dealt) in hits.iter().zip(applied) {
+        for (hit, (dealt, kind)) in hits.iter().zip(applied) {
             if let Some(target) = hit.entity
-                && hit.vx != 0
                 && dealt > 0
             {
-                self.knockback(entities, target, i64::from(hit.vx.signum()), dealt);
+                if kind == crate::vitals::DamageKind::Cold {
+                    self.statuses.apply(target, StatusKind::Slow, SLOW_TICKS);
+                }
+                if hit.vx != 0 {
+                    self.knockback(entities, target, i64::from(hit.vx.signum()), dealt);
+                }
             }
         }
         // (6) 倒した敵の撤去。
@@ -935,7 +955,11 @@ impl GameState {
                 step_entity(
                     entity,
                     PlayerInput { horizontal, jump },
-                    def.walk_speed,
+                    if self.statuses.has(id, StatusKind::Slow) {
+                        def.walk_speed / 2
+                    } else {
+                        def.walk_speed
+                    },
                     def.jump_speed,
                     world,
                 );
@@ -1073,6 +1097,11 @@ impl GameState {
         // 武器の間隔がなければ、これまでと同じ値 (印も流さない)。
         for (&id, left) in &self.weapon_cooldown {
             feed(&[0xCD, 0x01]);
+            feed(&id.0.to_le_bytes());
+            feed(&left.to_le_bytes());
+        }
+        for (id, left) in self.statuses.slowed() {
+            feed(&[0xC4]);
             feed(&id.0.to_le_bytes());
             feed(&left.to_le_bytes());
         }

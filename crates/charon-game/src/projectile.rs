@@ -242,7 +242,7 @@ impl ProjectileWorld {
         physics: &mut PhysicsEngine,
         entities: &EntityWorld,
         vitals: &mut VitalsTable,
-    ) -> (Vec<Hit>, Vec<i32>) {
+    ) -> (Vec<Hit>, Vec<(i32, DamageKind)>) {
         let mut hits = Vec::new();
         let mut applied = Vec::new();
         let ids: Vec<ProjectileId> = self.projectiles.keys().copied().collect();
@@ -344,7 +344,7 @@ impl ProjectileWorld {
                 }
             }
             hits.push(Hit { projectile: id, entity, cell, vx: p.vx, vy: p.vy, damage: p.damage });
-            applied.push(dealt);
+            applied.push((dealt, p.kind));
         }
         (hits, applied)
     }

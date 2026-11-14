@@ -146,6 +146,13 @@ impl GameState {
         for &target in &targets {
             let applied = self.vitals.get_mut(target).map_or(0, |v| v.damage_combat(damage, kind));
             if applied > 0 {
+                if kind == DamageKind::Cold {
+                    self.statuses.apply(
+                        target,
+                        crate::status::StatusKind::Slow,
+                        crate::status::SLOW_TICKS,
+                    );
+                }
                 self.knockback(entities, target, facing, applied);
             }
             self.push_event(GameEvent::Melee { attacker: id, target, damage: applied });
