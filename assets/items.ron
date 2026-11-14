@@ -17,6 +17,8 @@
     (name: "workbench", kind: Misc),
     (name: "furnace", kind: Misc),
     (name: "storage_box", kind: Misc),
+    (name: "iron_bar", kind: Misc),
+    (name: "iron_pickaxe", kind: Tool(pick: 16)),
 
     // ---- 武器 ----
     (name: "wood_sword",  kind: Weapon(class: Melee, damage: 6)),

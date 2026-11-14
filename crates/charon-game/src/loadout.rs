@@ -145,7 +145,7 @@ impl GameState {
         Ok(auto_equip_best(inventory, equipment, defs))
     }
 
-    /// レシピ `recipe` で作る。`nearby` は、近くにあるブロックのアイテム (作業台の判定用)。
+    /// レシピ `recipe` で作る。`nearby` は近くの有効な Station 設備のアイテム。
     pub fn craft(
         &mut self,
         id: EntityId,

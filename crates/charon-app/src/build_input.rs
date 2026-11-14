@@ -155,25 +155,6 @@ pub(super) fn build_frame(
     BuildFrame { weapon, mine: if want && usage == CursorUse::Mine { cursor } else { None } }
 }
 
-/// 近くのブロックのアイテム (作業台の判定用、仕様 19 §4)。中心から 3 ブロックまでを、ブロックごとに 1 セル調べる。
-pub(super) fn nearby_blocks(world: &World, center: CellPos) -> Vec<ItemId> {
-    let (bx, by) = (center.x >> 3, center.y >> 3);
-    let mut found = Vec::new();
-    for dy in -3..=3 {
-        for dx in -3..=3 {
-            let cell = CellPos::new((bx + dx) * 8, (by + dy) * 8);
-            let c = world.get(cell);
-            if c.has(charon_core::cell::FLAG_BLOCK) {
-                let item = ItemId::block(c.material);
-                if !found.contains(&item) {
-                    found.push(item);
-                }
-            }
-        }
-    }
-    found
-}
-
 /// スロット間の移動 (仕様 19 §3.1)。検証してから変更し、失敗したら持ち物・印・装備を変えない。
 fn move_inventory_slot(
     game: &mut GameState,
@@ -241,7 +222,9 @@ pub(super) fn apply_inventory_commands(
     commands: Vec<crate::ui::InvCommand>,
 ) {
     use crate::ui::InvCommand;
-    let nearby = center_of(entities, id).map(|c| nearby_blocks(world, c)).unwrap_or_default();
+    let nearby = center_of(entities, id)
+        .map(|center| game.fixtures.nearby_stations(world, center, defs))
+        .unwrap_or_default();
     for command in commands {
         match command {
             InvCommand::Move(source, target) => {
@@ -284,7 +267,8 @@ mod tests {
     use std::sync::Arc;
 
     use charon_core::material::MaterialTable;
-    use charon_core::testkit::{box_art, place_block, world_from_ascii};
+    use charon_core::testkit::{box_art, place, place_block, world_from_ascii};
+    use charon_game::blocks::BlockPos;
     use charon_game::defs::Definitions;
     use charon_game::items::EquipSlot;
     use charon_game::vitals::{MAX_HP, Vitals};
@@ -558,15 +542,48 @@ mod tests {
         assert_eq!(game.inventories[&id].block_count(wood), 1);
     }
 
-    /// 近くのブロックだけが、作業台の判定に使われる (遠いものは含まない)。
+    /// App のクラフト入力はプレイヤー中心から有効な Station を探す。
     #[test]
-    fn nearby_blocks_lists_only_close_ones() {
-        let (mut world, _entities, _game, _defs, _id) = setup();
-        place_block(&mut world, 5, 5, '#');
-        place_block(&mut world, 7, 5, 's');
-        let near = nearby_blocks(&world, CellPos::new(44, 44));
-        assert_eq!(near.len(), 2, "{near:?}");
-        let far = nearby_blocks(&world, CellPos::new(8, 8));
-        assert!(far.is_empty(), "遠いブロックは含まない: {far:?}");
+    fn inventory_commands_require_active_station() {
+        for seed in 1..=8 {
+            let (mut world, mut entities, mut game, defs, id) = setup_with_seed(seed);
+            let center = center_of(&entities, id).unwrap();
+            let block = BlockPos::containing(center);
+            let pos = BlockPos { bx: block.bx + 3, by: block.by };
+            let bench = defs.item_id("workbench", world.materials()).unwrap();
+            let furnace = defs.item_id("furnace", world.materials()).unwrap();
+            let wood = world.materials().id("wood").unwrap();
+            let stone = world.materials().id("stone").unwrap();
+            let inv = game.inventories.get_mut(&id).unwrap();
+            inv.add_item(bench, 1);
+            inv.add(wood, 8);
+            inv.add(stone, 40);
+            let command = || vec![InvCommand::Craft("furnace".to_owned())];
+            apply_inventory_commands(&mut game, &world, &entities, id, &defs, command());
+            assert_eq!(game.inventories[&id].item_count(furnace), 0);
+            game.place_fixture(&mut world, &mut entities, id, pos, bench, &defs).unwrap();
+            apply_inventory_commands(&mut game, &world, &entities, id, &defs, command());
+            assert_eq!(game.inventories[&id].item_count(furnace), 1, "seed={seed}");
+        }
+    }
+
+    /// 完全な Station のみを拾い、普通のブロック・Chest・傷んだ設備は設備としない。
+    #[test]
+    fn nearby_stations_list_only_active_close_fixtures() {
+        let (mut world, mut entities, mut game, defs, id) = setup();
+        let bench = defs.item_id("workbench", world.materials()).unwrap();
+        let chest = defs.item_id("storage_box", world.materials()).unwrap();
+        game.inventories.get_mut(&id).unwrap().add_item(bench, 1);
+        game.inventories.get_mut(&id).unwrap().add_item(chest, 1);
+        let bench_pos = BlockPos { bx: 5, by: 5 };
+        game.place_fixture(&mut world, &mut entities, id, bench_pos, bench, &defs).unwrap();
+        game.place_fixture(&mut world, &mut entities, id, BlockPos { bx: 6, by: 5 }, chest, &defs)
+            .unwrap();
+        place_block(&mut world, 4, 5, '#');
+        let center = CellPos::new(44, 44);
+        assert_eq!(game.fixtures.nearby_stations(&world, center, &defs), vec![bench]);
+        assert!(game.fixtures.nearby_stations(&world, CellPos::new(8, 8), &defs).is_empty());
+        place(&mut world, 40, 40, '.');
+        assert!(game.fixtures.nearby_stations(&world, center, &defs).is_empty());
     }
 }

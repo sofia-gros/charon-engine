@@ -18,4 +18,12 @@
     (name: "stone_helmet",     inputs: [("cells:stone", 60), ("cells:wood", 10)], output: ("stone_helmet", 1)),
     (name: "stone_chestplate", inputs: [("cells:stone", 90), ("cells:wood", 10)], output: ("stone_chestplate", 1)),
     (name: "stone_greaves",    inputs: [("cells:stone", 70), ("cells:wood", 10)], output: ("stone_greaves", 1)),
+
+    // ---- 資源の製作 (仕様 24 §5) ----
+    (name: "workbench", inputs: [("cells:wood", 32)], output: ("workbench", 1)),
+    (name: "wood_axe", inputs: [("cells:wood", 24)], output: ("wood_axe", 1)),
+    (name: "furnace", inputs: [("cells:stone", 40), ("cells:wood", 8)], output: ("furnace", 1), station: Some("workbench")),
+    (name: "storage_box", inputs: [("cells:wood", 20)], output: ("storage_box", 1), station: Some("workbench")),
+    (name: "iron_bar", inputs: [("cells:iron_ore", 16), ("cells:coal", 4)], output: ("iron_bar", 1), station: Some("furnace")),
+    (name: "iron_pickaxe", inputs: [("iron_bar", 2), ("cells:wood", 20)], output: ("iron_pickaxe", 1), station: Some("workbench")),
 ]

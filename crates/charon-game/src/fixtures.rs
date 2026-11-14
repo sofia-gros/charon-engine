@@ -5,11 +5,12 @@ use std::io::Write;
 use std::path::Path;
 
 use charon_core::cell::FLAG_BLOCK;
+use charon_core::coords::CellPos;
 use charon_core::world::World;
 use serde::{Deserialize, Serialize};
 
 use crate::blocks::{self, BlockPos, BreakError, PlaceError, Placed};
-use crate::defs::Definitions;
+use crate::defs::{Definitions, FixtureKind};
 use crate::game::{EVENTS_MAX, GameEvent, GameState};
 use crate::items::ItemId;
 use crate::{EntityId, EntityWorld};
@@ -114,6 +115,31 @@ impl FixtureMap {
                         && world.materials().get(cell.material).name == fixture.material_name
                 }
             })
+    }
+
+    /// プレイヤー中心から 3 ブロック以内にある、読み込み済みで有効な Station だけを返す。
+    pub fn nearby_stations(
+        &self,
+        world: &World,
+        center: CellPos,
+        defs: &Definitions,
+    ) -> Vec<ItemId> {
+        let origin = BlockPos::containing(center);
+        let mut found = Vec::new();
+        for (&pos, fixture) in &self.0 {
+            let dx = (i64::from(pos.bx) - i64::from(origin.bx)).abs();
+            let dy = (i64::from(pos.by) - i64::from(origin.by)).abs();
+            if dx > 3 || dy > 3 || !self.active(world, pos) {
+                continue;
+            }
+            if let Some(item) = defs.item_id(&fixture.item_name, world.materials())
+                && defs.fixture_for_item(item).is_some_and(|def| def.kind == FixtureKind::Station)
+                && !found.contains(&item)
+            {
+                found.push(item);
+            }
+        }
+        found
     }
 
     pub fn to_ron(&self) -> Result<String, FixtureSaveError> {

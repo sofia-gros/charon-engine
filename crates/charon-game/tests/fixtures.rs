@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use charon_core::coords::ChunkPos;
+use charon_core::coords::{CellPos, ChunkPos};
 use charon_core::testkit::{
     assert_sleeps, box_art, count_block_cells, place, place_block, world_from_ascii,
 };
@@ -12,7 +12,8 @@ use charon_game::blocks::BlockPos;
 use charon_game::defs::{DefinitionFiles, Definitions};
 use charon_game::fixtures::{FixtureError, FixtureMap, FixtureSaveError};
 use charon_game::game::{BuildError, GameState};
-use charon_game::items::ItemId;
+use charon_game::items::{ItemId, ItemKind};
+use charon_game::loadout::ItemError;
 use charon_game::{EntityId, EntityWorld};
 use charon_world::generator::FlatGenerator;
 use charon_world::save::WorldMeta;
@@ -252,5 +253,89 @@ fn fixture_anchor_damage_keeps_metadata() {
         );
         assert_eq!(custom.content_hash(), before);
         assert_eq!(world.materials().id("wood"), Some(wood));
+    }
+}
+
+#[test]
+fn craft_requires_the_correct_fixture_and_is_atomic() {
+    for seed in 1..=8 {
+        let (mut world, mut entities, mut game, defs, id, bench) = setup(seed);
+        let wood = world.materials().id("wood").unwrap();
+        let stone = world.materials().id("stone").unwrap();
+        let furnace = defs.item_id("furnace", world.materials()).unwrap();
+        let center = CellPos::new(64, 40);
+        let inv = game.inventories.get_mut(&id).unwrap();
+        inv.add(wood, 80);
+        inv.add(stone, 40);
+        let before = game.state_hash();
+        assert_eq!(game.craft(id, "furnace", &[], &defs), Err(ItemError::MissingStation));
+        assert_eq!(game.state_hash(), before, "設備なしでは材料も減らない seed={seed}");
+        // 普通の石ブロックや箱は Station にならない。
+        place_block(&mut world, 6, 5, '#');
+        assert!(game.fixtures.nearby_stations(&world, center, &defs).is_empty());
+        assert_eq!(game.craft(id, "furnace", &[], &defs), Err(ItemError::MissingStation));
+        game.place_fixture(&mut world, &mut entities, id, LEFT, bench, &defs).unwrap();
+        let nearby = game.fixtures.nearby_stations(&world, center, &defs);
+        assert_eq!(nearby, vec![bench], "チャンク境界の Station を見つける seed={seed}");
+        game.craft(id, "furnace", &nearby, &defs).unwrap();
+        assert_eq!(game.inventories[&id].item_count(furnace), 1);
+        let previous = game.state_hash();
+        assert_eq!(game.craft(id, "furnace", &nearby, &defs), Err(ItemError::MissingIngredients));
+        assert_eq!(game.state_hash(), previous);
+        let inv = game.inventories.get_mut(&id).unwrap();
+        inv.add(wood, 8);
+        inv.add(stone, 40);
+        inv.add_item(furnace, charon_game::inventory::STACK_MAX - 1);
+        let previous = game.state_hash();
+        assert_eq!(game.craft(id, "furnace", &nearby, &defs), Err(ItemError::NoRoom));
+        assert_eq!(game.state_hash(), previous, "満杯の失敗も原子的 seed={seed}");
+        // アンカーの 1 セルが壊れれば Station は見えない。metadata は保つ。
+        let saved = game.fixtures.state_hash();
+        place(&mut world, 56, 40, '.');
+        assert!(game.fixtures.nearby_stations(&world, center, &defs).is_empty());
+        assert_eq!(game.fixtures.state_hash(), saved);
+        assert_eq!(game.craft(id, "furnace", &[], &defs), Err(ItemError::MissingStation));
+    }
+}
+
+#[test]
+fn ore_processing_builds_an_iron_tool() {
+    for seed in 1..=8 {
+        let (mut world, mut entities, mut game, defs, id, bench) = setup(seed);
+        let wood = world.materials().id("wood").unwrap();
+        let stone = world.materials().id("stone").unwrap();
+        let ore = world.materials().id("iron_ore").unwrap();
+        let coal = world.materials().id("coal").unwrap();
+        let furnace = defs.item_id("furnace", world.materials()).unwrap();
+        let bar = defs.item_id("iron_bar", world.materials()).unwrap();
+        let pick = defs.item_id("iron_pickaxe", world.materials()).unwrap();
+        let axe = defs.item_id("wood_axe", world.materials()).unwrap();
+        let inv = game.inventories.get_mut(&id).unwrap();
+        inv.add(wood, 84); // 作業台 32、斧 24、炉 8、鉄の道具 20。
+        inv.add(stone, 40);
+        inv.add(ore, 32);
+        inv.add(coal, 8);
+        game.craft(id, "workbench", &[], &defs).unwrap();
+        game.craft(id, "wood_axe", &[], &defs).unwrap();
+        assert_eq!(game.inventories[&id].item_count(axe), 1);
+        game.place_fixture(&mut world, &mut entities, id, LEFT, bench, &defs).unwrap();
+        let stations = game.fixtures.nearby_stations(&world, CellPos::new(64, 40), &defs);
+        assert_eq!(game.craft(id, "iron_bar", &stations, &defs), Err(ItemError::MissingStation));
+        game.craft(id, "furnace", &stations, &defs).unwrap();
+        game.place_fixture(&mut world, &mut entities, id, RIGHT, furnace, &defs).unwrap();
+        let stations = game.fixtures.nearby_stations(&world, CellPos::new(64, 40), &defs);
+        assert_eq!(stations, vec![bench, furnace]);
+        game.craft(id, "iron_bar", &stations, &defs).unwrap();
+        game.craft(id, "iron_bar", &stations, &defs).unwrap();
+        game.craft(id, "iron_pickaxe", &stations, &defs).unwrap();
+        let inv = &game.inventories[&id];
+        assert_eq!(inv.item_count(pick), 1);
+        assert_eq!(
+            (inv.count(wood), inv.count(stone), inv.count(ore), inv.count(coal)),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(inv.item_count(bar), 0);
+        assert!(matches!(defs.item_def(pick).unwrap().kind, ItemKind::Tool { pick: 16, axe: 0 }));
+        assert_eq!(defs.item_name(pick, world.materials()).as_deref(), Some("iron_pickaxe"));
     }
 }
