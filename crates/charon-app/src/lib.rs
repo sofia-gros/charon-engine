@@ -1386,8 +1386,11 @@ impl App {
                     _ => {}
                 }
             }
-            // ゲームの出来事 (仕様 10 §15) は、ロジックが tick ごとに見たので、ここで捨てる。
-            drop(self.game.take_events());
+            // ロジックに渡し終えた出来事だけを描画専用の履歴に残す (仕様 27 §5)。
+            let events = self.game.take_events();
+            if let Some(demo) = self.gui.as_mut().and_then(|gui| gui.demo.as_mut()) {
+                demo.record_feedback(&events, &self.entities, self.world.tick());
+            }
             // ゲームのロジックが頼んだ演出 (仕様 14)。
             let effects = std::mem::take(&mut self.effects);
             self.camera_fx.shake(effects.shake);

@@ -388,7 +388,12 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                         );
                                         if let Some(item) = item {
                                             let (name, color) = item_label(overlay, item);
-                                            ui.painter().rect_filled(rect.shrink(6.0), 3.0, color);
+                                            draw_item_icon(
+                                                ui.painter(),
+                                                rect,
+                                                item_icon(overlay, item),
+                                                color,
+                                            );
                                             ui.painter().text(
                                                 rect.center_bottom() - egui::vec2(0.0, 2.0),
                                                 egui::Align2::CENTER_BOTTOM,
@@ -405,7 +410,9 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                                     egui::Color32::WHITE,
                                                 );
                                             }
-                                            let response = response.on_hover_text(name);
+                                            let tooltip =
+                                                item_tooltip(overlay, item, lang).join("\n");
+                                            let response = response.on_hover_text(tooltip);
                                             if response.clicked() {
                                                 match slot {
                                                     Some(s) => controls
@@ -464,7 +471,15 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                                 .small()
                                                 .sense(egui::Sense::click_and_drag()),
                                         )
-                                        .on_hover_text(format!("{slot:?}: {text}"));
+                                        .on_hover_text(item.map_or_else(
+                                            || format!("{slot:?}: {text}"),
+                                            |item| {
+                                                format!(
+                                                    "{slot:?}: {}",
+                                                    item_tooltip(overlay, item, lang).join("\n")
+                                                )
+                                            },
+                                        ));
                                     inventory_drag_slot(
                                         context,
                                         &response,
@@ -943,9 +958,216 @@ fn item_label(overlay: &Overlay<'_>, item: charon_game::items::ItemId) -> (Strin
     }
 }
 
+/// 仕様 27 §5: アイテムの種類だけで選ぶ、自作の仮アイコン。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ItemIcon {
+    Cells,
+    Block,
+    Weapon,
+    Tool,
+    Armor,
+    Consumable,
+    Other,
+}
+
+fn item_icon(overlay: &Overlay<'_>, item: charon_game::items::ItemId) -> ItemIcon {
+    use charon_game::items::{ItemClass, ItemKind};
+    match item.class() {
+        ItemClass::Cells(_) => ItemIcon::Cells,
+        ItemClass::Block(_) => ItemIcon::Block,
+        ItemClass::Def(_) => {
+            match overlay.defs.and_then(|defs| defs.item_def(item)).map(|d| &d.kind) {
+                Some(ItemKind::Weapon { .. }) => ItemIcon::Weapon,
+                Some(ItemKind::Tool { .. }) => ItemIcon::Tool,
+                Some(ItemKind::Armor { .. }) => ItemIcon::Armor,
+                Some(ItemKind::Consumable { .. }) => ItemIcon::Consumable,
+                _ => ItemIcon::Other,
+            }
+        }
+    }
+}
+
+fn draw_item_icon(painter: &egui::Painter, rect: egui::Rect, icon: ItemIcon, color: egui::Color32) {
+    let r = rect.shrink(rect.width().min(rect.height()) * 0.26);
+    let c = r.center();
+    let stroke = egui::Stroke::new(2.0, color);
+    match icon {
+        ItemIcon::Cells => {
+            for (x, y) in [(-0.25, -0.2), (0.28, -0.3), (0.0, 0.3)] {
+                painter.circle_filled(c + egui::vec2(r.width() * x, r.height() * y), 2.0, color);
+            }
+        }
+        ItemIcon::Block => {
+            painter.rect_stroke(r, 1.0, stroke, egui::StrokeKind::Inside);
+            painter.line_segment([egui::pos2(c.x, r.top()), egui::pos2(c.x, r.bottom())], stroke);
+            painter.line_segment([egui::pos2(r.left(), c.y), egui::pos2(r.right(), c.y)], stroke);
+        }
+        ItemIcon::Weapon => {
+            painter.line_segment([r.left_bottom(), r.right_top()], stroke);
+            painter.line_segment([egui::pos2(r.left(), c.y), egui::pos2(c.x, r.bottom())], stroke);
+        }
+        ItemIcon::Tool => {
+            painter.line_segment([r.left_bottom(), r.right_top()], stroke);
+            painter.line_segment([egui::pos2(c.x, r.top()), r.right_top()], stroke);
+        }
+        ItemIcon::Armor => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    r.left_top(),
+                    r.right_top(),
+                    r.right_center(),
+                    r.center_bottom(),
+                    r.left_center(),
+                ],
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+        ItemIcon::Consumable => {
+            painter.rect_filled(
+                egui::Rect::from_center_size(
+                    c + egui::vec2(0.0, 2.0),
+                    egui::vec2(r.width() * 0.6, r.height() * 0.7),
+                ),
+                2.0,
+                color,
+            );
+            painter.line_segment([egui::pos2(c.x, r.top()), egui::pos2(c.x, c.y)], stroke);
+        }
+        ItemIcon::Other => {
+            painter.circle_filled(c, 2.5, color);
+        }
+    }
+}
+
+/// 実際の定義にある値だけを、表示順序を固定して組み立てる。
+fn item_tooltip(
+    overlay: &Overlay<'_>,
+    item: charon_game::items::ItemId,
+    language: crate::settings::Language,
+) -> Vec<String> {
+    use charon_game::items::ItemKind;
+    let strings = crate::localization::ui_strings();
+    let label = |key| strings.text(language, key);
+    let mut lines = vec![item_label(overlay, item).0];
+    let Some(defs) = overlay.defs else { return lines };
+    if let Some(def) = defs.item_def(item) {
+        match &def.kind {
+            ItemKind::Tool { pick, axe } => {
+                lines.push(label("tooltip.tool").to_owned());
+                lines.push(format!("{}: {pick}", label("tooltip.pick")));
+                lines.push(format!("{}: {axe}", label("tooltip.axe")));
+            }
+            ItemKind::Weapon { damage, .. } => {
+                lines.push(label("tooltip.weapon").to_owned());
+                lines.push(format!("{}: {damage}", label("tooltip.damage")));
+            }
+            ItemKind::Armor { defense, resist, .. } => {
+                lines.push(label("tooltip.armor").to_owned());
+                lines.push(format!("{}: {defense}", label("tooltip.defense")));
+                for (key, value) in [
+                    ("tooltip.fire", resist.fire),
+                    ("tooltip.poison", resist.poison),
+                    ("tooltip.cold", resist.cold),
+                ] {
+                    if value > 0 {
+                        lines.push(format!("{}: {value}%", label(key)));
+                    }
+                }
+            }
+            ItemKind::Consumable { heal, mana } => {
+                lines.push(label("tooltip.consumable").to_owned());
+                for (key, value) in [("tooltip.heal", *heal), ("tooltip.mana", *mana)] {
+                    if value > 0 {
+                        lines.push(format!("{}: {value}", label(key)));
+                    }
+                }
+            }
+            ItemKind::Misc => lines.push(label("tooltip.misc").to_owned()),
+        }
+        for recipe in defs.recipes().iter().filter(|r| r.output.0 == item) {
+            let needs = recipe
+                .inputs
+                .iter()
+                .map(|&(i, count)| format!("{} ×{count}", item_label(overlay, i).0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("{}: {needs}", label("tooltip.requires")));
+            if let Some(station) = recipe.station {
+                lines.push(format!(
+                    "{}: {}",
+                    label("tooltip.station"),
+                    item_label(overlay, station).0
+                ));
+            }
+        }
+    }
+    lines
+}
+
 /// 枠に収まる短い名前。
 fn short_name(name: &str) -> String {
     name.chars().take(6).collect()
+}
+
+/// 出来事を見たあとだけ作る、ゲーム状態に含めない表示記録 (仕様 27 §5)。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FeedbackText {
+    Damage(i32),
+    Hit,
+    Boss,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Feedback {
+    cell: CellPos,
+    text: FeedbackText,
+    created: u64,
+}
+
+#[derive(Debug, Default)]
+struct CombatFeedback {
+    entries: VecDeque<Feedback>,
+}
+
+impl CombatFeedback {
+    fn record(
+        &mut self,
+        events: &[charon_game::game::GameEvent],
+        entities: &EntityWorld,
+        tick: u64,
+    ) {
+        use charon_game::game::GameEvent;
+        self.expire(tick);
+        for event in events.iter().take(16) {
+            let next = match event {
+                GameEvent::Melee { target, damage, .. } if *damage > 0 => {
+                    entities.get(*target).map(|target| Feedback {
+                        cell: charon_game::cursor::center_cell(target),
+                        text: FeedbackText::Damage(*damage),
+                        created: tick,
+                    })
+                }
+                GameEvent::Hit(hit) if hit.entity.is_some() && hit.damage > 0 => {
+                    Some(Feedback { cell: hit.cell, text: FeedbackText::Hit, created: tick })
+                }
+                GameEvent::BossDefeated(_, cell) => {
+                    Some(Feedback { cell: *cell, text: FeedbackText::Boss, created: tick })
+                }
+                _ => None,
+            };
+            if let Some(entry) = next {
+                if self.entries.len() == 16 {
+                    self.entries.pop_front();
+                }
+                self.entries.push_back(entry);
+            }
+        }
+    }
+
+    fn expire(&mut self, tick: u64) {
+        self.entries.retain(|entry| tick.saturating_sub(entry.created) < 45);
+    }
 }
 
 /// 参照画面の UI の状態。
@@ -962,6 +1184,7 @@ pub(super) struct DemoUi {
     pub(super) paste_armed: bool,
     swatches: Vec<Swatch>,
     status: String,
+    feedback: CombatFeedback,
     /// 5 つのパネル (`PANELS`) が開いているか。閉じたものは、画面の左端の細いタブ (`|▸`) になり、触れると開く。
     pub(super) panels: [bool; PANELS.len()],
     /// 最初のフレームで、開閉の初期値を決めたか。
@@ -991,8 +1214,51 @@ impl DemoUi {
             paste_armed: false,
             swatches: swatches(materials),
             status: String::new(),
+            feedback: CombatFeedback::default(),
             panels: [false; PANELS.len()],
             panels_ready: false,
+        }
+    }
+
+    pub(super) fn record_feedback(
+        &mut self,
+        events: &[charon_game::game::GameEvent],
+        entities: &EntityWorld,
+        tick: u64,
+    ) {
+        self.feedback.record(events, entities, tick);
+    }
+
+    fn draw_feedback(
+        &mut self,
+        context: &egui::Context,
+        controls: &Controls,
+        language: crate::settings::Language,
+        tick: u64,
+    ) {
+        self.feedback.expire(tick);
+        let painter = context.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::unique("charon combat feedback"),
+        ));
+        let scale = controls.zoom / context.pixels_per_point();
+        let strings = crate::localization::ui_strings();
+        for entry in &self.feedback.entries {
+            let text = match entry.text {
+                FeedbackText::Damage(amount) => format!("-{amount}"),
+                FeedbackText::Hit => strings.text(language, "feedback.hit").to_owned(),
+                FeedbackText::Boss => strings.text(language, "feedback.boss").to_owned(),
+            };
+            painter.text(
+                egui::pos2(
+                    (entry.cell.x as f32 - controls.origin[0]) * scale,
+                    (entry.cell.y as f32 - controls.origin[1]) * scale,
+                ),
+                egui::Align2::CENTER_BOTTOM,
+                text,
+                egui::FontId::proportional(14.0),
+                egui::Color32::from_rgb(255, 220, 100),
+            );
         }
     }
 
@@ -1025,6 +1291,7 @@ impl DemoUi {
         draw_hearts_and_stars(context, overlay);
         draw_hud_bars(context, overlay);
         draw_boss_bar(context, overlay);
+        self.draw_feedback(context, controls, lang, world_ticks);
         draw_death_overlay(context, overlay, lang);
         draw_hints(context, overlay, world_ticks);
         if overlay.pad.is_none() {
@@ -1551,7 +1818,7 @@ fn draw_hotbar(
             inventory.hotbar(slot).filter(|&i| inventory.item_count(i) > 0 || equipped(i))
         {
             let (name, color) = item_label(overlay, item);
-            painter.rect_filled(rect.shrink(unit * 0.25), 3.0, color);
+            draw_item_icon(painter, rect, item_icon(overlay, item), color);
             painter.text(
                 rect.center_bottom() - egui::vec2(0.0, unit * 0.1),
                 egui::Align2::CENTER_BOTTOM,
@@ -2149,6 +2416,197 @@ mod tests {
         assert_eq!(pointer_cell([0.0, 0.0], 4.0, [-8.0, 3.5]), Some(CellPos::new(-8, 3)));
         assert_eq!(pointer_cell([f32::NAN, 0.0], 4.0, [0.0, 0.0]), None);
         assert_eq!(pointer_cell([1.0, 1.0], 0.0, [0.0, 0.0]), Some(CellPos::new(1, 1)));
+    }
+
+    #[test]
+    fn item_tooltips_show_definition_values() {
+        use charon_game::defs::{DefinitionFiles, Definitions};
+        use charon_game::items::{ItemId, ItemKind};
+        let world = world_from_ascii(&box_art(40, 20), 1);
+        let mut defs = Definitions::engine_defaults(world.materials()).unwrap();
+        defs.layer(
+            DefinitionFiles {
+                items: Some(r#"[(name: "iron_tool", kind: Tool(pick: 9))]"#),
+                ..Default::default()
+            },
+            world.materials(),
+            Some("mod"),
+        )
+        .unwrap();
+        let physics = PhysicsEngine::new();
+        let entities = EntityWorld::new();
+        let game = charon_game::game::GameState::from_definitions(&defs);
+        let overlay = Overlay {
+            world: &world,
+            physics: &physics,
+            entities: &entities,
+            game: &game,
+            player: None,
+            pad: None,
+            defs: Some(&defs),
+        };
+        let id = |name| defs.item_id(name, world.materials()).unwrap();
+        let pick = id("wood_pickaxe");
+        let pick_lines = item_tooltip(&overlay, pick, crate::settings::Language::English);
+        assert_eq!(pick_lines[0..4], ["wood_pickaxe", "Tool", "Pick: 4", "Axe: 0"]);
+        assert!(pick_lines.iter().any(|line| line.starts_with("Requires: ")));
+        assert_eq!(item_icon(&overlay, pick), ItemIcon::Tool);
+        let sword = id("wood_sword");
+        assert_eq!(
+            item_tooltip(&overlay, sword, crate::settings::Language::Japanese)[0..3],
+            ["wood_sword", "武器", "攻撃力: 6"]
+        );
+        assert_eq!(item_icon(&overlay, sword), ItemIcon::Weapon);
+        let helmet = id("gold_helmet");
+        let helmet_lines = item_tooltip(&overlay, helmet, crate::settings::Language::English);
+        assert!(helmet_lines.contains(&"Defense: 6".to_owned()));
+        assert!(
+            !helmet_lines.iter().any(|line| line.starts_with("Fire: ")),
+            "セットの効果は単品の値ではない"
+        );
+        assert_eq!(item_icon(&overlay, helmet), ItemIcon::Armor);
+        let ring = id("fire_ring");
+        assert!(
+            item_tooltip(&overlay, ring, crate::settings::Language::English)
+                .contains(&"Fire: 25%".to_owned())
+        );
+        let potion = id("heal_potion");
+        assert_eq!(
+            item_tooltip(&overlay, potion, crate::settings::Language::English)[0..3],
+            ["heal_potion", "Consumable", "Heal: 50"]
+        );
+        assert_eq!(item_icon(&overlay, potion), ItemIcon::Consumable);
+        let cell = ItemId::cells(material_of(&world, 's'));
+        assert_eq!(item_tooltip(&overlay, cell, crate::settings::Language::Japanese), ["sand"]);
+        assert_eq!(item_icon(&overlay, cell), ItemIcon::Cells);
+        assert_eq!(item_icon(&overlay, ItemId::block(material_of(&world, 's'))), ItemIcon::Block);
+        let unknown = ItemId::def(u16::MAX);
+        assert_eq!(
+            item_tooltip(&overlay, unknown, crate::settings::Language::Japanese),
+            ["item 65535"]
+        );
+        assert_eq!(item_icon(&overlay, unknown), ItemIcon::Other);
+        let mod_item = id("mod:iron_tool");
+        assert_eq!(
+            item_tooltip(&overlay, mod_item, crate::settings::Language::Japanese)[0..3],
+            ["mod:iron_tool", "道具", "採掘: 9"]
+        );
+        if let ItemKind::Weapon { damage, .. } = &defs.item_def(sword).unwrap().kind {
+            assert_eq!(
+                item_tooltip(&overlay, sword, crate::settings::Language::English)[2],
+                format!("Damage: {damage}")
+            );
+        } else {
+            panic!("木の剣は武器の定義");
+        }
+    }
+
+    #[test]
+    fn combat_feedback_uses_real_events() {
+        use charon_core::coords::ChunkPos;
+        use charon_game::PlayerInput;
+        use charon_game::defs::{DefinitionFiles, Definitions};
+        use charon_game::game::{GameEvent, GameInput, GameState};
+        use charon_game::projectile::Payload;
+        use charon_game::vitals::{MAX_HP, Vitals};
+        use std::sync::Arc;
+
+        for seed in 1..=8 {
+            let materials = MaterialTable::builtin().unwrap();
+            let mut defs = Definitions::engine_defaults(&materials).unwrap();
+            defs.layer(
+                DefinitionFiles {
+                    enemies: Some(r#"[(name: "dummy", width: 8, height: 16, max_hp: 100, walk_speed: 0, jump_speed: 0, sight: 1, attack: None)]"#),
+                    ..Default::default()
+                },
+                &materials,
+                Some("t"),
+            )
+            .unwrap();
+            let mut world = World::new(Arc::new(materials), seed);
+            world.insert_chunk(ChunkPos::new(0, 0));
+            fill(&mut world, 0, 40, 63, 40, '#');
+            let mut entities = EntityWorld::new();
+            let player = entities.spawn_player(10 * 16, 10 * 16, &world).unwrap();
+            let mut game = GameState::from_definitions(&defs);
+            game.add_character(player, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
+            game.give_inventory(player).unwrap();
+            let sword = defs.item_id("wood_sword", world.materials()).unwrap();
+            game.inventories.get_mut(&player).unwrap().add_item(sword, 1);
+            game.equip(player, sword, &defs).unwrap();
+            let mut physics = PhysicsEngine::new();
+            let mut tick = 0;
+            let step = |world: &mut World,
+                        physics: &mut PhysicsEngine,
+                        entities: &mut EntityWorld,
+                        game: &mut GameState,
+                        tick: &mut u64,
+                        fire: bool| {
+                entities.step_players(&[(player, PlayerInput::default())], world).unwrap();
+                game.step(
+                    world,
+                    physics,
+                    entities,
+                    &[(player, GameInput { fire, aim: (1000, 0), ..Default::default() })],
+                    *tick,
+                    seed,
+                )
+                .unwrap();
+                world.step();
+                *tick += 1;
+            };
+            for _ in 0..30 {
+                step(&mut world, &mut physics, &mut entities, &mut game, &mut tick, false);
+            }
+            let target =
+                game.spawn_enemy(&defs, &mut entities, &world, "t:dummy", (36, 24)).unwrap();
+            game.take_events();
+            let shot = game
+                .projectiles
+                .spawn(&world, 39 * 16, 30 * 16, -160, 0, 0, 8, 17, Payload::None)
+                .unwrap();
+            step(&mut world, &mut physics, &mut entities, &mut game, &mut tick, true);
+            let events = game.take_events();
+            assert!(
+                events.iter().any(
+                    |e| matches!(e, GameEvent::Melee { target: id, damage: 6, .. } if *id == target)
+                ),
+                "seed {seed}"
+            );
+            assert!(events.iter().any(|e| matches!(e, GameEvent::Hit(hit) if hit.projectile == shot && hit.entity == Some(target) && hit.damage == 17)), "seed {seed}");
+            let before = (world.state_hash(), entities.state_hash(), game.state_hash());
+            let mut feedback = CombatFeedback::default();
+            feedback.record(&events, &entities, tick);
+            assert_eq!(feedback.entries.len(), 2, "seed {seed}");
+            assert_eq!(feedback.entries[0].text, FeedbackText::Damage(6));
+            assert_eq!(
+                feedback.entries[1].text,
+                FeedbackText::Hit,
+                "弾の基礎値 17 は画面に出さない"
+            );
+            assert_eq!(before, (world.state_hash(), entities.state_hash(), game.state_hash()));
+            // 実際のボス撃破を記録する。Defeated は二重の表示にしない。
+            let boss = game.spawn_enemy(&defs, &mut entities, &world, "golem", (44, 16)).unwrap();
+            game.vitals.get_mut(boss).unwrap().hp = 0;
+            step(&mut world, &mut physics, &mut entities, &mut game, &mut tick, false);
+            let boss_events = game.take_events();
+            assert!(
+                boss_events
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::BossDefeated(id, _) if *id == boss)),
+                "seed {seed}"
+            );
+            feedback.record(&boss_events, &entities, tick);
+            assert_eq!(feedback.entries.iter().filter(|e| e.text == FeedbackText::Boss).count(), 1);
+            feedback.expire(tick + 45);
+            assert!(feedback.entries.is_empty());
+            let no_events = [GameEvent::Melee { attacker: player, target, damage: 0 }];
+            feedback.record(&no_events, &entities, tick + 45);
+            assert!(feedback.entries.is_empty());
+            let repeated = vec![events[0].clone(); 20];
+            feedback.record(&repeated, &entities, tick + 46);
+            assert_eq!(feedback.entries.len(), 16);
+        }
     }
 
     /// ポーズのメニューと持ち物の画面 (仕様 10 §14): 開くと図形が増え、閉じたままなら増えない。
