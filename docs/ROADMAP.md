@@ -18,6 +18,7 @@
 | [07-game-layer](spec/07-game-layer.md) | エンティティ、生成、建築、剛体熱、MOD、同期、Web |
 | [08-performance](spec/08-performance.md) | デスクトップ性能の再測定・分析・決定性を保つ最適化 |
 | [09-demo-scene](spec/09-demo-scene.md) | FallingSandEngine の参照動画に合わせたデモ場面 |
+| [25-combat-extension](spec/25-combat-extension.md) | 第3段階の戦闘・装備・状態異常とセル反応の拡張 |
 
 テストの書き方は [`docs/TESTING.md`](TESTING.md) にある。
 
@@ -396,9 +397,20 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 |---|---|---|
 | 1 | 持ち物・装備・ホットバーの保存、UI のスロット操作 | 保存→再開、入れ替えの原子性、旧データの読み込み |
 | 2 | **M30** 採集・道具・クラフト・機能ブロック・箱 ([仕様 24](spec/24-resource-loop.md)、T30.1〜T30.6 は自動テスト済み、Windows/Android 実機の通し操作は未検証) | 伐採→採掘→装備製作→建築が、別の世界に読み直しても続く |
-| 3 | 武器/防具/アクセサリー・攻撃種別・状態異常・Noita 型の環境反応 | 同じ入力/seed の戦闘とセル反応が決定的で、質量保存と休眠を保つ |
+| 3 | **M31** 武器/防具/アクセサリー・攻撃種別・状態異常・Noita 型の環境反応 ([仕様 25](spec/25-combat-extension.md)) | 同じ入力/seed の戦闘とセル反応が決定的で、質量保存と休眠を保つ |
 | 4 | 地形・バイオーム・鉱石/資源・構造物・敵/ボス・進行 | 複数 seed とチャンク境界で、資源の循環とボスへの到達性を確認 |
 | 5 | 演出・音・UI の完成、Windows/Android 通しプレイ、配布時の権利確認 | 自作アセット、画像/実機比較、性能計測、未検証事項の明記 |
+
+**M31 第3段階**: [仕様 25](spec/25-combat-extension.md) の §1 で T31.1〜T31.5 の依存順とテスト名を定めた。T31.2 以降は各節の係数・公開型を実装前に確定する。前段階の実機未検証を完了扱いにしない。
+
+| タスク | 読む仕様 | 完了条件 | 状態 |
+|---|---|---|---|
+| **T31.0 第3段階の契約** | [PRODUCT_REVIEW §4.5・§4.7・§9](PRODUCT_REVIEW.md)、[TERRARIA_SYSTEMS_RESEARCH §3–4](TERRARIA_SYSTEMS_RESEARCH.md)、[19](spec/19-items.md)、[20](spec/20-combat.md)、[TESTING](TESTING.md) | [仕様 25](spec/25-combat-extension.md) に順序・境界・テスト名を記し `scripts/check.sh` が通る | 🟡 仕様確定・自動チェック済み (コード未着手) |
+| **T31.1 被弾後の猶予** | [25 §1–2](spec/25-combat-extension.md)、[20](spec/20-combat.md)、[10 §3・§17](spec/10-noita-like-game.md)、[TESTING](TESTING.md) | `combat_immunity_blocks_repeat_hits_and_expires`、`combat_immunity_keeps_environment_damage`、`combat_immunity_is_hashed_and_cleared_on_respawn`、`scripts/check.sh` | ⚪ 未着手 |
+| **T31.2 装備の組合せ** | [25 §1・§3](spec/25-combat-extension.md)、[19 §2・§5・§7](spec/19-items.md)、[TESTING](TESTING.md) | `armor_set_requires_all_three_pieces`、`accessory_bonus_does_not_stack_on_refresh`、`equipment_bonuses_survive_item_save`、`scripts/check.sh` | ⚪ 仕様詳細未確定 |
+| **T31.3 武器ごとの使用** | [25 §1・§4](spec/25-combat-extension.md)、[20](spec/20-combat.md)、[TESTING](TESTING.md) | `weapon_interval_and_damage_kind_follow_definition`、`ammunition_is_consumed_only_on_shot`、`held_weapon_input_is_deterministic`、`scripts/check.sh` | ⚪ 仕様詳細未確定 |
+| **T31.4 冷気と状態異常** | [25 §1・§5](spec/25-combat-extension.md)、[10 §17](spec/10-noita-like-game.md)、[03](spec/03-reactions-heat.md)、[TESTING](TESTING.md) | `cold_hit_applies_slow_once`、`slow_expires_and_movement_recovers`、`status_reaches_sleep_without_writes`、`scripts/check.sh` | ⚪ 仕様詳細未確定 |
+| **T31.5 戦闘とセルの通し** | [25 §1・§6](spec/25-combat-extension.md)、[03](spec/03-reactions-heat.md)、[24](spec/24-resource-loop.md)、[TESTING](TESTING.md) | `combat_environment_chain_is_deterministic`、`combat_chain_keeps_cell_invariants`、`combat_loadout_survives_world_reload`、`scripts/check.sh` | ⚪ 仕様詳細未確定 |
 
 各段階で Terraria の**一般的な仕組み**を参照する。固有名・絵・音・実装コードを写さず、Noita の物理との統合は Charon 独自の規則として仕様化する。協力プレイは現時点で対象外。
 
