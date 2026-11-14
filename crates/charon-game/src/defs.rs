@@ -226,6 +226,8 @@ enum RawKind {
     Tool {
         #[serde(default)]
         pick: i64,
+        #[serde(default)]
+        axe: i64,
     },
     Weapon {
         class: RawWeaponClass,
@@ -603,8 +605,9 @@ impl Definitions {
             let name = qualify("アイテム", &raw.name, raw.replace, namespace)?;
             let kind = match raw.kind {
                 RawKind::Misc => ItemKind::Misc,
-                RawKind::Tool { pick } => ItemKind::Tool {
+                RawKind::Tool { pick, axe } => ItemKind::Tool {
                     pick: range(&name, pick, 0, 1000, "pick は 0..=1000 です")? as u16,
+                    axe: range(&name, axe, 0, 1000, "axe は 0..=1000 です")? as u16,
                 },
                 RawKind::Weapon { class, damage, wand } => {
                     let damage =
@@ -894,9 +897,10 @@ impl Definitions {
             hash.bytes(&[0]);
             match &item.kind {
                 ItemKind::Misc => hash.bytes(&[0]),
-                ItemKind::Tool { pick } => {
+                ItemKind::Tool { pick, axe } => {
                     hash.bytes(&[1]);
                     hash.bytes(&pick.to_le_bytes());
+                    hash.bytes(&axe.to_le_bytes());
                 }
                 ItemKind::Weapon { class, damage, wand } => {
                     hash.bytes(&[2, *class as u8]);

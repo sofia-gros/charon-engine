@@ -17,6 +17,14 @@ pub enum Phase {
     Gas,
 }
 
+/// 完全なブロックの採掘で優先する道具 (仕様 24 §3)。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Deserialize)]
+pub enum HarvestTool {
+    #[default]
+    Pick,
+    Axe,
+}
+
 /// 温度による材質の変化。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Transition {
@@ -58,6 +66,8 @@ pub struct Material {
     /// 掘るときの硬さ (仕様 10 §12)。掘る道具の力 (1 tick に与えるダメージ) の合計がこの値に達すると、セルが消える。
     /// 固体は 300、粉体は 20 が既定。液体・気体・空は掘れない (0)。`u16::MAX` は掘れない固体 (`boundary`)。
     pub hardness: u16,
+    /// 完全なブロックの採掘に優先する道具。省略時は Pick。
+    pub harvest_tool: HarvestTool,
 }
 
 /// 材質の読み込みで起きるエラー。
@@ -169,6 +179,8 @@ struct RawMaterial {
     emission: [u8; 3],
     #[serde(default)]
     hardness: Option<u16>,
+    #[serde(default)]
+    harvest_tool: HarvestTool,
 }
 
 /// ローカル定義への短い参照だけを名前空間化する。組み込み名と他 MOD の完全修飾名は保つ。
@@ -210,6 +222,7 @@ fn builtin_material(name: &str, phase: Phase, density: u16, conductivity: u8) ->
         restitution: d_restitution(),
         emission: [0, 0, 0],
         hardness: if name == "boundary" { u16::MAX } else { 0 },
+        harvest_tool: HarvestTool::Pick,
     }
 }
 
@@ -335,6 +348,7 @@ impl MaterialTable {
                     Phase::Powder => raw.hardness.unwrap_or(20),
                     _ => 0,
                 },
+                harvest_tool: raw.harvest_tool,
                 name: raw.name,
             });
         }

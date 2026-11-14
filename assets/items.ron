@@ -3,7 +3,7 @@
 //
 // kind:
 //   Misc
-//   Tool(pick)                                  つるはしの力 (ブロックを壊す速さ)
+//   Tool(pick, axe)                             つるはし・斧の力 (完全なブロックを壊す速さ)
 //   Weapon(class: Melee|Ranged|Wand, damage, wand: Some("杖の名前"))
 //   Armor(slot: Head|Body|Legs|Accessory, defense, fire, poison, cold)   耐性は %
 //   Consumable(heal, mana)
@@ -11,6 +11,7 @@
     // ---- 道具 ----
     (name: "wood_pickaxe",  kind: Tool(pick: 4)),
     (name: "stone_pickaxe", kind: Tool(pick: 8)),
+    (name: "wood_axe", kind: Tool(axe: 8)),
 
     // ---- 武器 ----
     (name: "wood_sword",  kind: Weapon(class: Melee, damage: 6)),

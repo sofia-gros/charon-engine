@@ -7,7 +7,7 @@
      conductivity: 40, melt: Some((at: 1200, into: "lava")), rigid_friction: 0.7, hardness: Some(600)),
     (name: "wood", phase: Solid, density: 600, color: (122, 84, 46, 255), color_variation: 14,
      conductivity: 10, ignite_at: Some(300), burn_time: 40, burn_into: "ash", burn_temp: 800,
-     rigid_friction: 0.5, hardness: Some(150)),
+     rigid_friction: 0.5, hardness: Some(150), harvest_tool: Axe),
     (name: "ice", phase: Solid, density: 920, color: (170, 215, 240, 230), color_variation: 6,
      initial_temp: -10, conductivity: 60, melt: Some((at: 1, into: "water")), rigid_friction: 0.05, hardness: Some(200)),
 

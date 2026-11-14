@@ -135,6 +135,8 @@ pub struct GameState {
     pub digs: BTreeMap<EntityId, Dig>,
     /// 持ち物。持つキャラクターが掘ったセルは、材質ごとに数えて入る (仕様 10 §13)。
     pub inventories: BTreeMap<EntityId, Inventory>,
+    /// 完全なブロックの採掘進捗 (固定 tick ごと、仕様 24 §3)。
+    pub(crate) mining: BTreeMap<EntityId, MiningProgress>,
     /// 装備 (仕様 19 §5)。
     pub equipment: BTreeMap<EntityId, crate::items::Equipment>,
     pub spells: SpellTable,
@@ -158,6 +160,14 @@ pub struct GameState {
     pub spawner: Option<crate::spawner::Spawner>,
     /// 倒れてから数えている tick (復活までの待ち、仕様 23 §1)。
     pub(crate) death_timer: BTreeMap<EntityId, u16>,
+}
+
+/// プレイヤーごとの完全ブロック採掘の途中経過 (仕様 24 §3)。保存には含めない。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MiningProgress {
+    pub at: BlockPos,
+    pub tool: crate::items::ItemId,
+    pub accumulated: u32,
 }
 
 /// ゲームに知らせる出来事。シミュレーションの結果を変えず、描画・音・得点などゲーム側の反応に使う。
@@ -275,6 +285,7 @@ impl GameState {
             hooks: BTreeMap::new(),
             digs: BTreeMap::new(),
             inventories: BTreeMap::new(),
+            mining: BTreeMap::new(),
             equipment: BTreeMap::new(),
             spells,
             events: Vec::new(),
@@ -1014,6 +1025,15 @@ impl GameState {
         for (&id, inventory) in &self.inventories {
             feed(&id.0.to_le_bytes());
             feed(&inventory.state_hash().to_le_bytes());
+        }
+        // 途中経過がなければ印を流さず、既存の状態ハッシュを維持する。
+        for (&id, progress) in &self.mining {
+            feed(&[0x4D, 0x49]);
+            feed(&id.0.to_le_bytes());
+            feed(&progress.at.bx.to_le_bytes());
+            feed(&progress.at.by.to_le_bytes());
+            feed(&progress.tool.0.to_le_bytes());
+            feed(&progress.accumulated.to_le_bytes());
         }
         // 装備がなければ、これまでと同じ値 (印も流さない)。
         for (&id, equipment) in self.equipment.iter().filter(|(_, e)| e.iter().next().is_some()) {

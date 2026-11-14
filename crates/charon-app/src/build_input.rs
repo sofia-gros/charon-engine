@@ -23,6 +23,8 @@ const CONSUME_INTERVAL: u64 = 40;
 pub(super) struct BuildFrame {
     /// 武器 (杖) を撃ってよいか。ブロック・つるはし・消耗品を選んでいるときは偽。
     pub weapon: bool,
+    /// 道具の使用先。持ち続けている間だけ、固定 tick ごとに採掘する。
+    pub mine: Option<Cursor>,
 }
 
 /// 選んでいるアイテムが、武器として撃つものか (何も選んでいない・武器・セルのアイテム)。
@@ -64,7 +66,7 @@ pub(super) fn build_frame(
 ) -> BuildFrame {
     let (Some(id), Some(defs)) = (ctx.player, ctx.defs.clone()) else {
         ctx.touch_pad.set_cursor(None);
-        return BuildFrame { weapon: true };
+        return BuildFrame { weapon: true, mine: None };
     };
     if let Some(slot) = pad.select_slot
         && let Some(inventory) = ctx.game.inventories.get_mut(&id)
@@ -94,7 +96,7 @@ pub(super) fn build_frame(
     let weapon = weapon_like(item, &defs);
     let Some(center) = center_of(ctx.entities, id) else {
         ctx.touch_pad.set_cursor(None);
-        return BuildFrame { weapon };
+        return BuildFrame { weapon, mine: None };
     };
     if let Some(tilt) = pad.cursor_tilt {
         *ctx.cursor_tilt = tilt;
@@ -140,7 +142,7 @@ pub(super) fn build_frame(
         && let Some(cursor) = cursor
     {
         let consumable = !weapon && !matches!(usage, CursorUse::Place | CursorUse::Mine);
-        if matches!(usage, CursorUse::Place | CursorUse::Mine) || consumable {
+        if matches!(usage, CursorUse::Place) || consumable {
             let result = ctx.game.use_selected(ctx.world, ctx.entities, id, &defs, cursor);
             *ctx.use_ready = tick + if consumable { CONSUME_INTERVAL } else { USE_INTERVAL };
             if result.is_err() {
@@ -150,7 +152,7 @@ pub(super) fn build_frame(
         }
     }
     let _ = CursorState::Ok;
-    BuildFrame { weapon }
+    BuildFrame { weapon, mine: if want && usage == CursorUse::Mine { cursor } else { None } }
 }
 
 /// 近くのブロックのアイテム (作業台の判定用、仕様 19 §4)。中心から 3 ブロックまでを、ブロックごとに 1 セル調べる。
@@ -498,6 +500,62 @@ mod tests {
                 "seed={seed}"
             );
         }
+    }
+
+    /// 入力フレームは道具を即時使用せず、6 tick の待ちにかかわらず固定 tick の採掘先を渡す。
+    #[test]
+    fn tool_input_routes_to_fixed_ticks_without_instant_break() {
+        let (mut world, mut entities, mut game, defs, id) = setup();
+        let wood = world.materials().id("wood").unwrap();
+        let pick = defs.item_id("wood_pickaxe", world.materials()).unwrap();
+        game.inventories.get_mut(&id).unwrap().add_item(pick, 1);
+        game.inventories.get_mut(&id).unwrap().pin(0, pick);
+        place_block(&mut world, 5, 5, 'W');
+        let mut touch_pad = TouchPad::default();
+        let mut tilt = (0, 0);
+        let mut use_ready = u64::MAX;
+        let frame = build_frame(
+            BuildCtx {
+                world: &mut world,
+                entities: &mut entities,
+                game: &mut game,
+                touch_pad: &mut touch_pad,
+                player: Some(id),
+                defs: Some(Arc::new(defs.clone())),
+                cursor_tilt: &mut tilt,
+                use_ready: &mut use_ready,
+            },
+            &PadOutput::default(),
+            true,
+            Some(CellPos::new(44, 44)),
+            1.0,
+            [0.0, 0.0],
+        );
+        assert!(!frame.weapon);
+        assert_eq!(
+            frame.mine.map(|cursor| cursor.block),
+            Some(charon_game::blocks::BlockPos { bx: 5, by: 5 })
+        );
+        assert_eq!(game.inventories[&id].block_count(wood), 0, "入力フレームでは壊さない");
+        assert_eq!(use_ready, u64::MAX, "道具は 6 tick 間隔の制限を受けない");
+        for _ in 0..37 {
+            assert_eq!(
+                game.mine_selected_tick(
+                    &mut world,
+                    &entities,
+                    id,
+                    &defs,
+                    frame.mine.unwrap(),
+                    true
+                ),
+                Ok(charon_game::loadout::UseOutcome::Nothing)
+            );
+        }
+        assert_eq!(
+            game.mine_selected_tick(&mut world, &entities, id, &defs, frame.mine.unwrap(), true),
+            Ok(charon_game::loadout::UseOutcome::Broken)
+        );
+        assert_eq!(game.inventories[&id].block_count(wood), 1);
     }
 
     /// 近くのブロックだけが、作業台の判定に使われる (遠いものは含まない)。

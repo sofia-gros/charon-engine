@@ -198,6 +198,74 @@ pub enum UseError {
 }
 
 impl GameState {
+    /// 固定 tick ごとに道具で完全なブロックを掘る (仕様 24 §3)。中断時は進捗だけ消す。
+    /// 途中では世界・持ち物を書き換えない。従来の即時 `use_selected` は変更しない。
+    pub fn mine_selected_tick(
+        &mut self,
+        world: &mut World,
+        entities: &crate::EntityWorld,
+        id: EntityId,
+        defs: &Definitions,
+        cursor: Cursor,
+        held: bool,
+    ) -> Result<UseOutcome, UseError> {
+        let previous = self.mining.remove(&id);
+        if !held {
+            return Ok(UseOutcome::Nothing);
+        }
+        let inventory = self.inventories.get(&id).ok_or(UseError::NoCharacter)?;
+        let Some(tool) = inventory.selected_item() else { return Ok(UseOutcome::Nothing) };
+        let Some(ItemKind::Tool { pick, axe }) = defs.item_def(tool).map(|d| &d.kind) else {
+            return Ok(UseOutcome::Nothing);
+        };
+        let center = center_of(entities, id).ok_or(UseError::NoCharacter)?;
+        if crate::blocks::BlockPos::containing(cursor.cell) != cursor.block {
+            return Err(UseError::Invalid);
+        }
+        match cursor_state(world, center, cursor, CursorUse::Mine) {
+            CursorState::Ok => {}
+            CursorState::OutOfReach => return Err(UseError::OutOfReach),
+            CursorState::Invalid => return Err(UseError::Invalid),
+        }
+        let cells = cursor.block.cells();
+        let Some(&first) = cells.first() else { return Err(UseError::Invalid) };
+        if world.chunk(first.chunk()).is_none() {
+            return Err(UseError::Invalid);
+        }
+        let material = world.get(first).material;
+        if !cells.iter().all(|&pos| {
+            let cell = world.get(pos);
+            cell.has(charon_core::cell::FLAG_BLOCK) && cell.material == material
+        }) {
+            return Err(UseError::Invalid);
+        }
+        let material_def = world.materials().get(material);
+        let hardness = material_def.hardness;
+        let power = match material_def.harvest_tool {
+            charon_core::material::HarvestTool::Axe if *axe > 0 => *axe,
+            _ => *pick,
+        };
+        if !(1..u16::MAX).contains(&hardness) || power == 0 {
+            return Err(UseError::Invalid);
+        }
+        if !inventory.can_hold(ItemId::block(material), 1) {
+            return Err(UseError::Build(BuildError::InventoryFull));
+        }
+        let accumulated = previous
+            .filter(|p| p.at == cursor.block && p.tool == tool)
+            .map_or(0, |p| p.accumulated);
+        let accumulated = accumulated + u32::from(power);
+        if accumulated >= u32::from(hardness) {
+            self.break_block_item(world, id, cursor.block)
+                .map(|_| UseOutcome::Broken)
+                .map_err(UseError::Build)
+        } else {
+            self.mining
+                .insert(id, crate::game::MiningProgress { at: cursor.block, tool, accumulated });
+            Ok(UseOutcome::Nothing)
+        }
+    }
+
     /// ホットバーで選んでいるアイテムを、カーソルの場所に使う (仕様 18 §2)。
     /// ブロックは置く、つるはしはブロックを壊す、消耗品は体力・マナを回復して 1 個使う。
     pub fn use_selected(

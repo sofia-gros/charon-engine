@@ -1031,6 +1031,7 @@ impl App {
         } else {
             GameInput::default()
         };
+        let mut mine_cursor: Option<charon_game::cursor::Cursor> = None;
         if self.options.follow_player && !self.free_camera {
             // ゲームパッドのボタン: 向きは、狙いのスティックがあればそれ、なければ歩いている向きの少し上。
             let (button_fire, button_tool) = self.keys.pad_buttons();
@@ -1073,6 +1074,7 @@ impl App {
                 zoom,
                 origin,
             );
+            mine_cursor = built.mine;
             // 使うボタンは、武器を選んでいるときは武器を撃つ (向きは使うボタンの倒れ)。
             let fire = pad.fire || button_fire || (pad.use_item && built.weapon && !paint);
             let tool = pad.tool || button_tool;
@@ -1137,19 +1139,35 @@ impl App {
                 let before = sim.game.event_count();
                 if let Err(err) = sim.tick(camera, player_input, action, &mut physics_ms) {
                     stream_error = Some(err);
-                } else if let Some(logic) = logic {
-                    // ゲームのロジック (仕様 14): この tick に起きた出来事を渡して呼ぶ。
-                    let events = sim.game.events_since(before).to_vec();
-                    let tick = sim.world.tick();
-                    let mut ctx = api::Context {
-                        world: sim.world,
-                        game: sim.game,
-                        entities: sim.entities,
-                        player: *sim.player,
-                        tick,
-                        effects,
-                    };
-                    logic.run(logic_started, &mut ctx, &events);
+                } else {
+                    // 道具だけは使うボタンの 6 tick 間隔ではなく、固定 tick ごとに進める。
+                    if let (Some(id), Some(defs)) = (*sim.player, sim.definitions) {
+                        let cursor = mine_cursor.unwrap_or_else(|| {
+                            charon_game::cursor::Cursor::at(charon_core::coords::CellPos::new(0, 0))
+                        });
+                        let _ = sim.game.mine_selected_tick(
+                            sim.world,
+                            sim.entities,
+                            id,
+                            defs,
+                            cursor,
+                            mine_cursor.is_some(),
+                        );
+                    }
+                    if let Some(logic) = logic {
+                        // ゲームのロジック (仕様 14): この tick に起きた出来事を渡して呼ぶ。
+                        let events = sim.game.events_since(before).to_vec();
+                        let tick = sim.world.tick();
+                        let mut ctx = api::Context {
+                            world: sim.world,
+                            game: sim.game,
+                            entities: sim.entities,
+                            player: *sim.player,
+                            tick,
+                            effects,
+                        };
+                        logic.run(logic_started, &mut ctx, &events);
+                    }
                 }
             }
         };

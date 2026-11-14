@@ -75,9 +75,10 @@ pub struct Resist {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ItemKind {
     Misc,
-    /// つるはしの力。
+    /// 完全なブロックを採掘する力 (仕様 24 §3)。
     Tool {
         pick: u16,
+        axe: u16,
     },
     Weapon {
         class: WeaponClass,
@@ -113,7 +114,7 @@ impl ItemDef {
                     + u32::from(resist.poison)
                     + u32::from(resist.cold)
             }
-            ItemKind::Tool { pick } => u32::from(*pick),
+            ItemKind::Tool { pick, .. } => u32::from(*pick),
             ItemKind::Misc | ItemKind::Consumable { .. } => 0,
         }
     }
