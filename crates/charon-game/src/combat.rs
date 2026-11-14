@@ -121,8 +121,10 @@ impl GameState {
             let applied = self
                 .vitals
                 .get_mut(target)
-                .map_or(0, |v| v.damage_kind(damage, DamageKind::Physical));
-            self.knockback(entities, target, facing, applied);
+                .map_or(0, |v| v.damage_combat(damage, DamageKind::Physical));
+            if applied > 0 {
+                self.knockback(entities, target, facing, applied);
+            }
             self.push_event(GameEvent::Melee { attacker: id, target, damage: applied });
         }
         targets.len()

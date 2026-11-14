@@ -16,6 +16,8 @@ pub const BREATH_MAX: u16 = 600;
 pub const HEAT_THRESHOLD: i16 = 150;
 /// 息が尽きたあと、この tick ごとに 1 ダメージ。
 pub const DROWN_INTERVAL: u8 = 8;
+/// 戦闘による被弾のあと、次に被弾できるまでの固定 tick (仕様 25 §2)。
+pub const COMBAT_IMMUNITY_TICKS: u8 = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VitalsError {
@@ -61,6 +63,8 @@ pub struct Vitals {
     drown_clock: u8,
     /// 防具による軽減。`GameState` が装備から毎 tick 写す。
     pub armor: Armor,
+    /// 戦闘ダメージを防ぐ残り tick。環境ダメージには影響しない。
+    combat_immunity: u8,
 }
 
 /// `amount` を耐性 `resist` (%) で減らす。四捨五入。
@@ -74,7 +78,14 @@ impl Vitals {
         if !(1..=10_000).contains(&max_hp) {
             return Err(VitalsError::InvalidMaxHp);
         }
-        Ok(Self { hp: max_hp, max_hp, breath: BREATH_MAX, drown_clock: 0, armor: Armor::default() })
+        Ok(Self {
+            hp: max_hp,
+            max_hp,
+            breath: BREATH_MAX,
+            drown_clock: 0,
+            armor: Armor::default(),
+            combat_immunity: 0,
+        })
     }
 
     pub fn alive(&self) -> bool {
@@ -106,6 +117,32 @@ impl Vitals {
         let before = self.hp;
         self.damage(applied);
         before - self.hp
+    }
+
+    /// 戦闘の被弾だけを猶予で防ぐ。軽減後に体力が減ったときだけ猶予を付ける。
+    pub fn damage_combat(&mut self, amount: i32, kind: DamageKind) -> i32 {
+        if !self.alive() || self.combat_immunity > 0 {
+            return 0;
+        }
+        let dealt = self.damage_kind(amount, kind);
+        if dealt > 0 {
+            self.combat_immunity = COMBAT_IMMUNITY_TICKS;
+        }
+        dealt
+    }
+
+    /// 猶予を固定 tick の先頭で進める。失敗した入力では呼ばない。
+    pub fn tick_combat_immunity(&mut self) {
+        self.combat_immunity = self.combat_immunity.saturating_sub(1);
+    }
+
+    pub fn combat_immunity(&self) -> u8 {
+        self.combat_immunity
+    }
+
+    /// 復活時は古い被弾の猶予を持ち越さない。
+    pub(crate) fn clear_combat_immunity(&mut self) {
+        self.combat_immunity = 0;
     }
 
     /// `amount` が 0 以下なら何もしない。`hp` は `max_hp` で止まる。
@@ -147,6 +184,10 @@ impl VitalsTable {
         self.entries.iter().map(|(&id, vitals)| (id, vitals))
     }
 
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (EntityId, &mut Vitals)> {
+        self.entries.iter_mut().map(|(&id, vitals)| (id, vitals))
+    }
+
     /// 仕様 10 §3: FNV-1a 64-bit。整数はリトルエンディアン。
     pub fn state_hash(&self) -> u64 {
         const PRIME: u64 = 0x100000001b3;
@@ -161,6 +202,11 @@ impl VitalsTable {
                     .chain([v.drown_clock])
             {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
+            }
+            if v.combat_immunity > 0 {
+                for byte in [0xC1, v.combat_immunity] {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(PRIME);
+                }
             }
         }
         hash

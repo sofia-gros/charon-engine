@@ -53,6 +53,7 @@ impl GameState {
             if let Some(vitals) = self.vitals.get_mut(id) {
                 vitals.hp = vitals.max_hp;
                 vitals.breath = BREATH_MAX;
+                vitals.clear_combat_immunity();
             }
             if let Some(wand) = self.wands.get_mut(&id) {
                 wand.mana = wand.mana_max;

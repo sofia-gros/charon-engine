@@ -201,7 +201,19 @@ impl ProjectileWorld {
         entities: &EntityWorld,
         vitals: &mut VitalsTable,
     ) -> Vec<Hit> {
+        self.step_with_damage(world, physics, entities, vitals).0
+    }
+
+    /// `Hit` の基本ダメージを変えずに、実際の直撃ダメージをゲームへ渡す。
+    pub(crate) fn step_with_damage(
+        &mut self,
+        world: &mut World,
+        physics: &mut PhysicsEngine,
+        entities: &EntityWorld,
+        vitals: &mut VitalsTable,
+    ) -> (Vec<Hit>, Vec<i32>) {
         let mut hits = Vec::new();
+        let mut applied = Vec::new();
         let ids: Vec<ProjectileId> = self.projectiles.keys().copied().collect();
         for id in ids {
             let Some(mut p) = self.projectiles.get(&id).copied() else { continue };
@@ -263,11 +275,9 @@ impl ProjectileWorld {
             };
 
             self.projectiles.remove(&id);
-            if let Some(target) = entity
-                && let Some(v) = vitals.get_mut(target)
-            {
-                v.damage_kind(p.damage, crate::vitals::DamageKind::Physical);
-            }
+            let dealt = entity
+                .and_then(|target| vitals.get_mut(target))
+                .map_or(0, |v| v.damage_combat(p.damage, crate::vitals::DamageKind::Physical));
             match p.payload {
                 Payload::None => {}
                 Payload::Explode { radius } => {
@@ -303,8 +313,9 @@ impl ProjectileWorld {
                 }
             }
             hits.push(Hit { projectile: id, entity, cell, vx: p.vx, vy: p.vy, damage: p.damage });
+            applied.push(dealt);
         }
-        hits
+        (hits, applied)
     }
 
     /// 仕様 10 §4: FNV-1a 64-bit。整数はリトルエンディアン。
@@ -446,7 +457,7 @@ fn apply_explosion(
         } else {
             0
         };
-        v.damage_kind(
+        v.damage_combat(
             explosion_damage(radius, dx * dx + dy * dy, max_damage),
             crate::vitals::DamageKind::Fire,
         );

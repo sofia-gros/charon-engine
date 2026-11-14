@@ -589,6 +589,9 @@ impl GameState {
             }
         }
 
+        for (_, vitals) in self.vitals.iter_mut() {
+            vitals.tick_combat_immunity();
+        }
         self.refresh_armor();
         self.tick_weapon_cooldowns();
         // (1) 環境ダメージ。
@@ -661,13 +664,15 @@ impl GameState {
         // (4) 敵。
         self.step_enemies(world, entities, tick, seed);
         // (5) 弾の移動と着弾。
-        let hits = self.projectiles.step(world, physics, entities, &mut self.vitals);
-        // 当たった相手は、弾の向きへ弾き飛ばされる (仕様 20)。
-        for hit in &hits {
+        let (hits, applied) =
+            self.projectiles.step_with_damage(world, physics, entities, &mut self.vitals);
+        // 実際に直撃の体力が減ったときだけ弾き飛ばす。Hit.damage は基本ダメージのまま。
+        for (hit, dealt) in hits.iter().zip(applied) {
             if let Some(target) = hit.entity
                 && hit.vx != 0
+                && dealt > 0
             {
-                self.knockback(entities, target, i64::from(hit.vx.signum()), hit.damage);
+                self.knockback(entities, target, i64::from(hit.vx.signum()), dealt);
             }
         }
         // (6) 倒した敵の撤去。
@@ -999,7 +1004,7 @@ impl GameState {
                 if let Some(victim) = victim
                     && let Some(vitals) = self.vitals.get_mut(victim)
                 {
-                    vitals.damage_kind(def.contact_damage, crate::vitals::DamageKind::Physical);
+                    vitals.damage_combat(def.contact_damage, crate::vitals::DamageKind::Physical);
                     if let Some(enemy) = self.enemies.get_mut(&id) {
                         enemy.contact_cooldown = CONTACT_INTERVAL;
                     }

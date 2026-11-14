@@ -12,7 +12,7 @@ use charon_game::combat::{MELEE_COOLDOWN, RANGED_COOLDOWN};
 use charon_game::defs::{DefinitionFiles, Definitions};
 use charon_game::game::{GameEvent, GameInput, GameState};
 use charon_game::items::WeaponClass;
-use charon_game::vitals::{DamageKind, MAX_HP, Vitals};
+use charon_game::vitals::{COMBAT_IMMUNITY_TICKS, DamageKind, MAX_HP, Vitals, step_environment};
 use charon_game::{EntityId, EntityWorld, PlayerInput};
 use charon_physics::PhysicsEngine;
 
@@ -37,6 +37,10 @@ struct Arena {
 impl Arena {
     /// 床 (y = 40) の上に、プレイヤー (x = 10) を置く。
     fn new() -> Self {
+        Self::with_seed(1)
+    }
+
+    fn with_seed(seed: u64) -> Self {
         let materials = MaterialTable::builtin().unwrap();
         let mut defs = Definitions::engine_defaults(&materials).unwrap();
         let files = DefinitionFiles {
@@ -45,7 +49,7 @@ impl Arena {
             ..Default::default()
         };
         defs.layer(files, &materials, Some("t")).unwrap();
-        let mut world = World::new(Arc::new(materials), 1);
+        let mut world = World::new(Arc::new(materials), seed);
         world.insert_chunk(ChunkPos::new(0, 0));
         testkit::fill(&mut world, 0, 40, 63, 40, '#');
         let mut entities = EntityWorld::new();
@@ -259,6 +263,164 @@ fn fire_resist_protects_from_lava() {
     let (bare, safe) = (run(false), run(true));
     assert!(bare < MAX_HP, "溶岩で体力が減る: {bare}");
     assert_eq!(safe, MAX_HP, "耐性 100% なら減らない");
+}
+
+/// 同 tick の近接と弾の直撃は一発分だけ通り、次に被弾できるのは 12 tick 目。
+#[test]
+fn combat_immunity_blocks_repeat_hits_and_expires() {
+    for seed in 1..=8 {
+        let mut a = Arena::with_seed(seed);
+        a.give_and_equip("wood_sword");
+        let target = a.dummy(36);
+        let first = a
+            .game
+            .projectiles
+            .spawn(
+                &a.world,
+                39 * 16,
+                30 * 16,
+                -160,
+                0,
+                0,
+                8,
+                17,
+                charon_game::projectile::Payload::None,
+            )
+            .unwrap();
+        a.tick(true, (1000, 0));
+        assert_eq!(a.hp(target), 94, "seed {seed}: 同 tick の弾は斬撃後に無効");
+        assert!(a.game.take_events().iter().any(
+            |e| matches!(e, GameEvent::Hit(hit) if hit.projectile == first && hit.damage == 17)
+        ));
+        let reset = |a: &mut Arena| {
+            let e = a.entities.get_mut(target).unwrap();
+            e.x16 = 36 * 16;
+            e.y16 = 24 * 16;
+            e.vx = 0;
+            e.vy = 0;
+            e.ext_vx = 0;
+        };
+        reset(&mut a);
+        let shot = |a: &mut Arena| {
+            a.game
+                .projectiles
+                .spawn(
+                    &a.world,
+                    39 * 16,
+                    30 * 16,
+                    -160,
+                    0,
+                    0,
+                    8,
+                    17,
+                    charon_game::projectile::Payload::None,
+                )
+                .unwrap()
+        };
+        let blocked = shot(&mut a);
+        a.tick(false, (1000, 0));
+        assert!(
+            a.game
+                .take_events()
+                .iter()
+                .any(|e| matches!(e, GameEvent::Hit(hit) if hit.projectile == blocked))
+        );
+        assert_eq!(a.hp(target), 94, "seed {seed}: 次 tick の弾は体力を減らさない");
+        assert_eq!(a.entities.get(target).unwrap().ext_vx, 0, "免疫中はノックバックしない");
+        for _ in 0..10 {
+            a.tick(false, (1000, 0));
+        }
+        assert_eq!(a.game.vitals.get(target).unwrap().combat_immunity(), 1);
+        reset(&mut a);
+        shot(&mut a);
+        a.tick(false, (1000, 0));
+        assert_eq!(a.hp(target), 77, "seed {seed}: 12 tick 目の直撃は通る");
+        let v = a.game.vitals.get_mut(target).unwrap();
+        assert_eq!(v.combat_immunity(), COMBAT_IMMUNITY_TICKS);
+        for left in (1..COMBAT_IMMUNITY_TICKS).rev() {
+            v.tick_combat_immunity();
+            assert_eq!(v.damage_combat(7, DamageKind::Physical), 0, "残り {left}");
+            assert_eq!(v.combat_immunity(), left);
+        }
+        v.tick_combat_immunity();
+        assert_eq!(v.damage_combat(7, DamageKind::Physical), 7);
+        assert_eq!(v.combat_immunity(), COMBAT_IMMUNITY_TICKS);
+    }
+}
+
+/// 熱・溺れ・毒は戦闘の免疫とは独立して進み、免疫の時計を延ばさない。
+#[test]
+fn combat_immunity_keeps_environment_damage() {
+    for seed in 1..=8 {
+        let mut a = Arena::with_seed(seed);
+        let pos = charon_core::coords::CellPos::new(15, 26);
+        let lava = a.world.materials().id("lava").unwrap();
+        let hot = a.world.make_cell(lava, pos);
+        a.world.set(pos, hot);
+        let entity = a.entities.get(a.player).unwrap().clone();
+        let vitals = a.game.vitals.get_mut(a.player).unwrap();
+        assert_eq!(vitals.damage_combat(3, DamageKind::Physical), 3);
+        let before = vitals.hp;
+        step_environment(&entity, vitals, &a.world);
+        assert!(vitals.hp < before, "seed {seed}: 免疫中も熱が通る");
+        assert_eq!(vitals.combat_immunity(), COMBAT_IMMUNITY_TICKS);
+        assert_eq!(vitals.damage_combat(10, DamageKind::Physical), 0);
+        let empty = a.world.make_cell(charon_core::cell::MaterialId::EMPTY, pos);
+        a.world.set(pos, empty);
+        let head = i32::try_from(entity.y16.div_euclid(16)).unwrap();
+        let left = i32::try_from(entity.x16.div_euclid(16)).unwrap();
+        testkit::fill(&mut a.world, left, head, left + i32::from(entity.width) - 1, head, 'w');
+        vitals.breath = 1;
+        let before_drown = vitals.hp;
+        for _ in 0..charon_game::vitals::DROWN_INTERVAL {
+            step_environment(&entity, vitals, &a.world);
+        }
+        assert_eq!(vitals.hp, before_drown - 1, "seed {seed}: 溺れは防がない");
+        let before_poison = vitals.hp;
+        a.game.statuses.apply(a.player, charon_game::status::StatusKind::Poison, 30);
+        a.game.statuses.step(a.player, &entity, vitals, &a.world);
+        assert_eq!(vitals.hp, before_poison - 1, "seed {seed}: 毒も防がない");
+        assert_eq!(vitals.combat_immunity(), COMBAT_IMMUNITY_TICKS);
+    }
+}
+
+/// 免疫は同期ハッシュに含み、無効な入力では時計を進めず、復活後は消える。
+#[test]
+fn combat_immunity_is_hashed_and_cleared_on_respawn() {
+    for seed in 1..=8 {
+        let mut a = Arena::with_seed(seed);
+        let baseline = a.game.state_hash();
+        assert_eq!(
+            a.game.vitals.get_mut(a.player).unwrap().damage_combat(2, DamageKind::Physical),
+            2
+        );
+        let active = a.game.state_hash();
+        assert_ne!(active, baseline);
+        let invalid = (charon_game::EntityId(u64::MAX), GameInput::default());
+        let before = (a.game.state_hash(), a.world.state_hash(), a.entities.state_hash());
+        assert!(
+            a.game
+                .step(&mut a.world, &mut a.physics, &mut a.entities, &[invalid], a.tick, seed)
+                .is_err()
+        );
+        assert_eq!(before, (a.game.state_hash(), a.world.state_hash(), a.entities.state_hash()));
+        a.game.vitals.get_mut(a.player).unwrap().tick_combat_immunity();
+        assert_ne!(active, a.game.state_hash(), "残り tick がハッシュに入る");
+        a.game.vitals.get_mut(a.player).unwrap().hp = 0;
+        for _ in 0..charon_game::respawn::RESPAWN_TICKS {
+            a.game.step_respawn(&a.world, &mut a.entities, [10, 16]);
+        }
+        assert_eq!(a.game.vitals.get(a.player).unwrap().combat_immunity(), 0);
+        let trace = |seed| {
+            let mut b = Arena::with_seed(seed);
+            b.game.vitals.get_mut(b.player).unwrap().damage_combat(2, DamageKind::Physical);
+            for _ in 0..20 {
+                b.tick(false, (1000, 0));
+            }
+            (b.game.state_hash(), b.entities.state_hash(), b.world.state_hash())
+        };
+        assert_eq!(trace(seed), trace(seed), "seed {seed}: 決定性");
+    }
 }
 
 /// 同じ入力なら、同じ結果 (近接・遠距離・ノックバックを含めて)。
