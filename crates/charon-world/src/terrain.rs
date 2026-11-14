@@ -59,6 +59,7 @@ const S_DUNGEON_Y: u32 = 0x4244_001A;
 const S_HOUSE: u32 = 0x4244_001B;
 const S_HOUSE_X: u32 = 0x4244_001C;
 const S_DIRT: u32 = 0x4244_001D;
+const TREE_SALT: u32 = 0x4244_001E;
 
 /// バイオーム (x の 512 セルごと)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,11 +309,17 @@ struct Column {
     surface: i32,
     pond: i32,
     biome: Biome,
+    tree: Option<(i32, i32)>,
 }
 
 impl AdventureGenerator {
-    fn column(seed: u64, x: i32) -> Column {
-        Column { surface: surface_y(seed, x), pond: pond_depth(seed, x), biome: biome(seed, x) }
+    fn column(&self, seed: u64, x: i32) -> Column {
+        Column {
+            surface: surface_y(seed, x),
+            pond: pond_depth(seed, x),
+            biome: biome(seed, x),
+            tree: self.tree_center(seed, x.div_euclid(48)),
+        }
     }
 
     /// ダンジョンの形のセル。`Some(None)` は空洞、`Some(Some(..))` はブロック、`None` は構造物ではない。
@@ -362,13 +369,55 @@ impl AdventureGenerator {
         })
     }
 
+    /// 48 セルの帯にある木の中心。チャンク外の情報も座標関数だけから判定する。
+    fn tree_center(&self, seed: u64, region: i32) -> Option<(i32, i32)> {
+        if region == -1 || region == 0 {
+            return None;
+        }
+        let x = region * 48 + 24 + (hash(seed, 0, region, 0, TREE_SALT) % 17) as i32 - 8;
+        if [x - 6, x, x + 6].into_iter().any(|cx| biome(seed, cx) != Biome::Forest) {
+            return None;
+        }
+        let top = surface_y(seed, x);
+        if [x - 1, x + 1].into_iter().any(|cx| (surface_y(seed, cx) - top).abs() > 2)
+            || pond_depth(seed, x) != 0
+            || shaft_open(seed, x, 0)
+            || self.house_cell(seed, x, top).is_some()
+        {
+            return None;
+        }
+        // 表面の草と幹の空きを確かめ、既存の家を木で覆わない。
+        for cx in x - 1..=x + 1 {
+            for y in top - 19..top {
+                if self.house_cell(seed, cx, y).is_some() {
+                    return None;
+                }
+            }
+        }
+        Some((x, top))
+    }
+
+    fn tree_cell(&self, x: i32, y: i32, col: &Column) -> Option<Generated> {
+        // 丘と家の段差を含めても、木はこの帯の外に届かない。
+        if y < col.surface - 48 || y > col.surface + 48 {
+            return None;
+        }
+        let (center, top) = col.tree?;
+        let trunk = (center - 1..=center + 1).contains(&x) && (top - 19..=top).contains(&y);
+        let crown = (center - 6..=center + 6).contains(&x) && (top - 24..=top - 21).contains(&y);
+        if !(trunk || crown) || (col.pond > 0 && y >= col.surface && y - col.surface < col.pond) {
+            return None;
+        }
+        Some(Generated { material: self.materials.wood, block: false })
+    }
+
     fn solid(&self, material: MaterialId) -> Option<Generated> {
         Some(Generated { material, block: false })
     }
 
     /// セル `(x, y)` の内容。空なら `None`。
     pub fn cell_at(&self, seed: u64, x: i32, y: i32) -> Option<Generated> {
-        self.classify(seed, x, y, &Self::column(seed, x))
+        self.classify(seed, x, y, &self.column(seed, x))
     }
 
     fn classify(&self, seed: u64, x: i32, y: i32, col: &Column) -> Option<Generated> {
@@ -381,6 +430,9 @@ impl AdventureGenerator {
         }
         if let Some(cell) = self.dungeon_cell(seed, x, y) {
             return cell;
+        }
+        if let Some(tree) = self.tree_cell(x, y, col) {
+            return Some(tree);
         }
         let depth = y - col.surface;
         if depth < 0 {
@@ -475,7 +527,7 @@ impl ChunkGenerator for AdventureGenerator {
         world.insert_chunk(pos);
         let origin = pos.origin();
         let columns: Vec<Column> =
-            (0..CHUNK_SIZE).map(|lx| Self::column(seed, origin.x + lx)).collect();
+            (0..CHUNK_SIZE).map(|lx| self.column(seed, origin.x + lx)).collect();
         for ly in 0..CHUNK_SIZE {
             for lx in 0..CHUNK_SIZE {
                 let cell_pos = CellPos::new(origin.x + lx, origin.y + ly);

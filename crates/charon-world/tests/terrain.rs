@@ -3,10 +3,13 @@
 #![allow(clippy::unwrap_used)] // テストの前提が崩れたら直ちに失敗させる。
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use charon_core::cell::{FLAG_BLOCK, MaterialId};
 use charon_core::coords::{CHUNK_SIZE, ChunkPos};
 use charon_core::material::MaterialTable;
+use charon_core::testkit;
+use charon_core::world::World;
 use charon_world::generator::ChunkGenerator;
 use charon_world::terrain::{
     AdventureGenerator, AdventureMaterials, BOTTOM, Biome, SURFACE_BASE, biome, surface_y,
@@ -16,6 +19,102 @@ fn generator() -> (AdventureGenerator, MaterialTable) {
     let table = MaterialTable::builtin().unwrap();
     let materials = AdventureMaterials::from_table(&table).unwrap();
     (AdventureGenerator { materials }, table)
+}
+
+/// 森の地表に掘れる木材が生え、森以外に木を足さない。
+#[test]
+fn forest_trees_supply_wood_without_changing_other_biomes() {
+    let (g, table) = generator();
+    let wood = g.materials.wood;
+    for seed in 1..=8 {
+        let mut forest_wood = 0;
+        for x in 48..512 {
+            let top = surface_y(seed, x);
+            for y in top - 24..=top {
+                let Some(cell) = g.cell_at(seed, x, y) else { continue };
+                if cell.material == wood && !cell.block {
+                    forest_wood += 1;
+                }
+            }
+        }
+        assert!(forest_wood >= 60, "seed {seed}: 森で掘れる木材 {forest_wood}");
+        for x in (512..2048).step_by(8) {
+            if biome(seed, x) == Biome::Forest {
+                continue;
+            }
+            let top = surface_y(seed, x);
+            for y in top - 24..=top {
+                assert_ne!(
+                    g.cell_at(seed, x, y).filter(|c| !c.block).map(|c| c.material),
+                    Some(wood),
+                    "seed {seed}: 森以外 ({x},{y}) に木は生えない"
+                );
+            }
+        }
+    }
+    // 生成した静止物が、追加の書き込みをせずに休眠する。
+    let seed = 1;
+    let mut world = World::new(Arc::new(table.clone()), seed);
+    for cy in [2, 3] {
+        for cx in [1, 2] {
+            let pos = ChunkPos::new(cx, cy);
+            world.insert_loaded_chunk(pos, g.generate(seed, pos, &table));
+        }
+    }
+    assert!(testkit::count(&world, 'W') > 0, "木のあるチャンク");
+    testkit::assert_sleeps(&mut world, 1200);
+}
+
+/// 境界をまたぐ木のセルが、生成順や参照方法で変わらない。
+#[test]
+fn trees_match_across_chunk_boundaries_and_orders() {
+    let (g, table) = generator();
+    let mut crossed = false;
+    for seed in 1..=8 {
+        let center = 72 + (charon_core::rng::hash(seed, 0, 1, 0, 0x4244_001E) % 17) as i32 - 8;
+        let left = [ChunkPos::new(0, 2), ChunkPos::new(0, 3)];
+        let right = [ChunkPos::new(1, 2), ChunkPos::new(1, 3)];
+        let normal = left
+            .iter()
+            .chain(&right)
+            .map(|&p| (p, g.generate(seed, p, &table)))
+            .collect::<Vec<_>>();
+        let reverse = right
+            .iter()
+            .chain(&left)
+            .map(|&p| (p, g.generate(seed, p, &table)))
+            .collect::<Vec<_>>();
+        for (pos, chunk) in &normal {
+            let other = &reverse.iter().find(|(p, _)| p == pos).unwrap().1;
+            assert_eq!(chunk.cells, other.cells, "seed {seed} {pos:?}");
+            let origin = pos.origin();
+            for x in 58_i32..=74 {
+                if x.div_euclid(CHUNK_SIZE) != pos.x {
+                    continue;
+                }
+                for y in 176_i32..=224 {
+                    if y.div_euclid(CHUNK_SIZE) != pos.y {
+                        continue;
+                    }
+                    let actual = chunk.get((x - origin.x) as u8, (y - origin.y) as u8);
+                    let expected = g.cell_at(seed, x, y);
+                    assert_eq!(actual.material, expected.map_or(MaterialId::EMPTY, |c| c.material));
+                    assert_eq!(actual.has(FLAG_BLOCK), expected.is_some_and(|c| c.block));
+                }
+            }
+        }
+        if center - 6 < 64 && center + 6 >= 64 {
+            let top = surface_y(seed, center);
+            let a = g.cell_at(seed, 63, top - 22);
+            let b = g.cell_at(seed, 64, top - 22);
+            if a.is_some_and(|c| c.material == g.materials.wood && !c.block)
+                && b.is_some_and(|c| c.material == g.materials.wood && !c.block)
+            {
+                crossed = true;
+            }
+        }
+    }
+    assert!(crossed, "8 個の seed のうち少なくとも 1 本は境界をまたぐ");
 }
 
 /// 同じ seed なら同じチャンク。seed が違えば違う。生成の順序によらない。
