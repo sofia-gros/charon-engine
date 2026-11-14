@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use charon_core::cell::Cell;
-use charon_core::testkit::{box_art, count, material_of, world_from_ascii};
+use charon_core::testkit::{box_art, count, fill, material_of, world_from_ascii};
 use charon_world::generator::FlatGenerator;
 use charon_world::region::RegionStore;
 
@@ -213,6 +213,180 @@ fn app_save_reloads_items_hotbar_and_equipment() {
             Some(helmet),
             "seed={seed}"
         );
+    }
+}
+
+/// 仕様 24 §7: 採集・製作・収納・建築をチャンク退避と世界/プレイヤーの再読込まで通す。
+#[test]
+fn resource_loop_survives_world_reload() {
+    use charon_core::coords::CellPos;
+    use charon_game::blocks::BlockPos;
+    use charon_game::fixtures::FixtureMap;
+    use charon_game::game::GameInput;
+    use charon_game::save::GameSave;
+    use charon_game::vitals::{MAX_HP, Vitals};
+
+    for seed in 1..=8 {
+        let dir = TestDir::new();
+        let world = world_from_ascii(&box_art(130, 64), seed);
+        let materials = Arc::clone(world.materials());
+        let defs = charon_game::defs::Definitions::engine_defaults(&materials).unwrap();
+        let stone = materials.id("stone").unwrap();
+        let wood = materials.id("wood").unwrap();
+        let ore = materials.id("iron_ore").unwrap();
+        let coal = materials.id("coal").unwrap();
+        let mut app = App::new(world, stone, test_world);
+        app.options.definitions = Some(Arc::new(defs.clone()));
+        app.game = GameState::from_definitions(&defs);
+        let id = app.entities.spawn_player(26 * 16, 20 * 16, &app.world).unwrap();
+        app.game.add_character(id, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
+        app.game.give_inventory(id).unwrap();
+        app.player = Some(id);
+        app.game.equip_dig(id, &defs, "laser").unwrap();
+        let mut tick = 1;
+        let mut collect = |app: &mut App, material: MaterialId, minimum: u32| {
+            // 生成によって鉱石に届かない seed は、採掘地点だけ固定する (§7)。
+            for y in 27..=37 {
+                for x in 44..=62 {
+                    app.world
+                        .set(CellPos::new(x, y), app.world.make_cell(material, CellPos::new(x, y)));
+                }
+            }
+            for _ in 0..900 {
+                if app.game.inventories[&id].count(material) >= minimum {
+                    break;
+                }
+                app.game
+                    .step(
+                        &mut app.world,
+                        &mut app.physics,
+                        &mut app.entities,
+                        &[(id, GameInput { dig: true, aim: (1000, 0), ..GameInput::default() })],
+                        tick,
+                        seed,
+                    )
+                    .unwrap();
+                tick += 1;
+            }
+            assert!(
+                app.game.inventories[&id].count(material) >= minimum,
+                "seed={seed}: {} mined {} < {minimum}",
+                materials.get(material).name,
+                app.game.inventories[&id].count(material)
+            );
+        };
+        collect(&mut app, wood, 100);
+        // 後続の鉱石を置く前に、前の採掘地点を空にして残留物を混ぜない。
+        fill(&mut app.world, 44, 27, 62, 37, '.');
+        collect(&mut app, stone, 104);
+        fill(&mut app.world, 44, 27, 62, 37, '.');
+        app.game.craft(id, "workbench", &[], &defs).unwrap();
+        let bench = defs.item_id("workbench", &materials).unwrap();
+        let bench_pos = BlockPos { bx: 5, by: 5 };
+        app.game
+            .place_fixture(&mut app.world, &mut app.entities, id, bench_pos, bench, &defs)
+            .unwrap();
+        let nearby = |app: &App| {
+            app.game.fixtures.nearby_stations(
+                &app.world,
+                charon_game::cursor::center_of(&app.entities, id).unwrap(),
+                &defs,
+            )
+        };
+        app.game.craft(id, "furnace", &nearby(&app), &defs).unwrap();
+        let furnace = defs.item_id("furnace", &materials).unwrap();
+        app.game
+            .place_fixture(
+                &mut app.world,
+                &mut app.entities,
+                id,
+                BlockPos { bx: 6, by: 5 },
+                furnace,
+                &defs,
+            )
+            .unwrap();
+        app.game.craft(id, "storage_box", &nearby(&app), &defs).unwrap();
+        let chest = defs.item_id("storage_box", &materials).unwrap();
+        let chest_pos = BlockPos { bx: 8, by: 5 }; // チャンク境界の直後。
+        app.game
+            .place_fixture(&mut app.world, &mut app.entities, id, chest_pos, chest, &defs)
+            .unwrap();
+        collect(&mut app, ore, 32);
+        fill(&mut app.world, 44, 27, 62, 37, '.');
+        collect(&mut app, coal, 8);
+        fill(&mut app.world, 44, 27, 62, 37, '.');
+        app.game.craft(id, "iron_bar", &nearby(&app), &defs).unwrap();
+        app.game.craft(id, "iron_bar", &nearby(&app), &defs).unwrap();
+        app.game.craft(id, "iron_pickaxe", &nearby(&app), &defs).unwrap();
+        let pick = defs.item_id("iron_pickaxe", &materials).unwrap();
+        app.game.transfer_to_chest(&app.world, id, chest_pos, pick, 1, &defs).unwrap();
+        // 64 セルからブロックを作り、別のチャンクへ建築する。
+        assert!(app.game.craft_block(&app.world, id, stone));
+        let build = BlockPos { bx: 9, by: 5 };
+        app.game.place_block_item(&mut app.world, &mut app.entities, id, build, stone).unwrap();
+        let remaining_wood = app.game.inventories[&id].count(wood);
+        let metadata = WorldMeta::new(seed, &materials);
+        let streamer = Streamer::with_saved_names(
+            dir.0.clone(),
+            Arc::clone(&materials),
+            seed,
+            Arc::new(FlatGenerator { stone }),
+            0,
+            metadata.materials.clone(),
+        )
+        .unwrap();
+        app.streaming = Some(StreamingState { streamer, save_root: dir.0.clone(), metadata });
+        // 退避したチャンクの箱と建築は region に残り、fixture map は世界 root に残る。
+        app.streaming
+            .as_mut()
+            .unwrap()
+            .streamer
+            .tick(&mut app.world, &[ChunkPos::new(-4, 0)])
+            .unwrap();
+        assert!(app.world.chunk(ChunkPos::new(1, 0)).is_none(), "seed={seed}");
+        app.save_world().unwrap();
+        let saved = WorldMeta::load(&dir.0).unwrap().unwrap();
+        let mut restored_world = World::new(Arc::clone(&materials), seed);
+        let store = RegionStore::new(dir.0.clone());
+        for pos in [ChunkPos::new(0, 0), ChunkPos::new(1, 0), ChunkPos::new(2, 0)] {
+            if let Some(chunk) =
+                store.read_chunk(pos, &saved.materials, Arc::clone(&materials)).unwrap()
+            {
+                restored_world.insert_loaded_chunk(pos, chunk);
+            }
+        }
+        let mut restored = App::new(restored_world, stone, test_world);
+        restored.options.definitions = Some(Arc::new(defs.clone()));
+        restored.game = GameState::from_definitions(&defs);
+        let restored_id =
+            restored.entities.spawn_player(26 * 16, 20 * 16, &restored.world).unwrap();
+        restored.game.add_character(
+            restored_id,
+            Vitals::new(MAX_HP).unwrap(),
+            defs.wand("basic").unwrap(),
+        );
+        restored.game.give_inventory(restored_id).unwrap();
+        restored.player = Some(restored_id);
+        restored.game.fixtures = FixtureMap::read(&dir.0, &defs, &restored.world).unwrap();
+        let game_save = GameSave::read(&dir.0).unwrap().unwrap();
+        restore_player_save(
+            &mut restored.game,
+            &mut restored.entities,
+            &restored.world,
+            restored.options.definitions.as_deref(),
+            restored_id,
+            &game_save,
+        );
+        assert!(restored.game.fixtures.active(&restored.world, chest_pos), "seed={seed}");
+        assert_eq!(restored.game.fixtures.get(chest_pos).unwrap().contents["iron_pickaxe"], 1);
+        assert_eq!(restored.game.inventories[&restored_id].count(wood), remaining_wood);
+        assert_eq!(restored.game.inventories[&restored_id].item_count(pick), 0);
+        assert!(restored.world.get(build.origin().unwrap()).has(charon_core::cell::FLAG_BLOCK));
+        restored
+            .game
+            .transfer_from_chest(&restored.world, restored_id, chest_pos, pick, 1, &defs)
+            .unwrap();
+        assert_eq!(restored.game.inventories[&restored_id].item_count(pick), 1);
     }
 }
 

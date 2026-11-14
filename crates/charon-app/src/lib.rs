@@ -655,6 +655,10 @@ impl App {
         }
         self.weapon_down = false;
         self.tool_down = false;
+        if let Some(gui) = self.gui.as_mut() {
+            gui.controls.open_chest = None;
+            gui.controls.inv_commands.clear();
+        }
     }
 
     /// 左ボタンが武器になるか: プレイヤーがいて (装備を渡されていて)、描画モードでも自由カメラでもない。
@@ -1070,21 +1074,7 @@ impl App {
         if self.options.follow_player && !self.free_camera {
             // ゲームパッドのボタン: 向きは、狙いのスティックがあればそれ、なければ歩いている向きの少し上。
             let (button_fire, button_tool) = self.keys.pad_buttons();
-            // 持ち物の画面からの操作 (仕様 19)。
-            if let (Some(gui), Some(id), Some(defs)) =
-                (self.gui.as_mut(), self.player, self.options.definitions.as_deref())
-                && !gui.controls.inv_commands.is_empty()
-            {
-                let commands = std::mem::take(&mut gui.controls.inv_commands);
-                build_input::apply_inventory_commands(
-                    &mut self.game,
-                    &self.world,
-                    &self.entities,
-                    id,
-                    defs,
-                    commands,
-                );
-            }
+            // 持ち物と設備の操作は、下の固定 tick の中で順に適用する。
             // インベントリの開閉・ホットバーの選択・カーソルと使用 (仕様 18)。
             if pad.toggle_inventory
                 && let Some(gui) = self.gui.as_mut()
@@ -1110,6 +1100,11 @@ impl App {
                 origin,
             );
             mine_cursor = built.mine;
+            if let Some(command) = built.fixture_command
+                && let Some(gui) = self.gui.as_mut()
+            {
+                gui.controls.inv_commands.push(ui::InvCommand::Fixture(command));
+            }
             // 使うボタンは、武器を選んでいるときは武器を撃つ (向きは使うボタンの倒れ)。
             let fire = pad.fire || button_fire || (pad.use_item && built.weapon && !paint);
             let tool = pad.tool || button_tool;
@@ -1169,9 +1164,26 @@ impl App {
         };
         let logic = self.options.logic.as_ref();
         let (logic_started, effects) = (&mut self.logic_started, &mut self.effects);
+        let mut inventory_commands = self
+            .gui
+            .as_mut()
+            .map(|gui| std::mem::take(&mut gui.controls.inv_commands))
+            .unwrap_or_default();
+        let mut open_chest = self.gui.as_ref().and_then(|gui| gui.controls.open_chest);
         let step = || {
             if stream_error.is_none() {
                 let before = sim.game.event_count();
+                if let (Some(id), Some(defs)) = (*sim.player, sim.definitions) {
+                    build_input::apply_ui_commands(
+                        sim.game,
+                        sim.world,
+                        sim.entities,
+                        id,
+                        defs,
+                        &mut open_chest,
+                        std::mem::take(&mut inventory_commands),
+                    );
+                }
                 if let Err(err) = sim.tick(camera, player_input, action, &mut physics_ms) {
                     stream_error = Some(err);
                 } else {
@@ -1223,6 +1235,15 @@ impl App {
             }
         };
         advance_frame(&mut self.timer, elapsed, paused, step_once, step);
+        if let Some(gui) = self.gui.as_mut() {
+            if open_chest.is_some() && open_chest != gui.controls.open_chest {
+                gui.controls.inventory_open = true;
+            }
+            gui.controls.open_chest = open_chest;
+            // 固定 tick がなかったフレームの操作は次の tick まで待つ。
+            inventory_commands.append(&mut gui.controls.inv_commands);
+            gui.controls.inv_commands = inventory_commands;
+        }
         if paused
             && step_once
             && let Some(gui) = self.gui.as_mut()

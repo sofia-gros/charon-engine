@@ -25,6 +25,8 @@ pub(super) struct BuildFrame {
     pub weapon: bool,
     /// 道具の使用先。持ち続けている間だけ、固定 tick ごとに採掘する。
     pub mine: Option<Cursor>,
+    /// 設備・箱の操作は固定 tick へ渡す。
+    pub fixture_command: Option<crate::ui::FixtureCommand>,
 }
 
 /// 選んでいるアイテムが、武器として撃つものか (何も選んでいない・武器・セルのアイテム)。
@@ -66,7 +68,7 @@ pub(super) fn build_frame(
 ) -> BuildFrame {
     let (Some(id), Some(defs)) = (ctx.player, ctx.defs.clone()) else {
         ctx.touch_pad.set_cursor(None);
-        return BuildFrame { weapon: true, mine: None };
+        return BuildFrame { weapon: true, mine: None, fixture_command: None };
     };
     if let Some(slot) = pad.select_slot
         && let Some(inventory) = ctx.game.inventories.get_mut(&id)
@@ -92,11 +94,12 @@ pub(super) fn build_frame(
     {
         eprintln!("武器を装備できません: {err}");
     }
-    let usage = usage_of(item, &defs);
-    let weapon = weapon_like(item, &defs);
+    let fixture_item = item.filter(|&i| defs.fixture_for_item(i).is_some());
+    let usage = if fixture_item.is_some() { CursorUse::Place } else { usage_of(item, &defs) };
+    let weapon = fixture_item.is_none() && weapon_like(item, &defs);
     let Some(center) = center_of(ctx.entities, id) else {
         ctx.touch_pad.set_cursor(None);
-        return BuildFrame { weapon, mine: None };
+        return BuildFrame { weapon, mine: None, fixture_command: None };
     };
     if let Some(tilt) = pad.cursor_tilt {
         *ctx.cursor_tilt = tilt;
@@ -133,26 +136,50 @@ pub(super) fn build_frame(
         _ => None,
     };
     ctx.touch_pad.set_cursor(view);
-    // 使う。
+    // 使う。設備と箱は入力を記録し、次の固定 tick で検証して適用する。
     let want = pad.use_item || mouse_use;
     let tick = ctx.world.tick();
+    let mut fixture_command = None;
     if want
         && tick >= *ctx.use_ready
-        && item.is_some()
         && let Some(cursor) = cursor
     {
-        let consumable = !weapon && !matches!(usage, CursorUse::Place | CursorUse::Mine);
-        if matches!(usage, CursorUse::Place) || consumable {
-            let result = ctx.game.use_selected(ctx.world, ctx.entities, id, &defs, cursor);
-            *ctx.use_ready = tick + if consumable { CONSUME_INTERVAL } else { USE_INTERVAL };
-            if result.is_err() {
-                // 置けない・届かない: 少し待って、また試す。
-                *ctx.use_ready = tick + USE_INTERVAL;
+        if let Some(fixture_item) = fixture_item {
+            if state == Some(CursorState::Ok) {
+                fixture_command = Some(crate::ui::FixtureCommand::Place(cursor, fixture_item));
+            }
+            *ctx.use_ready = tick + USE_INTERVAL;
+        } else if usage != CursorUse::Mine
+            && ctx.game.fixtures.active(ctx.world, cursor.block)
+            && ctx.game.fixtures.get(cursor.block).is_some_and(|fixture| {
+                defs.item_id(&fixture.item_name, ctx.world.materials())
+                    .and_then(|item| defs.fixture_for_item(item))
+                    .is_some_and(|def| def.kind == charon_game::defs::FixtureKind::Chest)
+            })
+            && cursor_state(ctx.world, center, cursor, CursorUse::Free) == CursorState::Ok
+        {
+            fixture_command = Some(crate::ui::FixtureCommand::Open(cursor));
+            *ctx.use_ready = tick + USE_INTERVAL;
+        } else if item.is_some() {
+            let consumable = !weapon && !matches!(usage, CursorUse::Place | CursorUse::Mine);
+            if matches!(usage, CursorUse::Place) || consumable {
+                let result = ctx.game.use_selected(ctx.world, ctx.entities, id, &defs, cursor);
+                *ctx.use_ready = tick + if consumable { CONSUME_INTERVAL } else { USE_INTERVAL };
+                if result.is_err() {
+                    *ctx.use_ready = tick + USE_INTERVAL;
+                }
             }
         }
     }
-    let _ = CursorState::Ok;
-    BuildFrame { weapon, mine: if want && usage == CursorUse::Mine { cursor } else { None } }
+    BuildFrame {
+        weapon: weapon && !matches!(fixture_command, Some(crate::ui::FixtureCommand::Open(_))),
+        mine: if want && usage == CursorUse::Mine && fixture_command.is_none() {
+            cursor
+        } else {
+            None
+        },
+        fixture_command,
+    }
 }
 
 /// スロット間の移動 (仕様 19 §3.1)。検証してから変更し、失敗したら持ち物・印・装備を変えない。
@@ -258,6 +285,89 @@ pub(super) fn apply_inventory_commands(
             InvCommand::CraftBlock(material) => {
                 game.craft_block(world, id, material);
             }
+            InvCommand::Fixture(_) => {} // apply_ui_commands が可変の世界で処理する。
+        }
+    }
+}
+
+/// 画面の持ち物と設備を、キューに積んだ順序のまま固定 tick で適用する。
+pub(super) fn apply_ui_commands(
+    game: &mut GameState,
+    world: &mut World,
+    entities: &mut EntityWorld,
+    id: EntityId,
+    defs: &charon_game::defs::Definitions,
+    open_chest: &mut Option<charon_game::blocks::BlockPos>,
+    commands: Vec<crate::ui::InvCommand>,
+) {
+    for command in commands {
+        if let crate::ui::InvCommand::Fixture(fixture) = command {
+            apply_fixture_commands(game, world, entities, id, defs, open_chest, vec![fixture]);
+        } else {
+            apply_inventory_commands(game, world, entities, id, defs, vec![command]);
+        }
+    }
+}
+
+/// UI の設備コマンドを固定 tick で順に実行する。失敗時は画面状態もゲーム状態も変えない。
+pub(super) fn apply_fixture_commands(
+    game: &mut GameState,
+    world: &mut World,
+    entities: &mut EntityWorld,
+    id: EntityId,
+    defs: &charon_game::defs::Definitions,
+    open_chest: &mut Option<charon_game::blocks::BlockPos>,
+    commands: Vec<crate::ui::FixtureCommand>,
+) {
+    use crate::ui::FixtureCommand;
+    use charon_game::defs::FixtureKind;
+    let in_reach = |world: &World, entities: &EntityWorld, cursor: Cursor, usage| {
+        center_of(entities, id)
+            .is_some_and(|center| cursor_state(world, center, cursor, usage) == CursorState::Ok)
+    };
+    for command in commands {
+        match command {
+            FixtureCommand::Place(cursor, item) => {
+                if in_reach(world, entities, cursor, CursorUse::Place)
+                    && let Err(err) =
+                        game.place_fixture(world, entities, id, cursor.block, item, defs)
+                {
+                    eprintln!("設備を置けません: {err:?}");
+                }
+            }
+            FixtureCommand::Open(cursor) => {
+                let pos = cursor.block;
+                if in_reach(world, entities, cursor, CursorUse::Free)
+                    && game.fixtures.active(world, pos)
+                    && game.fixtures.get(pos).is_some_and(|fixture| {
+                        defs.item_id(&fixture.item_name, world.materials())
+                            .and_then(|item| defs.fixture_for_item(item))
+                            .is_some_and(|def| def.kind == FixtureKind::Chest)
+                    })
+                {
+                    *open_chest = Some(pos);
+                }
+            }
+            FixtureCommand::Close => *open_chest = None,
+            FixtureCommand::Deposit(pos, item, amount)
+            | FixtureCommand::Withdraw(pos, item, amount)
+                if *open_chest == Some(pos) =>
+            {
+                let center = pos.origin().map(|p| CellPos::new(p.x + 4, p.y + 4));
+                if center.is_some_and(|cell| {
+                    in_reach(world, entities, Cursor::at(cell), CursorUse::Free)
+                }) {
+                    let result = if matches!(command, FixtureCommand::Deposit(..)) {
+                        game.transfer_to_chest(world, id, pos, item, amount, defs)
+                    } else {
+                        game.transfer_from_chest(world, id, pos, item, amount, defs)
+                    };
+                    if let Err(err) = result {
+                        eprintln!("箱の出し入れに失敗: {err:?}");
+                    }
+                }
+            }
+            FixtureCommand::Deposit(..) | FixtureCommand::Withdraw(..) => {}
         }
     }
 }
@@ -291,6 +401,124 @@ mod tests {
         game.add_character(id, vitals, defs.wand("basic").unwrap_or_else(|e| panic!("{e}")));
         game.give_inventory(id).unwrap_or_else(|e| panic!("{e}"));
         (world, entities, game, defs, id)
+    }
+
+    /// 仕様 24 §7: カーソルの設備配置と箱の UI コマンドは同じ固定 tick の順に反映する。
+    #[test]
+    fn fixture_ui_routes_craft_and_transfer() {
+        use crate::ui::FixtureCommand;
+        for seed in 1..=8 {
+            let (mut world, mut entities, mut game, defs, id) = setup_with_seed(seed);
+            let center = center_of(&entities, id).unwrap();
+            let block = BlockPos::containing(center);
+            let bench_pos = BlockPos { bx: block.bx + 2, by: block.by };
+            let chest_pos = BlockPos { bx: block.bx + 3, by: block.by };
+            let bench = defs.item_id("workbench", world.materials()).unwrap();
+            let chest = defs.item_id("storage_box", world.materials()).unwrap();
+            let wood = world.materials().id("wood").unwrap();
+            let inv = game.inventories.get_mut(&id).unwrap();
+            inv.add_item(bench, 1);
+            inv.add(wood, 25);
+            inv.pin(0, bench);
+            let mut pad = TouchPad::default();
+            let mut tilt = (0, 0);
+            let mut ready = 0;
+            let bench_cell = bench_pos.origin().unwrap();
+            let frame = build_frame(
+                BuildCtx {
+                    world: &mut world,
+                    entities: &mut entities,
+                    game: &mut game,
+                    touch_pad: &mut pad,
+                    player: Some(id),
+                    defs: Some(Arc::new(defs.clone())),
+                    cursor_tilt: &mut tilt,
+                    use_ready: &mut ready,
+                },
+                &PadOutput::default(),
+                true,
+                Some(CellPos::new(bench_cell.x + 4, bench_cell.y + 4)),
+                1.0,
+                [0.0, 0.0],
+            );
+            assert_eq!(
+                frame.fixture_command,
+                Some(FixtureCommand::Place(
+                    Cursor::at(CellPos::new(bench_cell.x + 4, bench_cell.y + 4)),
+                    bench
+                )),
+                "seed={seed}"
+            );
+            let mut open = None;
+            apply_inventory_commands(
+                &mut game,
+                &world,
+                &entities,
+                id,
+                &defs,
+                vec![crate::ui::InvCommand::Craft("storage_box".into())],
+            );
+            assert_eq!(game.inventories[&id].item_count(chest), 0, "seed={seed}");
+            apply_ui_commands(
+                &mut game,
+                &mut world,
+                &mut entities,
+                id,
+                &defs,
+                &mut open,
+                vec![
+                    InvCommand::Fixture(frame.fixture_command.unwrap()),
+                    InvCommand::Craft("storage_box".into()),
+                ],
+            );
+            assert!(game.fixtures.active(&world, bench_pos));
+            assert_eq!(game.inventories[&id].item_count(chest), 1, "seed={seed}");
+            let chest_cell = chest_pos.origin().unwrap();
+            let cursor = Cursor::at(CellPos::new(chest_cell.x + 4, chest_cell.y + 4));
+            apply_fixture_commands(
+                &mut game,
+                &mut world,
+                &mut entities,
+                id,
+                &defs,
+                &mut open,
+                vec![FixtureCommand::Place(cursor, chest), FixtureCommand::Open(cursor)],
+            );
+            assert_eq!(open, Some(chest_pos));
+            let wood_item = ItemId::cells(wood);
+            apply_fixture_commands(
+                &mut game,
+                &mut world,
+                &mut entities,
+                id,
+                &defs,
+                &mut open,
+                vec![FixtureCommand::Deposit(chest_pos, wood_item, 5)],
+            );
+            assert_eq!(game.fixtures.get(chest_pos).unwrap().contents["cells:wood"], 5);
+            let before = game.state_hash();
+            apply_fixture_commands(
+                &mut game,
+                &mut world,
+                &mut entities,
+                id,
+                &defs,
+                &mut open,
+                vec![FixtureCommand::Withdraw(chest_pos, wood_item, 6)],
+            );
+            assert_eq!(game.state_hash(), before, "seed={seed}: 失敗時は不変");
+            apply_fixture_commands(
+                &mut game,
+                &mut world,
+                &mut entities,
+                id,
+                &defs,
+                &mut open,
+                vec![FixtureCommand::Withdraw(chest_pos, wood_item, 2), FixtureCommand::Close],
+            );
+            assert_eq!(open, None);
+            assert_eq!(game.fixtures.get(chest_pos).unwrap().contents["cells:wood"], 3);
+        }
     }
 
     /// 持ち物の画面の操作 (ホットバー・クラフト・装備) がゲームに反映される。

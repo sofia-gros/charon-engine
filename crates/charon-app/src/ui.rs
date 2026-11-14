@@ -40,8 +40,10 @@ pub(super) struct Controls {
     pub(super) pause_menu: bool,
     /// 持ち物の画面が開いている。
     pub(super) inventory_open: bool,
-    /// 持ち物の画面からの操作。App が次のフレームでゲームに反映する。
+    /// 持ち物の画面からの操作。App が次の固定 tick で順に反映する。
     pub(super) inv_commands: Vec<InvCommand>,
+    /// 成功して開いた箱だけを表示する。
+    pub(super) open_chest: Option<charon_game::blocks::BlockPos>,
     /// キー割り当ての変更中の操作 (次に押したキーを割り当てる)。
     pub(super) rebinding: Option<Action>,
     /// キー割り当て (画面に出す・変更する。アプリの入力と同期する)。
@@ -88,6 +90,18 @@ pub(super) enum InvCommand {
     Craft(String),
     /// 材質のセル 64 個から、ブロックを 1 個。
     CraftBlock(MaterialId),
+    /// 設備・箱も持ち物の操作と同じキューで順序を守る。
+    Fixture(FixtureCommand),
+}
+
+/// 設備の配置と箱の開閉・指定個数の移動。失敗時は UI の開閉状態も先行させない。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum FixtureCommand {
+    Place(charon_game::cursor::Cursor, charon_game::items::ItemId),
+    Open(charon_game::cursor::Cursor),
+    Close,
+    Deposit(charon_game::blocks::BlockPos, charon_game::items::ItemId, u32),
+    Withdraw(charon_game::blocks::BlockPos, charon_game::items::ItemId, u32),
 }
 
 impl Controls {
@@ -113,6 +127,7 @@ impl Controls {
             pause_menu: false,
             inventory_open: false,
             inv_commands: Vec::new(),
+            open_chest: None,
             rebinding: None,
             bindings: KeyBindings::default(),
             #[cfg(not(target_arch = "wasm32"))]

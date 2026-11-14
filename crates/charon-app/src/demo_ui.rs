@@ -11,7 +11,7 @@ use charon_game::EntityWorld;
 use charon_physics::{CELLS_PER_METER, PhysicsEngine};
 use charon_render::LightQuality;
 
-use crate::ui::{Controls, InvCommand, InvSlot, slot_drop_command};
+use crate::ui::{Controls, FixtureCommand, InvCommand, InvSlot, slot_drop_command};
 
 /// 計測グラフに残すフレーム数。
 pub(super) const HISTORY: usize = 120;
@@ -318,207 +318,358 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                 .corner_radius(6.0)
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
-                    // 1 行目: ホットバー。残りの行: 持ち物のアイテム (ホットバーにないもの、ID の昇順)。
-                    let pinned: Vec<Option<charon_game::items::ItemId>> =
-                        (0..cols).map(|s| inventory.hotbar(s)).collect();
-                    let rest: Vec<(charon_game::items::ItemId, u32)> = inventory
-                        .item_iter()
-                        .filter(|(i, _)| !pinned.contains(&Some(*i)) && passes(*i))
-                        .collect();
-                    let mut rest = rest.into_iter();
-                    for row in 0..rows {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
-                            #[allow(clippy::needless_range_loop)]
-                            for col in 0..cols {
-                                let (item, count, slot) = if row == 0 {
-                                    let item = pinned[col];
-                                    let count = item.map_or(0, |i| inventory.item_count(i));
-                                    (item, count, Some(col))
-                                } else {
-                                    match rest.next() {
-                                        Some((i, n)) => (Some(i), n, None),
-                                        None => (None, 0, None),
-                                    }
-                                };
-                                let selected = slot == Some(inventory.selected());
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(slot_size, slot_size),
-                                    egui::Sense::click_and_drag(),
-                                );
-                                let location = slot.map_or(InvSlot::Bag(item), InvSlot::Hotbar);
-                                inventory_drag_slot(
-                                    context,
-                                    &response,
-                                    location,
-                                    &mut released_over,
-                                );
-                                let stroke = if selected {
-                                    egui::Stroke::new(2.5, egui::Color32::from_rgb(255, 220, 60))
-                                } else {
-                                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90))
-                                };
-                                ui.painter().rect(
-                                    rect,
-                                    3.0,
-                                    egui::Color32::from_white_alpha(22),
-                                    stroke,
-                                    egui::StrokeKind::Inside,
-                                );
-                                if let Some(item) = item {
-                                    let (name, color) = item_label(overlay, item);
-                                    ui.painter().rect_filled(rect.shrink(6.0), 3.0, color);
-                                    ui.painter().text(
-                                        rect.center_bottom() - egui::vec2(0.0, 2.0),
-                                        egui::Align2::CENTER_BOTTOM,
-                                        short_name(&name),
-                                        egui::FontId::proportional(9.0),
-                                        egui::Color32::WHITE,
-                                    );
-                                    if count > 0 {
-                                        ui.painter().text(
-                                            rect.right_top() + egui::vec2(-3.0, 2.0),
-                                            egui::Align2::RIGHT_TOP,
-                                            count.to_string(),
-                                            egui::FontId::proportional(11.0),
-                                            egui::Color32::WHITE,
-                                        );
-                                    }
-                                    let response = response.on_hover_text(name);
-                                    if response.clicked() {
-                                        match slot {
-                                            Some(s) => {
-                                                controls.inv_commands.push(InvCommand::Select(s))
+                    // 横画面の低い端末でも箱の操作・閉じるボタンへ届くようにする。
+                    egui::ScrollArea::vertical()
+                        .id_salt("charon inventory full")
+                        .max_height((context.content_rect().height() - 80.0).max(120.0))
+                        .show(ui, |ui| {
+                            // 1 行目: ホットバー。残りの行: 持ち物のアイテム (ホットバーにないもの、ID の昇順)。
+                            let pinned: Vec<Option<charon_game::items::ItemId>> =
+                                (0..cols).map(|s| inventory.hotbar(s)).collect();
+                            let rest: Vec<(charon_game::items::ItemId, u32)> = inventory
+                                .item_iter()
+                                .filter(|(i, _)| !pinned.contains(&Some(*i)) && passes(*i))
+                                .collect();
+                            let mut rest = rest.into_iter();
+                            for row in 0..rows {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
+                                    #[allow(clippy::needless_range_loop)]
+                                    for col in 0..cols {
+                                        let (item, count, slot) = if row == 0 {
+                                            let item = pinned[col];
+                                            let count = item.map_or(0, |i| inventory.item_count(i));
+                                            (item, count, Some(col))
+                                        } else {
+                                            match rest.next() {
+                                                Some((i, n)) => (Some(i), n, None),
+                                                None => (None, 0, None),
                                             }
-                                            None => {
-                                                let equippable = overlay
-                                                    .defs
-                                                    .and_then(|d| d.item_def(item))
-                                                    .is_some_and(|d| d.equip_slot().is_some());
-                                                if equippable {
-                                                    controls
+                                        };
+                                        let selected = slot == Some(inventory.selected());
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(slot_size, slot_size),
+                                            egui::Sense::click_and_drag(),
+                                        );
+                                        let location =
+                                            slot.map_or(InvSlot::Bag(item), InvSlot::Hotbar);
+                                        inventory_drag_slot(
+                                            context,
+                                            &response,
+                                            location,
+                                            &mut released_over,
+                                        );
+                                        let stroke = if selected {
+                                            egui::Stroke::new(
+                                                2.5,
+                                                egui::Color32::from_rgb(255, 220, 60),
+                                            )
+                                        } else {
+                                            egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_white_alpha(90),
+                                            )
+                                        };
+                                        ui.painter().rect(
+                                            rect,
+                                            3.0,
+                                            egui::Color32::from_white_alpha(22),
+                                            stroke,
+                                            egui::StrokeKind::Inside,
+                                        );
+                                        if let Some(item) = item {
+                                            let (name, color) = item_label(overlay, item);
+                                            ui.painter().rect_filled(rect.shrink(6.0), 3.0, color);
+                                            ui.painter().text(
+                                                rect.center_bottom() - egui::vec2(0.0, 2.0),
+                                                egui::Align2::CENTER_BOTTOM,
+                                                short_name(&name),
+                                                egui::FontId::proportional(9.0),
+                                                egui::Color32::WHITE,
+                                            );
+                                            if count > 0 {
+                                                ui.painter().text(
+                                                    rect.right_top() + egui::vec2(-3.0, 2.0),
+                                                    egui::Align2::RIGHT_TOP,
+                                                    count.to_string(),
+                                                    egui::FontId::proportional(11.0),
+                                                    egui::Color32::WHITE,
+                                                );
+                                            }
+                                            let response = response.on_hover_text(name);
+                                            if response.clicked() {
+                                                match slot {
+                                                    Some(s) => controls
                                                         .inv_commands
-                                                        .push(InvCommand::Equip(item));
-                                                } else {
-                                                    controls.inv_commands.push(InvCommand::Pin(
-                                                        inventory.selected(),
-                                                        item,
-                                                    ));
+                                                        .push(InvCommand::Select(s)),
+                                                    None => {
+                                                        let equippable = overlay
+                                                            .defs
+                                                            .and_then(|d| d.item_def(item))
+                                                            .is_some_and(|d| {
+                                                                d.equip_slot().is_some()
+                                                            });
+                                                        if equippable {
+                                                            controls
+                                                                .inv_commands
+                                                                .push(InvCommand::Equip(item));
+                                                        } else {
+                                                            controls.inv_commands.push(
+                                                                InvCommand::Pin(
+                                                                    inventory.selected(),
+                                                                    item,
+                                                                ),
+                                                            );
+                                                        }
+                                                    }
                                                 }
                                             }
-                                        }
-                                    }
-                                } else if row == 0 && response.clicked() {
-                                    controls.inv_commands.push(InvCommand::Select(col));
-                                }
-                            }
-                        });
-                    }
-                    // 格子の下: 絞り込みと装備。
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button(format!("Filter: {}", FILTERS[filter % FILTERS.len()]))
-                            .clicked()
-                        {
-                            context.data_mut(|d| {
-                                d.insert_temp(filter_id, (filter + 1) % FILTERS.len())
-                            });
-                        }
-                        let equipment =
-                            overlay.player.and_then(|id| overlay.game.equipment.get(&id));
-                        for slot in EquipSlot::ALL {
-                            let item = equipment.and_then(|e| e.get(slot));
-                            let text = item.map_or_else(|| "-".to_owned(), name_of);
-                            let response = ui
-                                .add(
-                                    egui::Button::new(short_name(&text))
-                                        .small()
-                                        .sense(egui::Sense::click_and_drag()),
-                                )
-                                .on_hover_text(format!("{slot:?}: {text}"));
-                            inventory_drag_slot(
-                                context,
-                                &response,
-                                InvSlot::Equipment(slot),
-                                &mut released_over,
-                            );
-                            if response.clicked() && item.is_some() {
-                                controls.inv_commands.push(InvCommand::Unequip(slot));
-                            }
-                        }
-                    });
-                    // 作れるもの (材料のあるものを上に) と Craft ボタン。
-                    if let Some(defs) = overlay.defs {
-                        let mut recipes: Vec<(usize, bool)> = defs
-                            .recipes()
-                            .iter()
-                            .enumerate()
-                            .map(|(i, r)| {
-                                (i, r.inputs.iter().all(|&(it, n)| inventory.item_count(it) >= n))
-                            })
-                            .collect();
-                        recipes.sort_by_key(|&(i, ok)| (!ok, i));
-                        let chosen: usize = context.data(|d| d.get_temp(recipe_id)).unwrap_or(0);
-                        ui.horizontal(|ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt("charon inv recipes v2")
-                                .max_height(110.0)
-                                .max_width(230.0)
-                                .show(ui, |ui| {
-                                    ui.set_width(220.0);
-                                    for &(i, ok) in &recipes {
-                                        let r = &defs.recipes()[i];
-                                        let text =
-                                            egui::RichText::new(name_of(r.output.0)).color(if ok {
-                                                egui::Color32::WHITE
-                                            } else {
-                                                egui::Color32::from_white_alpha(100)
-                                            });
-                                        if ui.selectable_label(chosen == i, text).clicked() {
-                                            context.data_mut(|d| d.insert_temp(recipe_id, i));
+                                        } else if row == 0 && response.clicked() {
+                                            controls.inv_commands.push(InvCommand::Select(col));
                                         }
                                     }
                                 });
-                            ui.vertical(|ui| {
-                                if let Some(r) = defs.recipes().get(chosen) {
-                                    let needs: Vec<String> = r
-                                        .inputs
-                                        .iter()
-                                        .map(|&(i, n)| format!("{} {n}", name_of(i)))
-                                        .collect();
-                                    ui.label(egui::RichText::new(needs.join("\n")).size(11.0));
-                                    let ok = r
-                                        .inputs
-                                        .iter()
-                                        .all(|&(it, n)| inventory.item_count(it) >= n);
-                                    if ui.add_enabled(ok, egui::Button::new("Craft")).clicked() {
-                                        controls
-                                            .inv_commands
-                                            .push(InvCommand::Craft(r.name.clone()));
-                                    }
+                            }
+                            // 格子の下: 絞り込みと装備。
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(format!("Filter: {}", FILTERS[filter % FILTERS.len()]))
+                                    .clicked()
+                                {
+                                    context.data_mut(|d| {
+                                        d.insert_temp(filter_id, (filter + 1) % FILTERS.len())
+                                    });
                                 }
-                                // セルが 64 個たまった材質は、ブロックにできる。
-                                for (item, count) in inventory.item_iter() {
-                                    if let charon_game::items::ItemClass::Cells(m) = item.class()
-                                        && count >= charon_game::blocks::BLOCK_CELLS as u32
-                                        && matches!(
-                                            overlay.world.materials().get(m).phase,
-                                            charon_core::material::Phase::Solid
-                                                | charon_core::material::Phase::Powder
+                                let equipment =
+                                    overlay.player.and_then(|id| overlay.game.equipment.get(&id));
+                                for slot in EquipSlot::ALL {
+                                    let item = equipment.and_then(|e| e.get(slot));
+                                    let text = item.map_or_else(|| "-".to_owned(), name_of);
+                                    let response = ui
+                                        .add(
+                                            egui::Button::new(short_name(&text))
+                                                .small()
+                                                .sense(egui::Sense::click_and_drag()),
                                         )
-                                        && ui
-                                            .small_button(format!("{} → Block", name_of(item)))
-                                            .clicked()
-                                    {
-                                        controls.inv_commands.push(InvCommand::CraftBlock(m));
+                                        .on_hover_text(format!("{slot:?}: {text}"));
+                                    inventory_drag_slot(
+                                        context,
+                                        &response,
+                                        InvSlot::Equipment(slot),
+                                        &mut released_over,
+                                    );
+                                    if response.clicked() && item.is_some() {
+                                        controls.inv_commands.push(InvCommand::Unequip(slot));
                                     }
                                 }
                             });
+                            // 作れるもの (材料のあるものを上に) と Craft ボタン。
+                            if let Some(defs) = overlay.defs {
+                                let nearby = overlay
+                                    .player
+                                    .and_then(|id| {
+                                        charon_game::cursor::center_of(overlay.entities, id)
+                                    })
+                                    .map(|center| {
+                                        overlay.game.fixtures.nearby_stations(
+                                            overlay.world,
+                                            center,
+                                            defs,
+                                        )
+                                    })
+                                    .unwrap_or_default();
+                                let craftable = |r: &charon_game::defs::RecipeDef| {
+                                    if r.station.is_some_and(|station| !nearby.contains(&station)) {
+                                        return false;
+                                    }
+                                    let mut trial = inventory.clone();
+                                    for &(item, count) in &r.inputs {
+                                        if !trial.take_item(item, count) {
+                                            return false;
+                                        }
+                                    }
+                                    trial.can_hold(r.output.0, r.output.1)
+                                };
+                                let mut recipes: Vec<(usize, bool)> = defs
+                                    .recipes()
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, r)| (i, craftable(r)))
+                                    .collect();
+                                let stations =
+                                    nearby.iter().map(|&item| name_of(item)).collect::<Vec<_>>();
+                                ui.label(format!(
+                                    "Stations: {}",
+                                    if stations.is_empty() {
+                                        "none".to_owned()
+                                    } else {
+                                        stations.join(", ")
+                                    }
+                                ));
+                                recipes.sort_by_key(|&(i, ok)| (!ok, i));
+                                let chosen: usize =
+                                    context.data(|d| d.get_temp(recipe_id)).unwrap_or(0);
+                                ui.horizontal(|ui| {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("charon inv recipes v2")
+                                        .max_height(110.0)
+                                        .max_width(230.0)
+                                        .show(ui, |ui| {
+                                            ui.set_width(220.0);
+                                            for &(i, ok) in &recipes {
+                                                let r = &defs.recipes()[i];
+                                                let text = egui::RichText::new(name_of(r.output.0))
+                                                    .color(if ok {
+                                                        egui::Color32::WHITE
+                                                    } else {
+                                                        egui::Color32::from_white_alpha(100)
+                                                    });
+                                                if ui.selectable_label(chosen == i, text).clicked()
+                                                {
+                                                    context
+                                                        .data_mut(|d| d.insert_temp(recipe_id, i));
+                                                }
+                                            }
+                                        });
+                                    ui.vertical(|ui| {
+                                        if let Some(r) = defs.recipes().get(chosen) {
+                                            let needs: Vec<String> = r
+                                                .inputs
+                                                .iter()
+                                                .map(|&(i, n)| format!("{} {n}", name_of(i)))
+                                                .collect();
+                                            ui.label(
+                                                egui::RichText::new(needs.join("\n")).size(11.0),
+                                            );
+                                            let ok = craftable(r);
+                                            ui.label(format!(
+                                                "Needs station: {}",
+                                                r.station
+                                                    .map_or_else(|| "none".to_owned(), name_of)
+                                            ));
+                                            if ui
+                                                .add_enabled(ok, egui::Button::new("Craft"))
+                                                .clicked()
+                                            {
+                                                controls
+                                                    .inv_commands
+                                                    .push(InvCommand::Craft(r.name.clone()));
+                                            }
+                                        }
+                                        // セルが 64 個たまった材質は、ブロックにできる。
+                                        for (item, count) in inventory.item_iter() {
+                                            if let charon_game::items::ItemClass::Cells(m) =
+                                                item.class()
+                                                && count >= charon_game::blocks::BLOCK_CELLS as u32
+                                                && matches!(
+                                                    overlay.world.materials().get(m).phase,
+                                                    charon_core::material::Phase::Solid
+                                                        | charon_core::material::Phase::Powder
+                                                )
+                                                && ui
+                                                    .small_button(format!(
+                                                        "{} → Block",
+                                                        name_of(item)
+                                                    ))
+                                                    .clicked()
+                                            {
+                                                controls
+                                                    .inv_commands
+                                                    .push(InvCommand::CraftBlock(m));
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            if let Some(pos) = controls.open_chest
+                                && let Some(chest) = overlay.game.fixtures.get(pos)
+                            {
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("Chest ({}, {})", pos.bx, pos.by));
+                                    if ui.small_button("Close chest").clicked() {
+                                        controls
+                                            .inv_commands
+                                            .push(InvCommand::Fixture(FixtureCommand::Close));
+                                    }
+                                });
+                                let active = overlay.game.fixtures.active(overlay.world, pos);
+                                if !active {
+                                    ui.label("Chest inactive — contents preserved");
+                                }
+                                let amount_id = egui::Id::new("charon chest amount");
+                                let mut amount: u32 =
+                                    context.data(|d| d.get_temp(amount_id)).unwrap_or(1);
+                                ui.horizontal(|ui| {
+                                    ui.label("Amount");
+                                    ui.add(egui::DragValue::new(&mut amount).range(1..=99_999));
+                                });
+                                context.data_mut(|d| d.insert_temp(amount_id, amount));
+                                egui::ScrollArea::vertical()
+                                    .id_salt("charon chest contents")
+                                    .max_height(96.0)
+                                    .show(ui, |ui| {
+                                        for (name, &count) in &chest.contents {
+                                            ui.horizontal(|ui| {
+                                                ui.label(format!("{name}: {count}"));
+                                                let item = overlay.defs.and_then(|defs| {
+                                                    defs.item_id(name, overlay.world.materials())
+                                                });
+                                                if ui
+                                                    .add_enabled(
+                                                        active && item.is_some(),
+                                                        egui::Button::new("Take").small(),
+                                                    )
+                                                    .clicked()
+                                                    && let Some(item) = item
+                                                {
+                                                    controls.inv_commands.push(
+                                                        InvCommand::Fixture(
+                                                            FixtureCommand::Withdraw(
+                                                                pos, item, amount,
+                                                            ),
+                                                        ),
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    });
+                                ui.label("Deposit from inventory");
+                                egui::ScrollArea::vertical()
+                                    .id_salt("charon chest deposit")
+                                    .max_height(72.0)
+                                    .show(ui, |ui| {
+                                        for (item, count) in inventory.item_iter() {
+                                            ui.horizontal(|ui| {
+                                                ui.label(format!("{}: {count}", name_of(item)));
+                                                if ui
+                                                    .add_enabled(
+                                                        active,
+                                                        egui::Button::new("Store").small(),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    controls.inv_commands.push(
+                                                        InvCommand::Fixture(
+                                                            FixtureCommand::Deposit(
+                                                                pos, item, amount,
+                                                            ),
+                                                        ),
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    });
+                            }
+                            if ui.small_button("Close").clicked() {
+                                if controls.open_chest.is_some() {
+                                    controls
+                                        .inv_commands
+                                        .push(InvCommand::Fixture(FixtureCommand::Close));
+                                }
+                                controls.inventory_open = false;
+                            }
                         });
-                    }
-                    if ui.small_button("Close").clicked() {
-                        controls.inventory_open = false;
-                    }
                 });
         });
     if let Some(command) = take_inventory_drop(context, released_over) {
