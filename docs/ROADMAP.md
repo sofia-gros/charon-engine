@@ -414,7 +414,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 
 各段階で Terraria の**一般的な仕組み**を参照する。固有名・絵・音・実装コードを写さず、Noita の物理との統合は Charon 独自の規則として仕様化する。協力プレイは現時点で対象外。
 
-**M32 第4段階 (地形・資源・敵・進行)**: [仕様 26](spec/26-world-progression.md) に依存順とテスト名を定めた。T32.1〜T32.5 は各節の数値・公開型・保存の境界を着手前に実測して確定する。M28 の実機比較と溶岩の熱休眠は引き続き保留。
+**M32 第4段階 (地形・資源・敵・進行)**: [仕様 26](spec/26-world-progression.md) に従い T32.0〜T32.5 を順に実装・自動テスト済み。世界/ゲームの保存後の通しはヘッドレスで確認した。Windows/Android 実機・Web 実ブラウザーは未検証のため実機完了とはしない。M28 の実機比較と溶岩の熱休眠は引き続き保留。
 
 | タスク | 読む仕様 | 完了条件 | 状態 |
 |---|---|---|---|
@@ -423,7 +423,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T32.2 深い資源の用途** | [26 §1・§3](spec/26-world-progression.md)、[19](spec/19-items.md)、[21 §4](spec/21-adventure-world.md)、[24 §5](spec/24-resource-loop.md)、[TESTING](TESTING.md) | `gold_tier_requires_deep_ore_and_station`、`equipment_progression_survives_save`、`scripts/check.sh` | 🟡 金の道具・防具・炉/作業台のレシピを実装・自動テスト済み (実機は未検証) |
 | **T32.3 敵とボスの接続** | [26 §1・§4](spec/26-world-progression.md)、[22](spec/22-enemies-bosses.md)、[25](spec/25-combat-extension.md)、[TESTING](TESTING.md) | `enemy_depth_matches_resource_tiers`、`boss_encounter_uses_terrain_and_combat`、`scripts/check.sh` | 🟡 資源段階の出現帯と深層ボス戦を実装・自動テスト済み (実機は未検証) |
 | **T32.4 進行の保存** | [26 §1・§5](spec/26-world-progression.md)、[04](spec/04-world-save.md)、[10 §13](spec/10-noita-like-game.md)、[19 §7](spec/19-items.md)、[TESTING](TESTING.md) | `progression_flags_roundtrip_without_duplicates`、`legacy_save_starts_without_progress`、`scripts/check.sh` | 🟡 ボス・レシピ・領域の進行を保存・旧版移行し自動テスト済み (実機は未検証) |
-| **T32.5 ワールドの通し** | [26 §1・§6](spec/26-world-progression.md)、[21](spec/21-adventure-world.md)、[22](spec/22-enemies-bosses.md)、[24](spec/24-resource-loop.md)、[TESTING](TESTING.md) | `world_progression_chain_is_deterministic`、`progression_reload_keeps_world_and_rewards`、`scripts/check.sh` | ⚪ 仕様詳細未確定 |
+| **T32.5 ワールドの通し** | [26 §1・§6](spec/26-world-progression.md)、[21](spec/21-adventure-world.md)、[22](spec/22-enemies-bosses.md)、[24](spec/24-resource-loop.md)、[TESTING](TESTING.md) | `world_progression_chain_is_deterministic`、`progression_reload_keeps_world_and_rewards`、`scripts/check.sh` | 🟡 生成資源から設備・装備・戦利品と別世界への復帰を seed 1..=8 で自動テスト済み (実機は未検証) |
 
 未着手 (次の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み (マルチは後回し)、BGM・空間音、フォント、経路探索、性能の次の候補 (08 §6 の (b)(c))。
 
