@@ -17,7 +17,7 @@
 
 - `decode_sound(bytes)`: 先頭が `OggS` なら OGG Vorbis (`lewton`)、そうでなければ WAV (`charon-audio`)。ステレオは平均してモノラルにする。`MAX_SOUND_SAMPLES` (約 4 分) を超えると断る。
 - `SoundBank::from_assets(&mut assets, rate)`: `sounds/{jump,shoot,anchor,pickup,dig}.wav|ogg` を読み、ないものは生成した音、壊れたものは報告して生成した音にする。`AppOptions::sounds` に渡す。
-- デモは MOD の `assets/sounds/` を置き場にする。
+- デモは MOD の `assets/sounds/` を置き場にする。仕様 27 §3 の短い BGM は `assets/music/explore.ogg` → `.wav` の順に読み、欠損・破損ならデモ専用の生成旋律を使う。長い OGG のストリーミングは未実装。
 
 ## 4. 未実装
 

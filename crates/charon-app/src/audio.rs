@@ -155,6 +155,28 @@ impl SoundBank {
     }
 }
 
+/// デモだけの短い独自旋律。各音 0.5 秒、全体 4 秒でループする。
+pub fn original_theme(rate: u32) -> Sound {
+    let mut samples = Vec::new();
+    for hz in [220.0, 247.0, 262.0, 294.0, 330.0, 294.0, 262.0, 247.0] {
+        let tone = Sound::tone(Shape::Sine, hz, 0.5, rate);
+        samples.extend_from_slice(&tone.samples);
+    }
+    Sound::new(rate, samples)
+}
+
+/// デモの置き場にある曲を優先する。欠損や破損は呼び出し側で扱う。
+pub fn music_from_assets(assets: &mut crate::assets::Assets) -> Option<Sound> {
+    for name in ["music/explore.ogg", "music/explore.wav"] {
+        match assets.sound(name) {
+            Ok(sound) if !sound.samples.is_empty() => return Some(sound),
+            Ok(_) | Err(crate::assets::AssetError::File(_)) => {}
+            Err(err) => eprintln!("{name} を読めません: {err}"),
+        }
+    }
+    None
+}
+
 /// ミキサーを、音声デバイスの別スレッドと共有する。ロックが毒になっていても (別スレッドが落ちても) 使い続ける。
 type SharedMixer = Arc<Mutex<Mixer>>;
 
@@ -185,6 +207,8 @@ pub struct Audio {
     bank: SoundBank,
     previous: Snapshot,
     dig_voice: Option<VoiceId>,
+    music_voice: Option<VoiceId>,
+    fading_music: Option<VoiceId>,
     output: Option<Box<dyn AudioOutput>>,
     /// 音声デバイスの出力ストリーム (開いている間、鳴る)。
     #[cfg(not(target_arch = "wasm32"))]
@@ -210,6 +234,8 @@ impl Audio {
             bank: SoundBank::procedural(RATE),
             previous: Snapshot::default(),
             dig_voice: None,
+            music_voice: None,
+            fading_music: None,
             output: None,
             #[cfg(not(target_arch = "wasm32"))]
             device: None,
@@ -223,6 +249,49 @@ impl Audio {
     /// 効果音を差し替える。
     pub fn set_bank(&mut self, bank: SoundBank) {
         self.bank = bank;
+    }
+
+    /// ループ音楽を切り替える。開始できない曲では現行曲を維持する。
+    pub fn set_music(&mut self, sound: Option<Sound>) -> bool {
+        let mut mixer = lock(&self.mixer);
+        if let Some(id) = self.fading_music.take() {
+            mixer.stop(id);
+        }
+        let current = self.music_voice.filter(|&id| mixer.is_playing(id));
+        let frames = (mixer.rate() / 2).max(1);
+        match sound {
+            Some(sound) => {
+                let next = mixer.play(
+                    &sound,
+                    PlayParams {
+                        volume: 0.0,
+                        pan: 0.0,
+                        looped: true,
+                        bus: Bus::Music,
+                        ..Default::default()
+                    },
+                );
+                let Some(next) = next else {
+                    self.music_voice = current;
+                    return false;
+                };
+                mixer.fade_voice(next, 1.0, frames);
+                if let Some(id) = current {
+                    mixer.fade_voice(id, 0.0, frames);
+                }
+                self.fading_music = current;
+                self.music_voice = Some(next);
+                true
+            }
+            None => {
+                if let Some(id) = current {
+                    mixer.fade_voice(id, 0.0, frames);
+                }
+                self.fading_music = current;
+                self.music_voice = None;
+                true
+            }
+        }
     }
 
     /// 音声デバイスへの出力を渡す (なければ混ぜるだけ)。
@@ -395,6 +464,73 @@ mod tests {
 
     fn standing() -> Snapshot {
         Snapshot { grounded: true, ..Default::default() }
+    }
+
+    #[test]
+    fn music_transitions_without_overlapping_forever() {
+        let music = Sound::new(RATE, vec![0.5; RATE as usize]);
+        let mut audio = Audio::new();
+        assert!(audio.set_music(Some(music.clone())));
+        assert_eq!(audio.active_voices(), 1);
+        let mut out = [0.0; 2 * 100];
+        audio.render(&mut out);
+        assert!(out[0] > 0.0 && out[0] < out[198]);
+        assert!(audio.set_music(Some(music.clone())));
+        assert_eq!(audio.active_voices(), 2);
+        assert!(audio.set_music(Some(music.clone())), "重複した切替も二声まで");
+        assert_eq!(audio.active_voices(), 2);
+        assert!(audio.music_voice.is_some());
+        assert!(audio.fading_music.is_some());
+        let mut after = vec![0.0; RATE as usize];
+        audio.render(&mut after);
+        assert_eq!(audio.active_voices(), 1, "半秒後は新曲だけ");
+        audio.set_volumes(1.0, 1.0, 0.0);
+        audio.render(&mut out);
+        assert_eq!(out, [0.0; 200]);
+        assert_eq!(audio.active_voices(), 1, "音楽音量 0 でもループは続く");
+        audio.set_volumes(1.0, 1.0, 1.0);
+        assert!(audio.set_music(None));
+        assert!(audio.set_music(None));
+        assert_eq!(audio.active_voices(), 0, "退場中の曲を先に止める");
+        assert!(audio.set_music(Some(music.clone())));
+        let current = audio.music_voice;
+        {
+            let mut mixer = lock(&audio.mixer);
+            let sfx = Sound::new(RATE, vec![0.5; 1]);
+            while mixer.active() < charon_audio::MAX_VOICES {
+                mixer.play(&sfx, PlayParams::default()).unwrap();
+            }
+        }
+        assert!(!audio.set_music(Some(music.clone())), "上限では現行曲を止めない");
+        assert_eq!(audio.music_voice, current);
+        assert!(lock(&audio.mixer).is_playing(current.unwrap()));
+        assert!(!audio.set_music(Some(Sound::new(RATE, vec![]))));
+        assert_eq!(audio.music_voice, current);
+    }
+
+    #[test]
+    fn music_missing_asset_is_silent_and_sfx_continue() {
+        let mut audio = Audio::new();
+        let mut out = [1.0; 200];
+        audio.render(&mut out);
+        assert_eq!(out, [0.0; 200], "曲を渡さなければ無音");
+        let root = std::env::temp_dir().join(format!("charon-music-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("music")).unwrap();
+        std::fs::write(root.join("music/explore.ogg"), b"OggS broken").unwrap();
+        let mut assets = crate::assets::Assets::new();
+        assets.add_root(&root);
+        assert!(music_from_assets(&mut assets).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+        let theme = original_theme(RATE);
+        assert_eq!(theme.samples.len(), RATE as usize * 4);
+        assert_eq!(theme.samples[0], 0.0);
+        assert!(theme.samples[theme.samples.len() - 1].abs() < 0.01);
+        assert!(theme.samples.iter().any(|sample| sample.abs() > 0.5));
+        audio.set_volumes(1.0, 1.0, 0.0);
+        assert!(audio.set_music(Some(theme)));
+        audio.play_events(&[SoundEvent::Place]);
+        audio.render(&mut out);
+        assert!(out.iter().any(|sample| *sample != 0.0), "音楽が無音でも Sfx は鳴る");
     }
 
     #[test]

@@ -420,6 +420,12 @@ pub fn open_demo(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dyn Err
                 assets.add_root(config.mod_dir.join("assets"));
                 crate::audio::SoundBank::from_assets(&mut assets, crate::audio::RATE)
             }),
+            music: Some({
+                let mut assets = crate::assets::Assets::new();
+                assets.add_root(config.mod_dir.join("assets"));
+                crate::audio::music_from_assets(&mut assets)
+                    .unwrap_or_else(|| crate::audio::original_theme(crate::audio::RATE))
+            }),
         },
         brush: demo_materials.rainbow_sand,
     })
@@ -477,6 +483,12 @@ pub fn open_adventure(config: &DemoConfig, seed: u64) -> Result<OpenDemo, Box<dy
                 let mut assets = crate::assets::Assets::new();
                 assets.add_root(config.mod_dir.join("assets"));
                 crate::audio::SoundBank::from_assets(&mut assets, crate::audio::RATE)
+            }),
+            music: Some({
+                let mut assets = crate::assets::Assets::new();
+                assets.add_root(config.mod_dir.join("assets"));
+                crate::audio::music_from_assets(&mut assets)
+                    .unwrap_or_else(|| crate::audio::original_theme(crate::audio::RATE))
             }),
         },
         brush,

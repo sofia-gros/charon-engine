@@ -239,6 +239,15 @@ struct Voice {
     sound: Sound,
     position: f64,
     params: PlayParams,
+    fade: Option<VoiceFade>,
+}
+
+#[derive(Clone, Debug)]
+struct VoiceFade {
+    start: f32,
+    target: f32,
+    frames: u32,
+    elapsed: u32,
 }
 
 /// 同時に鳴らせる音の数の上限。
@@ -300,8 +309,21 @@ impl Mixer {
         };
         let id = VoiceId(self.next_id);
         self.next_id += 1;
-        self.voices.insert(id, Voice { sound: sound.clone(), position: 0.0, params });
+        self.voices.insert(id, Voice { sound: sound.clone(), position: 0.0, params, fade: None });
         Some(id)
+    }
+
+    /// 現在の声の音量から目標へ、指定した音声フレーム数で直線的に移す。
+    pub fn fade_voice(&mut self, id: VoiceId, target: f32, frames: u32) -> bool {
+        let Some(voice) = self.voices.get_mut(&id) else { return false };
+        let target = if target.is_finite() { target.clamp(0.0, 2.0) } else { 0.0 };
+        voice.fade = Some(VoiceFade {
+            start: voice.params.volume,
+            target,
+            frames: frames.max(1),
+            elapsed: 0,
+        });
+        true
     }
 
     pub fn stop(&mut self, id: VoiceId) -> bool {
@@ -349,6 +371,23 @@ impl Mixer {
                         break;
                     }
                 }
+                let (frame_left, frame_right) = if let Some(fade) = voice.fade.as_mut() {
+                    fade.elapsed += 1;
+                    let t = fade.elapsed as f32 / fade.frames as f32;
+                    let volume = fade.start + (fade.target - fade.start) * t;
+                    voice.params.volume = volume;
+                    if fade.elapsed == fade.frames {
+                        voice.fade = None;
+                        if volume == 0.0 {
+                            finished.push(id);
+                            break;
+                        }
+                    }
+                    let frame_gain = volume * bus * self.master;
+                    (frame_gain * angle.cos(), frame_gain * angle.sin())
+                } else {
+                    (left, right)
+                };
                 let index = voice.position as usize;
                 let next = if index + 1 < samples.len() {
                     samples[index + 1]
@@ -359,8 +398,8 @@ impl Mixer {
                 };
                 let t = (voice.position - index as f64) as f32;
                 let value = samples[index] * (1.0 - t) + next * t;
-                out[frame * 2] += value * left;
-                out[frame * 2 + 1] += value * right;
+                out[frame * 2] += value * frame_left;
+                out[frame * 2 + 1] += value * frame_right;
                 voice.position += step;
             }
         }
@@ -387,6 +426,38 @@ mod tests {
     use super::*;
 
     const RATE: u32 = 8_000;
+
+    #[test]
+    fn music_transitions_without_overlapping_forever() {
+        let mut mixer = Mixer::new(8);
+        let music = Sound::new(8, vec![1.0; 8]);
+        let params =
+            PlayParams { volume: 0.0, looped: true, bus: Bus::Music, ..Default::default() };
+        assert!(!mixer.fade_voice(VoiceId(999), 1.0, 4));
+        let first = mixer.play(&music, params).unwrap();
+        assert!(mixer.fade_voice(first, 1.0, 4));
+        let mut out = [0.0; 8];
+        mixer.render(&mut out);
+        let center = std::f32::consts::FRAC_1_SQRT_2;
+        for (frame, pair) in out.as_chunks::<2>().0.iter().enumerate() {
+            assert!((pair[0] - (frame + 1) as f32 * center / 4.0).abs() < 1e-6);
+            assert_eq!(pair[0], pair[1]);
+        }
+        assert!(mixer.fade_voice(first, f32::NAN, 4));
+        let mut half = [0.0; 4];
+        mixer.render(&mut half);
+        assert!((half[0] - center * 0.75).abs() < 1e-6, "再指定は現在の音量から");
+        let second = mixer.play(&music, params).unwrap();
+        assert!(mixer.fade_voice(second, 1.0, 4));
+        mixer.render(&mut out);
+        assert!(!mixer.is_playing(first));
+        assert!(mixer.is_playing(second));
+        assert_eq!(mixer.active(), 1);
+        assert!(mixer.fade_voice(second, f32::INFINITY, 0));
+        mixer.render(&mut half);
+        assert!(!mixer.is_playing(second), "最低 1 フレームで 0 に移して消す");
+        assert_eq!(half, [0.0; 4]);
+    }
 
     fn peak(buffer: &[f32]) -> f32 {
         buffer.iter().fold(0.0, |m, v| m.max(v.abs()))

@@ -295,6 +295,8 @@ pub struct AppOptions {
     pub logic: Option<api::GameLogic>,
     /// 効果音。`None` なら生成した音 (仕様 12、15)。
     pub sounds: Option<audio::SoundBank>,
+    /// ゲームが渡すループ BGM。`None` なら鳴らさない。
+    pub music: Option<charon_audio::Sound>,
 }
 
 /// ゲームがエンジンに渡す敵の生成の指定 (仕様 10 §8.5)。
@@ -399,6 +401,9 @@ pub fn run_with_streaming_options(
     // 音声デバイスは起動時に 1 回だけ開く。開けなくても (デバイスなし等) 無音で続ける。
     if let Err(why) = app.audio.start_device() {
         eprintln!("音声を無効にします: {why}");
+    }
+    if let Some(music) = app.options.music.clone() {
+        app.audio.set_music(Some(music));
     }
     app.restart = restart;
     app.background = background;
