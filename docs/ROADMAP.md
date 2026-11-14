@@ -401,7 +401,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | 4 | 地形・バイオーム・鉱石/資源・構造物・敵/ボス・進行 | 複数 seed とチャンク境界で、資源の循環とボスへの到達性を確認 |
 | 5 | 演出・音・UI の完成、Windows/Android 通しプレイ、配布時の権利確認 | 自作アセット、画像/実機比較、性能計測、未検証事項の明記 |
 
-**M31 第3段階**: [仕様 25](spec/25-combat-extension.md) の §1 で T31.1〜T31.5 の依存順とテスト名を定めた。T31.2 以降は各節の係数・公開型を実装前に確定する。前段階の実機未検証を完了扱いにしない。
+**M31 第3段階の状態: T31.0〜T31.5 実装・自動テスト済み (Windows 実画面・Android 実機・Web 実ブラウザーは未検証)**。[仕様 25](spec/25-combat-extension.md) の §1 で依存順とテスト名を定め、各節の係数・公開型を実装前に確定した。前段階の実機未検証を完了扱いにしない。
 
 | タスク | 読む仕様 | 完了条件 | 状態 |
 |---|---|---|---|
@@ -410,7 +410,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T31.2 装備の組合せ** | [25 §1・§3](spec/25-combat-extension.md)、[19 §2・§5・§7](spec/19-items.md)、[TESTING](TESTING.md) | `armor_set_requires_all_three_pieces`、`accessory_bonus_does_not_stack_on_refresh`、`equipment_bonuses_survive_item_save`、`scripts/check.sh` | 🟡 実装・自動テスト済み (Windows/Android 実機は未検証) |
 | **T31.3 武器ごとの使用** | [25 §1・§4](spec/25-combat-extension.md)、[20](spec/20-combat.md)、[TESTING](TESTING.md) | `weapon_interval_and_damage_kind_follow_definition`、`ammunition_is_consumed_only_on_shot`、`held_weapon_input_is_deterministic`、`scripts/check.sh` | 🟡 実装・自動テスト済み (Windows/Android 実機は未検証) |
 | **T31.4 冷気と状態異常** | [25 §1・§5](spec/25-combat-extension.md)、[10 §17](spec/10-noita-like-game.md)、[03](spec/03-reactions-heat.md)、[TESTING](TESTING.md) | `cold_hit_applies_slow_once`、`slow_expires_and_movement_recovers`、`status_reaches_sleep_without_writes`、`scripts/check.sh` | 🟡 実装・自動テスト済み (Windows/Android 実機は未検証) |
-| **T31.5 戦闘とセルの通し** | [25 §1・§6](spec/25-combat-extension.md)、[03](spec/03-reactions-heat.md)、[24](spec/24-resource-loop.md)、[TESTING](TESTING.md) | `combat_environment_chain_is_deterministic`、`combat_chain_keeps_cell_invariants`、`combat_loadout_survives_world_reload`、`scripts/check.sh` | ⚪ 仕様詳細未確定 |
+| **T31.5 戦闘とセルの通し** | [25 §1・§6](spec/25-combat-extension.md)、[03](spec/03-reactions-heat.md)、[24](spec/24-resource-loop.md)、[TESTING](TESTING.md) | `combat_environment_chain_is_deterministic`、`combat_chain_keeps_cell_invariants`、`combat_loadout_survives_world_reload`、`scripts/check.sh` | 🟡 実装・自動テスト済み (Windows/Android 実機は未検証) |
 
 各段階で Terraria の**一般的な仕組み**を参照する。固有名・絵・音・実装コードを写さず、Noita の物理との統合は Charon 独自の規則として仕様化する。協力プレイは現時点で対象外。
 

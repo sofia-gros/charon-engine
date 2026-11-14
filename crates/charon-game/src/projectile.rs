@@ -309,6 +309,10 @@ impl ProjectileWorld {
             let dealt = entity
                 .and_then(|target| vitals.get_mut(target))
                 .map_or(0, |v| v.damage_combat(p.damage, p.kind));
+            // 直撃のあと、冷気弾の着弾セルだけを冷やす。相変化は次の World::step に任せる。
+            if p.kind == DamageKind::Cold && matches!(p.payload, Payload::None) {
+                chill_impact(world, cell);
+            }
             match p.payload {
                 Payload::None => {}
                 Payload::Explode { radius } => {
@@ -386,6 +390,22 @@ impl ProjectileWorld {
         }
         feed(&self.next_id.to_le_bytes());
         hash
+    }
+}
+
+/// 冷気属性の弾の着弾で下げる温度 (仕様 25 §6)。
+pub const COLD_IMPACT_DELTA: i16 = 40;
+
+fn chill_impact(world: &mut World, pos: CellPos) {
+    let cell = world.get(pos);
+    if matches!(cell.material, MaterialId::EMPTY | MaterialId::BOUNDARY) || cell.has(FLAG_BODY) {
+        return;
+    }
+    let cooled = cell.temp.saturating_sub(COLD_IMPACT_DELTA);
+    if cooled != cell.temp {
+        let mut next = cell;
+        next.temp = cooled;
+        world.set(pos, next);
     }
 }
 
