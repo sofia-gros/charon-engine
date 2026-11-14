@@ -19,6 +19,8 @@
     (name: "storage_box", kind: Misc),
     (name: "iron_bar", kind: Misc),
     (name: "iron_pickaxe", kind: Tool(pick: 16)),
+    (name: "gold_bar", kind: Misc),
+    (name: "gold_pickaxe", kind: Tool(pick: 24)),
 
     // ---- 武器 ----
     (name: "wood_sword",  kind: Weapon(class: Melee, damage: 6)),
@@ -37,6 +39,9 @@
     (name: "stone_helmet",     kind: Armor(slot: Head, defense: 4, set: Some("stone"), set_defense: 4, set_cold: 10)),
     (name: "stone_chestplate", kind: Armor(slot: Body, defense: 6, set: Some("stone"))),
     (name: "stone_greaves",    kind: Armor(slot: Legs, defense: 4, set: Some("stone"))),
+    (name: "gold_helmet",     kind: Armor(slot: Head, defense: 6, set: Some("gold"), set_defense: 6, set_fire: 15)),
+    (name: "gold_chestplate", kind: Armor(slot: Body, defense: 9, set: Some("gold"))),
+    (name: "gold_greaves",    kind: Armor(slot: Legs, defense: 6, set: Some("gold"))),
     (name: "fire_ring",   kind: Armor(slot: Accessory, fire: 25)),
     (name: "poison_charm", kind: Armor(slot: Accessory, poison: 25)),
 

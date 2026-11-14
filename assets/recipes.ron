@@ -26,4 +26,10 @@
     (name: "storage_box", inputs: [("cells:wood", 20)], output: ("storage_box", 1), station: Some("workbench")),
     (name: "iron_bar", inputs: [("cells:iron_ore", 16), ("cells:coal", 4)], output: ("iron_bar", 1), station: Some("furnace")),
     (name: "iron_pickaxe", inputs: [("iron_bar", 2), ("cells:wood", 20)], output: ("iron_pickaxe", 1), station: Some("workbench")),
+    // ---- 深い金の使い道 (仕様 26 §3) ----
+    (name: "gold_bar", inputs: [("cells:gold_ore", 16), ("cells:coal", 6)], output: ("gold_bar", 1), station: Some("furnace")),
+    (name: "gold_pickaxe", inputs: [("gold_bar", 2), ("iron_bar", 1), ("cells:wood", 20)], output: ("gold_pickaxe", 1), station: Some("workbench")),
+    (name: "gold_helmet", inputs: [("gold_bar", 2), ("iron_bar", 1)], output: ("gold_helmet", 1), station: Some("workbench")),
+    (name: "gold_chestplate", inputs: [("gold_bar", 3), ("iron_bar", 1)], output: ("gold_chestplate", 1), station: Some("workbench")),
+    (name: "gold_greaves", inputs: [("gold_bar", 2), ("iron_bar", 1)], output: ("gold_greaves", 1), station: Some("workbench")),
 ]

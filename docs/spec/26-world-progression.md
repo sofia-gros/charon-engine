@@ -27,7 +27,27 @@
 
 ## 3. T32.2: 深い資源の使い道
 
-仕様 19 §2–7、仕様 24 §5 の Station と鉄の道具、仕様 21 §4 の金の分布を読み、道具/防具の定義、素材の必要個数、作業台・炉の前提、能力値と保存名を実装前に確定する。材質名をシミュレーションの条件に書かず、未定義の tier で旧レシピを置き換えない。
+仕様 19 §2–7、仕様 24 §5 の Station と鉄の道具、仕様 21 §4 の金の分布に従う。既存 `cells:gold_ore` (深さ 360 以上) を利用する。新しい `ItemKind` や新しい設備は設けず、`assets/items.ron` と `assets/recipes.ron` の既定に以下を**追加**する。既存の木・石・鉄の定義とレシピ、名前、材料個数は変えない。アイテム名は保存・復帰に使う正確な名前とする。
+
+| アイテム名 | 定義・能力値 |
+|---|---|
+| `gold_bar` | `Misc`。セルの金鉱石と石炭を既存の炉で加工した成果 |
+| `gold_pickaxe` | `Tool(pick: 24, axe: 0)`。`iron_pickaxe` (pick: 16) より高い採掘力 |
+| `gold_helmet` | `Armor(slot: Head, defense: 6, set: Some("gold"), set_defense: 6, set_fire: 15)` |
+| `gold_chestplate` | `Armor(slot: Body, defense: 9, set: Some("gold"))` |
+| `gold_greaves` | `Armor(slot: Legs, defense: 6, set: Some("gold"))` |
+
+3 部位の通常防御は 21、そろった場合のみ追加 6 で計 27、防火耐性は 15。石セットの防御 18・耐冷 10 と別の性質であり、石のレシピを置き換えない。アクセサリーと耐性上限は仕様 25 §3 のまま。道具は `Equipment` の枠に入れず、持ち物・ホットバーの印で選ぶ。
+
+| レシピ名 | 入力 | 必要な Station | 出力 |
+|---|---|---|---|
+| `gold_bar` | `cells:gold_ore` 16 + `cells:coal` 6 | `furnace` | `gold_bar` 1 |
+| `gold_pickaxe` | `gold_bar` 2 + `iron_bar` 1 + `cells:wood` 20 | `workbench` | `gold_pickaxe` 1 |
+| `gold_helmet` | `gold_bar` 2 + `iron_bar` 1 | `workbench` | `gold_helmet` 1 |
+| `gold_chestplate` | `gold_bar` 3 + `iron_bar` 1 | `workbench` | `gold_chestplate` 1 |
+| `gold_greaves` | `gold_bar` 2 + `iron_bar` 1 | `workbench` | `gold_greaves` 1 |
+
+`GameState::craft` は近くの**読み込み済みでアクティブな** Station を呼び出し元が渡す (仕様 24 §5)。不足材料・間違った Station・満杯は、材料・成果・ホットバー・装備を何も変えずに失敗する。`gold_bar` は金鉱石のほかに石炭を要し、装備の製作は金の延べ棒のほかに既存の鉄の延べ棒を要する。処理順は既存の `craft` と `equip` に従う。新しい能力値は装備から毎 tick 再計算され、保存は仕様 19 §7 の `game.ron` 版 1 にアイテム名と装備名で行う。未知の名前は従来どおり読み飛ばす。数値や材料の関係は第4段階固有の設計値であり、他の作品のレシピではない。
 
 ## 4. T32.3: 敵・ボス
 
