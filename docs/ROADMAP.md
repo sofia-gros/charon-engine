@@ -425,7 +425,18 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T32.4 進行の保存** | [26 §1・§5](spec/26-world-progression.md)、[04](spec/04-world-save.md)、[10 §13](spec/10-noita-like-game.md)、[19 §7](spec/19-items.md)、[TESTING](TESTING.md) | `progression_flags_roundtrip_without_duplicates`、`legacy_save_starts_without_progress`、`scripts/check.sh` | 🟡 ボス・レシピ・領域の進行を保存・旧版移行し自動テスト済み (実機は未検証) |
 | **T32.5 ワールドの通し** | [26 §1・§6](spec/26-world-progression.md)、[21](spec/21-adventure-world.md)、[22](spec/22-enemies-bosses.md)、[24](spec/24-resource-loop.md)、[TESTING](TESTING.md) | `world_progression_chain_is_deterministic`、`progression_reload_keeps_world_and_rewards`、`scripts/check.sh` | 🟡 生成資源から設備・装備・戦利品と別世界への復帰を seed 1..=8 で自動テスト済み (実機は未検証) |
 
-未着手 (次の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み (マルチは後回し)、BGM・空間音、フォント、経路探索、性能の次の候補 (08 §6 の (b)(c))。
+**M33 第5段階 (音・画面と配布前の確認)**: [仕様 27](spec/27-experience.md) に実装順・境界・テスト名を定める。M28 の実機比較は保留、溶岩の熱休眠は計測前に変更しない。マルチの App 組み込みと T19.5 は後回し。実機の操作、音、署名や法的判断は自動テストと区別する。
+
+| タスク | 読む仕様 | 完了条件 | 状態 |
+|---|---|---|---|
+| **T33.0 第5段階の契約** | [PRODUCT_REVIEW §4.8–4.9・§4.14・§9](PRODUCT_REVIEW.md)、[12](spec/12-audio.md)、[15](spec/15-assets.md)、[18](spec/18-terraria-touch.md)、[23](spec/23-polish.md)、[TESTING](TESTING.md) | [仕様 27](spec/27-experience.md) に依存順・境界・テスト名を記録し `scripts/check.sh` が通る | 🟡 仕様を記述 (コード未着手) |
+| **T33.1 空間音** | [27 §1–2](spec/27-experience.md)、[12](spec/12-audio.md)、[TESTING](TESTING.md) | `spatial_sound_uses_position_and_distance`、`spatial_sound_follows_the_listener_without_changing_state`、`scripts/check.sh` | 未着手 |
+| **T33.2 BGM** | [27 §1・§3](spec/27-experience.md)、[12](spec/12-audio.md)、[15 §3](spec/15-assets.md)、[TESTING](TESTING.md) | `music_transitions_without_overlapping_forever`、`music_missing_asset_is_silent_and_sfx_continue`、`scripts/check.sh` | 未着手 |
+| **T33.3 日本語の UI** | [27 §1・§4](spec/27-experience.md)、[18](spec/18-terraria-touch.md)、[15](spec/15-assets.md)、[TESTING](TESTING.md) | `ui_language_falls_back_for_missing_strings`、`japanese_glyphs_render_in_the_ui`、`scripts/check.sh` | 未着手 |
+| **T33.4 演出・UI** | [27 §1・§5](spec/27-experience.md)、[18](spec/18-terraria-touch.md)、[23](spec/23-polish.md)、[TESTING](TESTING.md) | `item_tooltips_show_definition_values`、`combat_feedback_uses_real_events`、`scripts/check.sh` | 未着手 |
+| **T33.5 配布前の検証** | [27 §1・§6](spec/27-experience.md)、[23](spec/23-polish.md)、[PRODUCT_REVIEW §4.14・§9](PRODUCT_REVIEW.md)、[TESTING](TESTING.md) | `experience_reload_retains_settings_and_progress`、`bundled_assets_have_a_recorded_origin`、`scripts/check.sh` | 未着手 |
+
+未着手 (後続の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み (マルチは後回し)、経路探索、性能の次の候補 (08 §6 の (b)(c))。
 
 ---
 
