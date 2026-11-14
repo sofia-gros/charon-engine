@@ -65,13 +65,13 @@
 ```ron
 [
     (name: "wood_pickaxe", inputs: [("cells:wood", 40)], output: ("wood_pickaxe", 1)),
-    (name: "stone_sword",  inputs: [("cells:stone", 40), ("cells:wood", 15)], output: ("stone_sword", 1), station: Some("block:wood")),
+    (name: "stone_sword",  inputs: [("cells:stone", 40), ("cells:wood", 15)], output: ("stone_sword", 1), station: Some("workbench")),
 ]
 ```
 
 - 入力・出力は、アイテムの名前 (§1)。入力は 1..=8 種類、個数は 1..=99,999。出力の個数は 1..=99,999。
-- `station` (任意): 近くにあるべきブロック (作業台など) の名前。**呼ぶ側が、近くにあるものの名前を渡す** (`GameState::craft(id, recipe, nearby)`)。M22 で、近くのブロックを調べて渡す。
-- **組み込みのレシピ**: 材質のセル 64 個 → その材質のブロック 1 個 (`Solid`・`Powder` の材質、仕様 17 §4)。`recipes.ron` には書かない。
+- `station` (任意): 仕様 24 §4 以降は、`fixtures.ron` に `kind: Station` として登録された設備アイテムの名前だけを指定できる。普通の `block:wood` / `block:stone` や `kind: Chest` のアイテムは設備ではない。呼ぶ側は近くの読み込み済みで有効な Station 設備のアイテムだけを `GameState::craft(id, recipe, nearby)` に渡す (距離と有効性は仕様 24 §5)。旧来の普通のブロックを設備として渡す規則は使わない。
+- **組み込みのレシピ**: 材質のセル 64 個 → その材質のブロック 1 個 (`Solid`・`Powder` の材質、仕様 17 §4)。`recipes.ron` には書かず、**作業台なしでも作れる**。`station` を指定しない道具レシピも作業台不要。
 - 材料が足りない・持ち切れない (上限)・作業台がないときは、**何も変えずに失敗**する。
 
 ## 5. 装備 (`Equipment`)

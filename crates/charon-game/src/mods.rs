@@ -100,6 +100,7 @@ struct Source {
     digs: Option<String>,
     items: Option<String>,
     recipes: Option<String>,
+    fixtures: Option<String>,
     script: Option<(PathBuf, String)>,
 }
 
@@ -158,6 +159,7 @@ impl ModPack {
                 digs: read_optional(directory.path.join("digs.ron"))?,
                 items: read_optional(directory.path.join("items.ron"))?,
                 recipes: read_optional(directory.path.join("recipes.ron"))?,
+                fixtures: read_optional(directory.path.join("fixtures.ron"))?,
                 script: if directory.script {
                     let path = directory.path.join("script.ron");
                     Some((path.clone(), read(path)?))
@@ -195,6 +197,7 @@ impl ModPack {
                         digs: source.digs.as_deref(),
                         items: source.items.as_deref(),
                         recipes: source.recipes.as_deref(),
+                        fixtures: source.fixtures.as_deref(),
                     },
                     &materials,
                     Some(&source.manifest.id),

@@ -227,6 +227,9 @@ impl GameState {
             CursorState::OutOfReach => return Err(UseError::OutOfReach),
             CursorState::Invalid => return Err(UseError::Invalid),
         }
+        if self.fixtures.get(cursor.block).is_some() {
+            return Err(UseError::Build(BuildError::FixtureAnchor));
+        }
         let cells = cursor.block.cells();
         let Some(&first) = cells.first() else { return Err(UseError::Invalid) };
         if world.chunk(first.chunk()).is_none() {

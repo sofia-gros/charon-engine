@@ -13,6 +13,11 @@
     (name: "stone_pickaxe", kind: Tool(pick: 8)),
     (name: "wood_axe", kind: Tool(axe: 8)),
 
+    // ---- 設備 (T30.3) ----
+    (name: "workbench", kind: Misc),
+    (name: "furnace", kind: Misc),
+    (name: "storage_box", kind: Misc),
+
     // ---- 武器 ----
     (name: "wood_sword",  kind: Weapon(class: Melee, damage: 6)),
     (name: "stone_sword", kind: Weapon(class: Melee, damage: 10)),

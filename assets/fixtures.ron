@@ -1,0 +1,6 @@
+// 仕様 24 §4: 8×8 の完全なブロックをアンカーにする設備。
+[
+    (name: "workbench", item: "workbench", material: "wood", kind: Station),
+    (name: "furnace", item: "furnace", material: "stone", kind: Station),
+    (name: "storage_box", item: "storage_box", material: "wood", kind: Chest),
+]

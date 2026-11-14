@@ -229,6 +229,17 @@ pub fn run_web(
                     app.world.restore_tick(metadata.tick);
                     app.background = background;
                     app.physics = physics;
+                    app.game.fixtures = if snapshot.fixtures.is_empty() {
+                        charon_game::fixtures::FixtureMap::default()
+                    } else {
+                        let defaults = Definitions::engine_defaults(&materials)
+                            .map_err(|err| err.to_string())?;
+                        let defs = app.options.definitions.as_deref().unwrap_or(&defaults);
+                        let text = std::str::from_utf8(&snapshot.fixtures)
+                            .map_err(|err| err.to_string())?;
+                        charon_game::fixtures::FixtureMap::from_ron(text, defs, &app.world)
+                            .map_err(|err| err.to_string())?
+                    };
                     app.web_status = load_status_text(metadata.tick);
                 }
                 Err(err) => app.web_status = format!("Not saved: cannot restore saved data: {err}"),
@@ -372,11 +383,15 @@ pub fn run_with_streaming_options(
     restart: Option<RestartFn>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let background = BackgroundWorld::load(&save_root, world.materials(), &metadata.materials)?;
+    let default_defs = Definitions::engine_defaults(world.materials())?;
+    let fixture_defs = options.definitions.as_deref().unwrap_or(&default_defs);
+    let fixtures = charon_game::fixtures::FixtureMap::read(&save_root, fixture_defs, &world)?;
     let mut app = App::new(world, brush_material, make_world);
     app.spawn_pending = options.player_spawn;
     app.enemies_pending = options.enemies.clone();
     app.options = options;
     app.reset_game();
+    app.game.fixtures = fixtures;
     app.load_settings();
     if let Some(bank) = app.options.sounds.clone() {
         app.audio.set_bank(bank);
@@ -739,6 +754,7 @@ impl App {
             .save_bodies(&state.save_root, self.world.materials(), &state.metadata.materials)
             .map_err(|err| err.to_string())?;
         state.metadata.tick = self.world.tick();
+        self.game.fixtures.write(&state.save_root).map_err(|err| err.to_string())?;
         // ゲーム状態 (プレイヤーの体力・マナ・位置・持ち物) は、世界とは別の game.ron (仕様 10 §13)。
         if let Some(id) = self.player {
             let save = GameSave::capture(
@@ -779,6 +795,7 @@ impl App {
                     .physics
                     .encode_bodies(self.world.materials(), &state.metadata.materials)
                     .map_err(|err| err.to_string())?,
+                fixtures: self.game.fixtures.to_ron().map_err(|err| err.to_string())?.into_bytes(),
             };
             browser_storage::save(&snapshot)
         })();
@@ -893,6 +910,23 @@ impl App {
             None => return,
         };
         let DemoSession { world, streamer, save_root, metadata, physics } = session;
+        let default_defs = match Definitions::engine_defaults(world.materials()) {
+            Ok(defs) => defs,
+            Err(err) => {
+                eprintln!("設備の定義を読めません: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
+        let defs = self.options.definitions.as_deref().unwrap_or(&default_defs);
+        let fixtures = match charon_game::fixtures::FixtureMap::read(&save_root, defs, &world) {
+            Ok(fixtures) => fixtures,
+            Err(err) => {
+                eprintln!("設備を読めません: {err}");
+                event_loop.exit();
+                return;
+            }
+        };
         self.background = BackgroundWorld::load(&save_root, world.materials(), &metadata.materials)
             .unwrap_or_else(|err| {
                 eprintln!("背景の読み込みに失敗: {err}");
@@ -905,6 +939,7 @@ impl App {
         self.physics_initialized = false;
         self.entities = EntityWorld::new();
         self.reset_game();
+        self.game.fixtures = fixtures;
         self.player = None;
         self.spawn_pending = self.options.player_spawn;
         self.enemies_pending = self.options.enemies.clone();
@@ -1145,13 +1180,29 @@ impl App {
                         let cursor = mine_cursor.unwrap_or_else(|| {
                             charon_game::cursor::Cursor::at(charon_core::coords::CellPos::new(0, 0))
                         });
+                        let remove_fixture = mine_cursor.is_some_and(|cursor| {
+                            sim.game.fixtures.active(sim.world, cursor.block)
+                                && charon_game::cursor::center_of(sim.entities, id).is_some_and(
+                                    |center| {
+                                        charon_game::cursor::cursor_state(
+                                            sim.world,
+                                            center,
+                                            cursor,
+                                            charon_game::cursor::CursorUse::Mine,
+                                        ) == charon_game::cursor::CursorState::Ok
+                                    },
+                                )
+                        });
+                        if remove_fixture {
+                            let _ = sim.game.remove_fixture(sim.world, id, cursor.block, defs);
+                        }
                         let _ = sim.game.mine_selected_tick(
                             sim.world,
                             sim.entities,
                             id,
                             defs,
                             cursor,
-                            mine_cursor.is_some(),
+                            mine_cursor.is_some() && !remove_fixture,
                         );
                     }
                     if let Some(logic) = logic {

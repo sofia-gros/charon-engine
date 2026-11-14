@@ -137,6 +137,8 @@ pub struct GameState {
     pub inventories: BTreeMap<EntityId, Inventory>,
     /// 完全なブロックの採掘進捗 (固定 tick ごと、仕様 24 §3)。
     pub(crate) mining: BTreeMap<EntityId, MiningProgress>,
+    /// チャンクの退避に関係なく残る設備の記録 (仕様 24 §4)。
+    pub fixtures: crate::fixtures::FixtureMap,
     /// 装備 (仕様 19 §5)。
     pub equipment: BTreeMap<EntityId, crate::items::Equipment>,
     pub spells: SpellTable,
@@ -202,6 +204,8 @@ pub enum BuildError {
     NoBlock,
     /// ブロックを持ち切れない (上限)。
     InventoryFull,
+    /// 設備がある位置は専用の撤去操作のみ許可する。
+    FixtureAnchor,
     /// 置けない (仕様 17 §3)。
     Place(PlaceError),
     /// 壊せない (仕様 17 §4)。
@@ -286,6 +290,7 @@ impl GameState {
             digs: BTreeMap::new(),
             inventories: BTreeMap::new(),
             mining: BTreeMap::new(),
+            fixtures: crate::fixtures::FixtureMap::default(),
             equipment: BTreeMap::new(),
             spells,
             events: Vec::new(),
@@ -354,6 +359,9 @@ impl GameState {
         at: BlockPos,
         material: MaterialId,
     ) -> Result<Placed, BuildError> {
+        if self.fixtures.get(at).is_some() {
+            return Err(BuildError::FixtureAnchor);
+        }
         let has = self.inventories.get(&id).is_some_and(|inv| inv.block_count(material) > 0);
         if !has {
             return Err(BuildError::NoBlock);
@@ -377,6 +385,9 @@ impl GameState {
         id: EntityId,
         at: BlockPos,
     ) -> Result<MaterialId, BuildError> {
+        if self.fixtures.get(at).is_some() {
+            return Err(BuildError::FixtureAnchor);
+        }
         let cells = at.cells();
         let material = cells.first().map(|&pos| world.get(pos).material);
         if let (Some(material), Some(inventory)) = (material, self.inventories.get(&id))
@@ -1034,6 +1045,10 @@ impl GameState {
             feed(&progress.at.by.to_le_bytes());
             feed(&progress.tool.0.to_le_bytes());
             feed(&progress.accumulated.to_le_bytes());
+        }
+        if !self.fixtures.is_empty() {
+            feed(&[0x46, 0x58]);
+            feed(&self.fixtures.state_hash().to_le_bytes());
         }
         // 装備がなければ、これまでと同じ値 (印も流さない)。
         for (&id, equipment) in self.equipment.iter().filter(|(_, e)| e.iter().next().is_some()) {

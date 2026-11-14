@@ -7,6 +7,7 @@ pub mod cursor;
 pub mod defs;
 pub mod dig;
 pub mod drops;
+pub mod fixtures;
 pub mod game;
 pub mod inventory;
 pub mod items;

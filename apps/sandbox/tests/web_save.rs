@@ -58,8 +58,23 @@ fn web_save_roundtrip() {
             bodies: physics
                 .encode_bodies(&materials, &charon_world::material_names(&materials))
                 .unwrap(),
+            fixtures: Vec::new(),
         };
         let data = snapshot.encode().unwrap();
+        // v1 には fixtures の長さと本文がなく、旧保存は空 map として読み込む。
+        let fixture_offset = 6
+            + 4
+            + snapshot.metadata.to_ron().unwrap().len()
+            + 4
+            + snapshot.background.len()
+            + 4
+            + snapshot.bodies.len();
+        let mut legacy = data.clone();
+        legacy[4..6].copy_from_slice(&1u16.to_le_bytes());
+        legacy.drain(fixture_offset..fixture_offset + 4);
+        let old = WebSnapshot::decode(&legacy).unwrap();
+        assert!(old.fixtures.is_empty());
+        assert_eq!(old.chunks.len(), snapshot.chunks.len());
         let decoded = WebSnapshot::decode(&data).unwrap();
         assert_eq!(decoded.metadata.seed, seed);
         assert_eq!(decoded.metadata.materials, snapshot.metadata.materials);
@@ -105,7 +120,7 @@ fn web_save_roundtrip() {
         assert_eq!(loaded.linvel(), expected_vel, "seed={seed}");
         restored_streamer.finish().unwrap();
         let mut newer = data;
-        newer[4..6].copy_from_slice(&2u16.to_le_bytes());
-        assert!(matches!(WebSnapshot::decode(&newer), Err(WebSaveError::NewerVersion(2))));
+        newer[4..6].copy_from_slice(&3u16.to_le_bytes());
+        assert!(matches!(WebSnapshot::decode(&newer), Err(WebSaveError::NewerVersion(3))));
     }
 }

@@ -9,7 +9,7 @@ use charon_core::coords::ChunkPos;
 use crate::save::{SaveError, WorldMeta};
 
 const MAGIC: &[u8; 4] = b"CHWB";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 
 #[derive(Debug)]
 pub enum WebSaveError {
@@ -39,6 +39,8 @@ pub struct WebSnapshot {
     pub chunks: BTreeMap<ChunkPos, Vec<u8>>,
     pub background: Vec<u8>,
     pub bodies: Vec<u8>,
+    /// 世界の設備記録 (fixtures.ron と同じ RON)。旧 snapshot では空。
+    pub fixtures: Vec<u8>,
 }
 
 fn length(bytes: &[u8]) -> Result<u32, WebSaveError> {
@@ -75,6 +77,10 @@ impl WebSnapshot {
         write_blob(&mut bytes, self.metadata.to_ron().map_err(WebSaveError::Metadata)?.as_bytes())?;
         write_blob(&mut bytes, &self.background)?;
         write_blob(&mut bytes, &self.bodies)?;
+        if self.fixtures.len() > 16 * 1024 * 1024 {
+            return Err(WebSaveError::TooLarge);
+        }
+        write_blob(&mut bytes, &self.fixtures)?;
         bytes.extend_from_slice(
             &u32::try_from(self.chunks.len()).map_err(|_| WebSaveError::TooLarge)?.to_le_bytes(),
         );
@@ -96,7 +102,7 @@ impl WebSnapshot {
         if version > VERSION {
             return Err(WebSaveError::NewerVersion(version));
         }
-        if version != VERSION {
+        if version != 1 && version != VERSION {
             return Err(WebSaveError::InvalidData);
         }
         let meta = take_blob(&mut bytes)?;
@@ -105,6 +111,15 @@ impl WebSnapshot {
                 .map_err(WebSaveError::Metadata)?;
         let background = take_blob(&mut bytes)?.to_vec();
         let bodies = take_blob(&mut bytes)?.to_vec();
+        let fixtures = if version == 1 {
+            Vec::new()
+        } else {
+            let blob = take_blob(&mut bytes)?;
+            if blob.len() > 16 * 1024 * 1024 {
+                return Err(WebSaveError::TooLarge);
+            }
+            blob.to_vec()
+        };
         let count = take_u32(&mut bytes)? as usize;
         if count > bytes.len() / 12 {
             return Err(WebSaveError::InvalidData);
@@ -121,6 +136,6 @@ impl WebSnapshot {
         if !bytes.is_empty() {
             return Err(WebSaveError::InvalidData);
         }
-        Ok(Self { metadata, chunks, background, bodies })
+        Ok(Self { metadata, chunks, background, bodies, fixtures })
     }
 }

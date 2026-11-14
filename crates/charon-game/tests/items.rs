@@ -151,13 +151,13 @@ fn recipes_craft_consume_and_fail_cleanly() {
         Err(ItemError::NoInventory)
     );
 
-    // 作業台つきのレシピ: 近くにそのブロックがあるときだけ作れる。
+    // 作業台つきのレシピ: 登録済みの Station 設備が近いときだけ作れる。
     let mut defs = defs;
     let text = "[(name: \"bench_gem\", inputs: [(\"cells:wood\", 10)], output: (\"wood_sword\", 1), \
-                station: Some(\"block:stone\"))]";
+                station: Some(\"workbench\"))]";
     let files = DefinitionFiles { recipes: Some(text), ..Default::default() };
     defs.layer(files, &s.materials, Some("m")).unwrap();
-    let stone_block = ItemId::block(s.materials.id("stone").unwrap());
+    let station = defs.item_id("workbench", &s.materials).unwrap();
     let sword = item(&s, "wood_sword");
     let before = s.game.inventories[&p].clone();
     assert_eq!(s.game.craft(p, "m:bench_gem", &[], &defs), Err(ItemError::MissingStation));
@@ -166,8 +166,25 @@ fn recipes_craft_consume_and_fail_cleanly() {
         Err(ItemError::MissingStation)
     );
     assert_eq!(s.game.inventories[&p], before);
-    s.game.craft(p, "m:bench_gem", &[stone_block], &defs).unwrap();
+    s.game.craft(p, "m:bench_gem", &[station], &defs).unwrap();
     assert_eq!(s.game.inventories[&p].item_count(sword), 1);
+    // 普通の石ブロックや Chest を station とする旧ルールは採用しない。
+    let before = defs.content_hash();
+    for name in ["block:stone", "storage_box"] {
+        let invalid = format!(
+            "[(name: \"wrong_station\", inputs: [(\"cells:wood\", 1)], \
+            output: (\"wood_sword\", 1), station: Some(\"{name}\"))]"
+        );
+        assert!(matches!(
+            defs.layer(
+                DefinitionFiles { recipes: Some(&invalid), ..Default::default() },
+                &s.materials,
+                None
+            ),
+            Err(DefsError::Invalid { .. })
+        ));
+        assert_eq!(defs.content_hash(), before, "失敗した層は反映しない");
+    }
 }
 
 #[test]

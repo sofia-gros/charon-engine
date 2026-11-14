@@ -16,6 +16,7 @@ const ENGINE_HOOKS: &str = include_str!("../../../assets/hooks.ron");
 const ENGINE_DIGS: &str = include_str!("../../../assets/digs.ron");
 const ENGINE_ITEMS: &str = include_str!("../../../assets/items.ron");
 const ENGINE_RECIPES: &str = include_str!("../../../assets/recipes.ron");
+const ENGINE_FIXTURES: &str = include_str!("../../../assets/fixtures.ron");
 
 const MAX_WANDS: usize = 256;
 const MAX_ENEMIES: usize = 256;
@@ -24,6 +25,7 @@ const MAX_DIGS: usize = 256;
 /// 定義のアイテムの数の上限 (`ItemId::def` の添字は `u16`)。
 const MAX_ITEMS: usize = 1024;
 const MAX_RECIPES: usize = 1024;
+const MAX_FIXTURES: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DefsError {
@@ -37,6 +39,7 @@ pub enum DefsError {
     UnknownHook(String),
     UnknownDig(String),
     UnknownItem { owner: String, item: String },
+    UnknownMaterial { owner: String, material: String },
     Wand(WandError),
     TooMany(&'static str),
 }
@@ -59,6 +62,9 @@ impl std::fmt::Display for DefsError {
             Self::UnknownDig(name) => write!(f, "掘る道具 \"{name}\" は定義されていません"),
             Self::UnknownItem { owner, item } => {
                 write!(f, "\"{owner}\" が未定義のアイテム \"{item}\" を参照しています")
+            }
+            Self::UnknownMaterial { owner, material } => {
+                write!(f, "\"{owner}\" が未定義のブロック材質 \"{material}\" を参照しています")
             }
             Self::Wand(e) => write!(f, "{e}"),
             Self::TooMany(kind) => write!(f, "{kind} が多すぎます"),
@@ -284,6 +290,38 @@ pub struct RecipeDef {
     pub station: Option<ItemId>,
 }
 
+/// 設備の種類 (仕様 24 §4)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixtureKind {
+    Station,
+    Chest,
+}
+
+/// 完全なブロックをアンカーにする設備の定義。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixtureDef {
+    pub name: String,
+    pub item: ItemId,
+    pub material: MaterialId,
+    pub kind: FixtureKind,
+}
+
+#[derive(Deserialize)]
+enum RawFixtureKind {
+    Station,
+    Chest,
+}
+
+#[derive(Deserialize)]
+struct RawFixture {
+    name: String,
+    #[serde(default)]
+    replace: bool,
+    item: String,
+    material: String,
+    kind: RawFixtureKind,
+}
+
 /// 1 つの層のファイル。`None` はその種類の層が空。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefinitionFiles<'a> {
@@ -294,6 +332,7 @@ pub struct DefinitionFiles<'a> {
     pub digs: Option<&'a str>,
     pub items: Option<&'a str>,
     pub recipes: Option<&'a str>,
+    pub fixtures: Option<&'a str>,
 }
 
 /// 呪文・杖・敵の定義。層で重ねる。
@@ -306,6 +345,7 @@ pub struct Definitions {
     digs: Vec<DigDef>,
     pub(crate) items: Vec<ItemDef>,
     recipes: Vec<RecipeDef>,
+    fixtures: Vec<FixtureDef>,
 }
 
 fn range(
@@ -396,6 +436,7 @@ impl Definitions {
                 digs: Some(ENGINE_DIGS),
                 items: Some(ENGINE_ITEMS),
                 recipes: Some(ENGINE_RECIPES),
+                fixtures: Some(ENGINE_FIXTURES),
             },
             materials,
             None,
@@ -429,8 +470,24 @@ impl Definitions {
         if let Some(text) = files.items {
             next.layer_items(text, namespace)?;
         }
+        if let Some(text) = files.fixtures {
+            next.layer_fixtures(text, materials, namespace)?;
+        }
         if let Some(text) = files.recipes {
             next.layer_recipes(text, materials, namespace)?;
+        }
+        for recipe in &next.recipes {
+            if let Some(station) = recipe.station
+                && !next
+                    .fixtures
+                    .iter()
+                    .any(|fixture| fixture.item == station && fixture.kind == FixtureKind::Station)
+            {
+                return Err(DefsError::Invalid {
+                    owner: recipe.name.clone(),
+                    reason: "station は Station 設備のアイテムだけです",
+                });
+            }
         }
         *self = next;
         Ok(())
@@ -678,6 +735,71 @@ impl Definitions {
             return Err(DefsError::TooMany("アイテム"));
         }
         Ok(())
+    }
+
+    fn layer_fixtures(
+        &mut self,
+        text: &str,
+        materials: &MaterialTable,
+        namespace: Option<&str>,
+    ) -> Result<(), DefsError> {
+        let raws: Vec<RawFixture> = ron::from_str(text)
+            .map_err(|e| DefsError::Parse { file: "fixtures.ron", reason: e.to_string() })?;
+        let mut seen = BTreeSet::new();
+        for raw in raws {
+            let name = qualify("設備", &raw.name, raw.replace, namespace)?;
+            let item = self.resolve_item(&raw.item, materials, namespace).ok_or_else(|| {
+                DefsError::UnknownItem { owner: name.clone(), item: raw.item.clone() }
+            })?;
+            if !matches!(self.item_def(item).map(|d| &d.kind), Some(ItemKind::Misc)) {
+                return Err(DefsError::Invalid {
+                    owner: name,
+                    reason: "設備の item は Misc に限ります",
+                });
+            }
+            let material = namespace
+                .and_then(|ns| materials.id(&format!("{ns}:{}", raw.material)))
+                .or_else(|| materials.id(&raw.material))
+                .filter(|&id| blockable(materials, id))
+                .ok_or_else(|| DefsError::UnknownMaterial {
+                    owner: name.clone(),
+                    material: raw.material.clone(),
+                })?;
+            let kind = match raw.kind {
+                RawFixtureKind::Station => FixtureKind::Station,
+                RawFixtureKind::Chest => FixtureKind::Chest,
+            };
+            place(
+                "設備",
+                &mut self.fixtures,
+                |d| &d.name,
+                &mut seen,
+                raw.replace,
+                FixtureDef { name: name.clone(), item, material, kind },
+            )?;
+            if self.fixtures.iter().filter(|d| d.item == item).count() != 1 {
+                return Err(DefsError::Invalid {
+                    owner: name,
+                    reason: "1 つの item は 1 つの設備だけです",
+                });
+            }
+        }
+        if self.fixtures.len() > MAX_FIXTURES {
+            return Err(DefsError::TooMany("設備"));
+        }
+        Ok(())
+    }
+
+    pub fn fixture(&self, name: &str) -> Option<&FixtureDef> {
+        self.fixtures.iter().find(|fixture| fixture.name == name)
+    }
+
+    pub fn fixture_for_item(&self, item: ItemId) -> Option<&FixtureDef> {
+        self.fixtures.iter().find(|fixture| fixture.item == item)
+    }
+
+    pub fn fixtures(&self) -> &[FixtureDef] {
+        &self.fixtures
     }
 
     fn layer_recipes(
@@ -932,6 +1054,17 @@ impl Definitions {
             hash.bytes(&r.output.0.0.to_le_bytes());
             hash.bytes(&r.output.1.to_le_bytes());
             hash.bytes(&r.station.map_or(u32::MAX, |s| s.0).to_le_bytes());
+        }
+        for fixture in &self.fixtures {
+            hash.bytes(&[0x46, 0x58]);
+            hash.bytes(fixture.name.as_bytes());
+            hash.bytes(&[0]);
+            hash.bytes(&fixture.item.0.to_le_bytes());
+            hash.bytes(&fixture.material.0.to_le_bytes());
+            hash.bytes(&[match fixture.kind {
+                FixtureKind::Station => 0,
+                FixtureKind::Chest => 1,
+            }]);
         }
         hash.finish()
     }
