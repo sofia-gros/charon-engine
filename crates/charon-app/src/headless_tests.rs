@@ -136,6 +136,119 @@ fn headless_windows_pointer_save_reload() {
     }
 }
 
+/// 仕様 19 §7.1: 実際の App の保存・復帰経路で、初期アイテムを二重にしない。
+fn item_app(seed: u64, defs: &charon_game::defs::Definitions) -> App {
+    use charon_game::vitals::{MAX_HP, Vitals};
+
+    let world = test_world(seed);
+    let selected = material_of(&world, 's');
+    let mut app = App::new(world, selected, test_world);
+    app.options.definitions = Some(Arc::new(defs.clone()));
+    app.game = GameState::from_definitions(defs);
+    let id = app.entities.spawn_player(10 * 16, 20 * 16, &app.world).unwrap();
+    app.game.add_character(id, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
+    app.game.give_inventory(id).unwrap();
+    app.player = Some(id);
+    app
+}
+
+#[test]
+fn app_save_reloads_items_hotbar_and_equipment() {
+    use charon_game::items::{EquipSlot, ItemId};
+    use charon_game::save::GameSave;
+
+    for seed in 1..=8 {
+        let dir = TestDir::new();
+        let world = test_world(seed);
+        let materials = Arc::clone(world.materials());
+        let defs = charon_game::defs::Definitions::engine_defaults(&materials).unwrap();
+        let mut app = item_app(seed, &defs);
+        let id = app.player.unwrap();
+        let pick = defs.item_id("wood_pickaxe", &materials).unwrap();
+        let helmet = defs.item_id("wood_helmet", &materials).unwrap();
+        let stone = material_of(&app.world, '#');
+        let wood = material_of(&app.world, 'W');
+        let inv = app.game.inventories.get_mut(&id).unwrap();
+        inv.add_item(pick, 2);
+        inv.add_item(helmet, 1);
+        inv.add(stone, 7);
+        inv.add_block(wood, 2);
+        inv.pin(3, pick);
+        inv.select(3);
+        app.game.equip(id, helmet, &defs).unwrap();
+        let metadata = WorldMeta::new(seed, &materials);
+        let streamer = Streamer::with_saved_names(
+            dir.0.clone(),
+            Arc::clone(&materials),
+            seed,
+            Arc::new(FlatGenerator { stone }),
+            0,
+            metadata.materials.clone(),
+        )
+        .unwrap();
+        app.streaming = Some(StreamingState { streamer, save_root: dir.0.clone(), metadata });
+        app.save_world().unwrap();
+        let save = GameSave::read(&dir.0).unwrap().unwrap();
+        assert_eq!(save.player.as_ref().unwrap().hotbar.len(), 10, "seed={seed}");
+        let mut restored = item_app(seed, &defs);
+        let restored_id = restored.player.unwrap();
+        // 生まれた直後の初期道具が、保存済みの道具へ置き換わる。
+        restored.game.inventories.get_mut(&restored_id).unwrap().add_item(pick, 1);
+        restore_player_save(
+            &mut restored.game,
+            &mut restored.entities,
+            &restored.world,
+            restored.options.definitions.as_deref(),
+            restored_id,
+            &save,
+        );
+        let inv = &restored.game.inventories[&restored_id];
+        assert_eq!(inv.item_count(pick), 2, "seed={seed}: 初期道具を重複させない");
+        assert_eq!(inv.item_count(ItemId::cells(stone)), 7, "seed={seed}");
+        assert_eq!(inv.item_count(ItemId::block(wood)), 2, "seed={seed}");
+        assert_eq!(inv.hotbar(3), Some(pick), "seed={seed}");
+        assert_eq!(inv.selected(), 3, "seed={seed}");
+        assert_eq!(
+            restored.game.equipment[&restored_id].get(EquipSlot::Head),
+            Some(helmet),
+            "seed={seed}"
+        );
+    }
+}
+
+#[test]
+fn legacy_game_save_preserves_starter_items() {
+    let world = test_world(1);
+    let materials = Arc::clone(world.materials());
+    let defs = charon_game::defs::Definitions::engine_defaults(&materials).unwrap();
+    let mut app = item_app(1, &defs);
+    let id = app.player.unwrap();
+    let pick = defs.item_id("wood_pickaxe", &materials).unwrap();
+    app.game.inventories.get_mut(&id).unwrap().add_item(pick, 1);
+    let mut saved = charon_game::save::GameSave::capture(
+        &app.game,
+        &app.entities,
+        id,
+        &materials,
+        app.world.tick(),
+    );
+    let stone = material_of(&app.world, '#');
+    saved.player.as_mut().unwrap().inventory.push((materials.get(stone).name.clone(), 7));
+    saved.player.as_mut().unwrap().inventory.push(("unknown:material".to_owned(), 3));
+    assert!(saved.player.as_ref().unwrap().hotbar.is_empty(), "旧保存にはホットバーがない");
+    restore_player_save(
+        &mut app.game,
+        &mut app.entities,
+        &app.world,
+        app.options.definitions.as_deref(),
+        id,
+        &saved,
+    );
+    let inv = &app.game.inventories[&id];
+    assert_eq!(inv.item_count(pick), 1, "旧保存では初期道具を維持");
+    assert_eq!(inv.count(stone), 7);
+}
+
 #[test]
 fn rainbow_brush_colors_by_x() {
     use charon_game::mods::{ModDirectory, ModPack};

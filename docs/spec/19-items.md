@@ -72,6 +72,10 @@
 
 `PlayerSave` に、次の項目を足す (すべて `serde(default)`、古い保存は読める。`GAME_SAVE_VERSION` は 1 のまま): `items: Vec<(String, u32)>` (定義のアイテム)、`hotbar: Vec<Option<String>>` (10 枠、アイテムの名前)、`selected: u8`、`equipment: Vec<Option<String>>` (5 枠)。セルは `inventory`、ブロックは `blocks` (今までどおり)。知らない名前は読み飛ばす。
 
+### 7.1 App での保存と復帰 (T29.1)
+
+ネイティブ App の `save_world` は、`GameSave::capture` の直後に定義があれば `with_items` を呼び、同じ `game.ron` に書く。読み込み後、プレイヤーが生まれた最初のフレームで `apply` に続けて `apply_items` を呼ぶ。新しい保存 (`hotbar` が 10 枠、または `items` / `equipment` があるもの) は、起動時の初期持ち物を**保存内容に置き換えてから**復帰し、道具を複製しない。古い保存 (この 3 項目がすべて空) は、起動時の初期道具を残し、保存済みのセル・ブロックを追加する。知らないアイテム名は §7 のとおり読み飛ばす。`GAME_SAVE_VERSION` は 1 のまま、Web の保存経路は変更しない。
+
 ## 8. テスト
 
 | テスト | 確認 |
@@ -86,3 +90,5 @@
 | `equipment_stats_add_up_and_cap_resists` | 防御・耐性の合計、耐性の上限 100 |
 | `auto_equip_picks_the_best_and_is_deterministic` | 最も強いものを装備、同点は ID 順、弱いものには替えない |
 | `game_save_roundtrips_items_hotbar_and_equipment` | 保存・復帰。古い保存・知らない名前 |
+| `app_save_reloads_items_hotbar_and_equipment` | T29.1: App の保存経路から `game.ron` を書き、新しい App のプレイヤーへ復帰。初期アイテムは二重にせず、セル・ブロック・定義・装備・ホットバー・選択枠を保持 |
+| `legacy_game_save_preserves_starter_items` | T29.1: 旧形式の保存は初期道具を消さず、セルを戻す。知らない名前は読み飛ばす |

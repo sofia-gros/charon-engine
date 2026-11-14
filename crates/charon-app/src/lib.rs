@@ -741,15 +741,18 @@ impl App {
         state.metadata.tick = self.world.tick();
         // ゲーム状態 (プレイヤーの体力・マナ・位置・持ち物) は、世界とは別の game.ron (仕様 10 §13)。
         if let Some(id) = self.player {
-            GameSave::capture(
+            let save = GameSave::capture(
                 &self.game,
                 &self.entities,
                 id,
                 self.world.materials(),
                 self.world.tick(),
-            )
-            .write(&state.save_root)
-            .map_err(|err| err.to_string())?;
+            );
+            let save = match self.options.definitions.as_deref() {
+                Some(defs) => save.with_items(&self.game, id, defs, self.world.materials()),
+                None => save,
+            };
+            save.write(&state.save_root).map_err(|err| err.to_string())?;
         }
         state.metadata.save(&state.save_root).map_err(|err| err.to_string())
     }
@@ -1162,7 +1165,14 @@ impl App {
         if let Some(id) = self.player
             && let Some(save) = self.pending_game_save.take()
         {
-            save.apply(&mut self.game, &mut self.entities, &self.world, id);
+            restore_player_save(
+                &mut self.game,
+                &mut self.entities,
+                &self.world,
+                self.options.definitions.as_deref(),
+                id,
+                &save,
+            );
         }
         if let Some(err) = stream_error {
             eprintln!("ワールドの読み書きに失敗: {err}");
@@ -1302,6 +1312,33 @@ impl App {
         }
         gpu.queue.present(frame);
         self.process_actions(window.inner_size());
+    }
+}
+
+/// 新しい保存では初期装備を置き換え、旧形式の保存では初期道具を残す (仕様 19 §7.1)。
+#[cfg(not(target_arch = "wasm32"))]
+fn restore_player_save(
+    game: &mut GameState,
+    entities: &mut EntityWorld,
+    world: &World,
+    defs: Option<&Definitions>,
+    id: EntityId,
+    save: &GameSave,
+) {
+    let modern = save.player.as_ref().is_some_and(|player| {
+        player.hotbar.len() == charon_game::inventory::HOTBAR_SLOTS
+            || !player.items.is_empty()
+            || !player.equipment.is_empty()
+    });
+    if modern && defs.is_some() {
+        if let Some(inventory) = game.inventories.get_mut(&id) {
+            *inventory = charon_game::inventory::Inventory::new();
+        }
+        game.equipment.remove(&id);
+    }
+    save.apply(game, entities, world, id);
+    if let Some(defs) = defs {
+        save.apply_items(game, id, defs, world.materials());
     }
 }
 
