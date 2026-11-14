@@ -341,6 +341,15 @@ impl TouchPad {
         })
     }
 
+    /// フックを傾けている間の向き。描画は `output` を消費せずに読む。
+    pub(crate) fn hook_aim(&self) -> Option<(i32, i32)> {
+        let layout = self.layout();
+        self.touches.values().find(|t| t.owner == Owner::Hook).and_then(|touch| {
+            let tilt = tilt_permille(touch.now, layout.hook, layout.hook_radius);
+            ((tilt.0 as f32).hypot(tilt.1 as f32) >= HOOK_TILT * 1000.0).then_some(tilt)
+        })
+    }
+
     pub(crate) fn held(&self, button: &str) -> bool {
         let owner = match button {
             "use" => Owner::Use,
@@ -383,12 +392,7 @@ impl TouchPad {
                         self.last_aim = Some(tilt);
                     }
                 }
-                Owner::Hook => {
-                    let tilt = tilt_permille(touch.now, layout.hook, layout.hook_radius);
-                    if (tilt.0 as f32).hypot(tilt.1 as f32) >= HOOK_TILT * 1000.0 {
-                        out.hook_aim = Some(tilt);
-                    }
-                }
+                Owner::Hook => {}
                 Owner::ZoomIn
                 | Owner::ZoomOut
                 | Owner::Inventory
@@ -397,6 +401,7 @@ impl TouchPad {
                 | Owner::More => {}
             }
         }
+        out.hook_aim = self.hook_aim();
         if out.use_item {
             out.aim = Some(self.last_aim.unwrap_or(DEFAULT_AIM));
         }
@@ -492,12 +497,14 @@ mod tests {
         let mut pad = pad();
         let l = pad.layout();
         assert!(pad.update(1, TouchPhase::Started, l.hook));
-        assert!(pad.output().hook_throw.is_none() && pad.output().hook_aim.is_none());
+        assert!(pad.output().hook_throw.is_none() && pad.hook_aim().is_none());
         pad.update(1, TouchPhase::Moved, [l.hook[0], l.hook[1] - l.hook_radius]);
-        assert_eq!(pad.output().hook_aim, Some((0, -1000)), "傾けている間は矢印の向き");
+        assert_eq!(pad.hook_aim(), Some((0, -1000)), "描画は入力を消費しない");
+        assert_eq!(pad.output().hook_aim, pad.hook_aim(), "描画と入力の向きが一致する");
         // 向きを変えて離す: 離した瞬間の傾きが向きになる。
         pad.update(1, TouchPhase::Moved, [l.hook[0] + l.hook_radius, l.hook[1]]);
         pad.update(1, TouchPhase::Ended, [l.hook[0] + l.hook_radius, l.hook[1]]);
+        assert_eq!(pad.hook_aim(), None, "離した後は矢印を消す");
         let out = pad.output();
         assert_eq!(out.hook_throw, Some((1000, 0)));
         assert!(!out.hook_detach && out.aim == Some((1000, 0)));

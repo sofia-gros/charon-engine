@@ -703,6 +703,25 @@ fn demo_renders_touch_pad() {
     let use_ring = [layout.use_button[0] + layout.use_radius * 0.9, layout.use_button[1]];
     assert!(luma(&used, use_ring) >= luma(&with, use_ring), "押した使うボタンは明るくなる");
     capture("touch_controls", "ui", &used);
+    // フックの向きを倒している間だけ、プレイヤーから矢印を描く (仕様 18 §2.1)。
+    let pad = scene.pad.as_mut().unwrap();
+    assert!(pad.update(3, winit::event::TouchPhase::Started, layout.hook));
+    assert!(pad.update(
+        3,
+        winit::event::TouchPhase::Moved,
+        [layout.hook[0], layout.hook[1] - layout.hook_radius],
+    ));
+    let (texture, _) = render_world(&gpu, &mut scene, center);
+    let hooked = render_ui(&gpu, &scene, center, &texture, false);
+    let player = scene.entities.get(scene.player.unwrap()).unwrap();
+    let x = ((player.x16 as f32 / 16.0 + f32::from(player.width) / 2.0) - Scene::origin(center)[0])
+        * ZOOM as f32;
+    let y = ((player.y16 as f32 / 16.0 + f32::from(player.height) / 2.0)
+        - Scene::origin(center)[1])
+        * ZOOM as f32;
+    let arrow = [x, y - layout.unit * 0.8];
+    assert!(luma(&hooked, arrow) > luma(&used, arrow), "フックの矢印がプレイヤーから出る");
+    capture("touch_hook_aim", "ui", &hooked);
 }
 
 /// 冒険の世界 (仕様 21): 表面の景色・ホットバー・ヒントが描かれる。`CHARON_DEMO_CAPTURE_DIR` があれば、画像を書き出す。

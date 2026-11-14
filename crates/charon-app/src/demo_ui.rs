@@ -542,6 +542,7 @@ fn draw_touch_pad(
     context: &egui::Context,
     pad: &crate::touch_pad::TouchPad,
     overlay: &Overlay<'_>,
+    controls: &Controls,
 ) {
     use crate::touch_pad::HOTBAR_VISIBLE;
     let painter = context.layer_painter(egui::LayerId::new(
@@ -598,6 +599,26 @@ fn draw_touch_pad(
         line,
     );
     label(layout.hook, "G", 0.9);
+    // 仕様 18 §2.1: フックの傾きは、使うボタンのカーソルとは独立してプレイヤーから示す。
+    if let (Some((dx, dy)), Some(player)) =
+        (pad.hook_aim(), overlay.player.and_then(|id| overlay.entities.get(id)))
+    {
+        let center = egui::pos2(
+            ((player.x16 as f32 / 16.0 + f32::from(player.width) / 2.0) - controls.origin[0])
+                * controls.zoom
+                * scale,
+            ((player.y16 as f32 / 16.0 + f32::from(player.height) / 2.0) - controls.origin[1])
+                * controls.zoom
+                * scale,
+        );
+        let direction = egui::vec2(dx as f32, dy as f32).normalized();
+        let tip = center + direction * (layout.unit * 0.8 * scale);
+        let side = egui::vec2(-direction.y, direction.x);
+        let arrow = egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 230, 90));
+        painter.line_segment([center, tip], arrow);
+        painter.line_segment([tip, tip - direction * 9.0 + side * 6.0], arrow);
+        painter.line_segment([tip, tip - direction * 9.0 - side * 6.0], arrow);
+    }
     // ボタン。
     for (center, text, held, radius) in [
         (layout.jump, "^^", pad.held("jump"), layout.jump_radius),
@@ -744,7 +765,7 @@ impl DemoUi {
             action = Some(chosen);
         }
         if let Some(pad) = overlay.pad {
-            draw_touch_pad(context, pad, overlay);
+            draw_touch_pad(context, pad, overlay, controls);
         }
 
         if show_stats {
