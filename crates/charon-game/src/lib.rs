@@ -16,6 +16,7 @@ pub mod loadout;
 pub mod lockstep;
 pub mod mods;
 pub mod net;
+pub mod progression;
 pub mod projectile;
 pub mod respawn;
 pub mod save;

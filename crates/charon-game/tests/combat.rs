@@ -531,7 +531,7 @@ fn accessory_bonus_does_not_stack_on_refresh() {
     }
 }
 
-/// 装備名だけを旧版の game.ron に保存し、復帰後の tick に新しい定義から補正を復元する。
+/// 装備名だけを game.ron に保存し、復帰後の tick に新しい定義から補正を復元する。
 #[test]
 fn equipment_bonuses_survive_item_save() {
     for seed in 1..=8 {
@@ -543,7 +543,7 @@ fn equipment_bonuses_survive_item_save() {
         let expected = a.game.vitals.get(a.player).unwrap().armor;
         let saved = GameSave::capture(&a.game, &a.entities, a.player, a.world.materials(), a.tick)
             .with_items(&a.game, a.player, &a.defs, a.world.materials());
-        assert_eq!(saved.version, 1);
+        assert_eq!(saved.version, charon_game::save::GAME_SAVE_VERSION);
         let saved = GameSave::from_ron(&saved.to_ron().unwrap()).unwrap();
         assert_eq!(saved.player.as_ref().unwrap().equipment[1].as_deref(), Some("stone_helmet"));
         let mut b = Arena::with_seed(seed);

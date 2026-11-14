@@ -136,6 +136,40 @@ fn headless_windows_pointer_save_reload() {
     }
 }
 
+/// 仕様 26 §5: プレイヤーが不在でも世界共有の進行を `game.ron` に残す。
+#[test]
+fn app_save_persists_progress_without_player() {
+    for seed in 1..=8 {
+        let dir = TestDir::new();
+        let world = test_world(seed);
+        let materials = Arc::clone(world.materials());
+        let defs = Definitions::engine_defaults(&materials).unwrap();
+        let stone = material_of(&world, '#');
+        let selected = material_of(&world, 's');
+        let metadata = WorldMeta::new(seed, &materials);
+        let streamer = Streamer::with_saved_names(
+            dir.0.clone(),
+            Arc::clone(&materials),
+            seed,
+            Arc::new(FlatGenerator { stone }),
+            0,
+            metadata.materials.clone(),
+        )
+        .unwrap();
+        let mut app = App::new(world, selected, test_world);
+        app.options.definitions = Some(Arc::new(defs.clone()));
+        app.game.progress.visit(-1, 2050);
+        app.streaming = Some(StreamingState { streamer, save_root: dir.0.clone(), metadata });
+        app.save_world().unwrap();
+        let save = GameSave::read(&dir.0).unwrap().unwrap();
+        assert!(save.player.is_none());
+        assert_eq!(save.progress.regions, ["region:-1:1".to_owned()]);
+        let mut restored = GameState::from_definitions(&defs);
+        save.apply_progress(&mut restored, &defs);
+        assert_eq!(restored.progress, app.game.progress);
+    }
+}
+
 /// 仕様 19 §7.1: 実際の App の保存・復帰経路で、初期アイテムを二重にしない。
 fn item_app(seed: u64, defs: &charon_game::defs::Definitions) -> App {
     use charon_game::vitals::{MAX_HP, Vitals};

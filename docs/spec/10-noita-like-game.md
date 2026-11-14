@@ -550,7 +550,7 @@ Android 実機での確認は未実施。
 - 世界の保存 (仕様 04) とは別の **`game.ron`** (世界の保存先のディレクトリ)。`GameSave { version, tick, player: Option<PlayerSave> }`、`PlayerSave { hp, breath, mana, x16, y16, inventory: Vec<(材質の名前, 数)> }`。材質は**名前**で保存する (表の順序が変わっても読める)。敵と弾は保存しない (読み込んだ世界で `AppOptions::enemies` から再び生まれる)。
 - `GameSave::capture(game, entities, id, materials, tick)`、`to_ron`・`from_ron` (版が違うと `SaveError::Version`、持ち物の種類が `KINDS_MAX` を超えると `Invalid`)、`write(root)` (一時ファイルへ書いてから入れ替え)、`read(root)` (ファイルがなければ `Ok(None)`、1 MiB 超は拒否)。
 - `GameSave::apply(game, entities, world, id)`: 体力は `max_hp` に収め、**0 (倒れていた) なら満タン**で戻す。息・マナは上限に収める。位置は、そこが固体と重ならないときだけ戻し (`Applied::moved`)、速度は 0 にする。持ち物は名前から材質を引いて足し、知らない名前は読み飛ばす。
-- アプリ (`charon-app`): 世界を保存するとき (終了・`Singleplayer`・`Random Seed`) に、プレイヤーがいれば `game.ron` を書く。世界を開いたとき (起動・作り直し) に読み、**プレイヤーが生まれた最初のフレーム**で `apply` する。`game.ron` がなければ新しく始める。壊れていれば報告して新しく始める。Web では保存しない。
+- アプリ (`charon-app`): 世界を保存するとき (終了・`Singleplayer`・`Random Seed`) に、プレイヤーがいれば `game.ron` を書く。世界を開いたとき (起動・作り直し) に読み、**プレイヤーが生まれた最初のフレーム**で `apply` する。`game.ron` がなければ新しく始める。壊れていれば報告して新しく始める。Web では保存しない。T32.4 以降はプレイヤー不在でも進行があれば書き、版 1 の保存は版 2 へ移行する (仕様 26 §5)。
 
 ### 13.3 テスト
 

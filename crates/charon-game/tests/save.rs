@@ -13,6 +13,7 @@ use charon_core::testkit;
 use charon_core::world::World;
 use charon_game::defs::Definitions;
 use charon_game::game::GameState;
+use charon_game::progression::ProgressSave;
 use charon_game::save::{GAME_SAVE_FILE, GAME_SAVE_VERSION, GameSave, PlayerSave, SaveError};
 use charon_game::vitals::{BREATH_MAX, MAX_HP, Vitals};
 use charon_game::{EntityId, EntityWorld};
@@ -112,6 +113,7 @@ fn apply_is_careful_with_dead_players_solid_positions_and_limits() {
             selected: 0,
             equipment: vec![],
         }),
+        progress: ProgressSave::default(),
     };
     let applied = save.apply(&mut s.game, &mut s.entities, &s.world, s.player);
     assert!(!applied.moved, "固体の中へは戻さない");
@@ -136,7 +138,14 @@ fn apply_is_careful_with_dead_players_solid_positions_and_limits() {
 
 #[test]
 fn bad_game_saves_are_rejected() {
-    let good = GameSave { version: GAME_SAVE_VERSION, tick: 1, player: None }.to_ron().unwrap();
+    let good = GameSave {
+        version: GAME_SAVE_VERSION,
+        tick: 1,
+        player: None,
+        progress: ProgressSave::default(),
+    }
+    .to_ron()
+    .unwrap();
     assert!(GameSave::from_ron(&good).is_ok());
     let old = good.replace(&format!("version: {GAME_SAVE_VERSION}"), "version: 999");
     assert_eq!(GameSave::from_ron(&old), Err(SaveError::Version(999)));
@@ -158,6 +167,7 @@ fn bad_game_saves_are_rejected() {
             selected: 0,
             equipment: vec![],
         }),
+        progress: ProgressSave::default(),
     };
     let text = flood.to_ron().unwrap();
     assert!(matches!(GameSave::from_ron(&text), Err(SaveError::Invalid(_))));

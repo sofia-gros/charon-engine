@@ -141,6 +141,8 @@ pub struct GameState {
     pub fixtures: crate::fixtures::FixtureMap,
     /// 装備 (仕様 19 §5)。
     pub equipment: BTreeMap<EntityId, crate::items::Equipment>,
+    /// 世界共有の進行 (仕様 26 §5)。
+    pub progress: crate::progression::Progression,
     pub spells: SpellTable,
     /// 起きた出来事 (仕様 10 §15)。`step` が足し、ゲームが [`GameState::take_events`] で受け取る。
     pub(crate) events: Vec<GameEvent>,
@@ -292,6 +294,7 @@ impl GameState {
             mining: BTreeMap::new(),
             fixtures: crate::fixtures::FixtureMap::default(),
             equipment: BTreeMap::new(),
+            progress: crate::progression::Progression::default(),
             spells,
             events: Vec::new(),
             collapse: None,
@@ -721,6 +724,7 @@ impl GameState {
                     }
                 }
                 if enemy.def.boss {
+                    self.progress.boss_defeated(&enemy.def.name);
                     let (cx, cy) = center_cell(entity);
                     let to_i32 = |v: i64| i32::try_from(v).unwrap_or(0);
                     boss_down.push((id, CellPos::new(to_i32(cx), to_i32(cy))));
@@ -745,6 +749,16 @@ impl GameState {
         let picked = self.drops.step(world, &collectors, |who, material, count| {
             inventories.get_mut(&who).map_or(0, |inventory| inventory.add(material, count))
         });
+        // プレイヤー全員の中心を同じ世界共有の進行へ記録する。
+        for &id in self.wands.keys() {
+            if !self.enemies.contains_key(&id)
+                && self.vitals.get(id).is_some_and(Vitals::alive)
+                && let Some(entity) = entities.get(id)
+            {
+                let (x, y) = center_cell(entity);
+                self.progress.visit(x, y);
+            }
+        }
         let report = StepReport { hits, defeated, dug };
         self.push_events(&report, &defeated_at, &picked);
         for (id, pos) in boss_down {
@@ -1111,6 +1125,10 @@ impl GameState {
             feed(&enemy.attack_cooldown.to_le_bytes());
             feed(&enemy.contact_cooldown.to_le_bytes());
             feed(&enemy.wand.as_ref().map_or(0, Wand::state_hash).to_le_bytes());
+        }
+        if !self.progress.is_empty() {
+            feed(&[0x50, 0x52]);
+            self.progress.hash_bytes(&mut feed);
         }
         hash
     }

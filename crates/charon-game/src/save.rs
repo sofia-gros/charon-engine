@@ -13,11 +13,14 @@ use crate::defs::Definitions;
 use crate::game::GameState;
 use crate::inventory::HOTBAR_SLOTS;
 use crate::items::{EquipSlot, ItemClass, ItemId};
+use crate::progression::{
+    NAME_MAX, PROGRESS_MAX, ProgressSave, Progression, canonical_region, insert_name,
+};
 use crate::vitals::BREATH_MAX;
 use crate::{EntityId, EntityWorld, collides};
 
 /// 保存形式の版。読めない版は拒否する。
-pub const GAME_SAVE_VERSION: u32 = 1;
+pub const GAME_SAVE_VERSION: u32 = 2;
 /// 保存ファイルの名前 (世界の保存先のディレクトリに置く)。
 pub const GAME_SAVE_FILE: &str = "game.ron";
 /// 読み込む保存ファイルの大きさの上限 (バイト)。
@@ -80,6 +83,16 @@ pub struct GameSave {
     /// 保存したときの世界の tick (参考)。
     pub tick: u64,
     pub player: Option<PlayerSave>,
+    /// 世界共有の進行。旧版には存在しない。
+    #[serde(default)]
+    pub progress: ProgressSave,
+}
+
+/// 版 1 には進行欄がなく、空で開始する。旧保存の名前付き持ち物は保持する。
+fn migrate_v1_to_v2(mut save: GameSave) -> GameSave {
+    save.progress = ProgressSave::default();
+    save.version = GAME_SAVE_VERSION;
+    save
 }
 
 /// `apply` の結果。
@@ -92,6 +105,11 @@ pub struct Applied {
 }
 
 impl GameSave {
+    /// プレイヤーがいない世界の進行だけを保存する。
+    pub fn capture_progress_only(game: &GameState, tick: u64) -> Self {
+        Self { version: GAME_SAVE_VERSION, tick, player: None, progress: game.progress.capture() }
+    }
+
     /// `id` のキャラクターの状態を写す。体力と杖のないキャラクターは `player: None`。
     pub fn capture(
         game: &GameState,
@@ -127,7 +145,28 @@ impl GameSave {
                 equipment: Vec::new(),
             }
         });
-        Self { version: GAME_SAVE_VERSION, tick, player }
+        Self { version: GAME_SAVE_VERSION, tick, player, progress: game.progress.capture() }
+    }
+
+    /// 定義に存在する名前だけを新しい世界の進行へ戻す。再適用で増殖しない。
+    pub fn apply_progress(&self, game: &mut GameState, defs: &Definitions) {
+        let mut progress = Progression::default();
+        for name in &self.progress.bosses {
+            if defs.enemy(name).is_some_and(|enemy| enemy.boss) {
+                insert_name(&mut progress.bosses, name);
+            }
+        }
+        for name in &self.progress.recipes {
+            if defs.recipe(name).is_some() {
+                insert_name(&mut progress.recipes, name);
+            }
+        }
+        for name in &self.progress.regions {
+            if canonical_region(name) {
+                insert_name(&mut progress.regions, name);
+            }
+        }
+        game.progress = progress;
     }
 
     /// 保存した状態を `id` のキャラクターへ戻す。倒れていた (体力 0 の) プレイヤーは、体力を満タンで戻す。
@@ -251,8 +290,15 @@ impl GameSave {
 
     pub fn from_ron(text: &str) -> Result<Self, SaveError> {
         let save: Self = ron::from_str(text).map_err(|e| SaveError::Parse(e.to_string()))?;
-        if save.version != GAME_SAVE_VERSION {
-            return Err(SaveError::Version(save.version));
+        let save = match save.version {
+            1 => migrate_v1_to_v2(save),
+            GAME_SAVE_VERSION => save,
+            other => return Err(SaveError::Version(other)),
+        };
+        for names in [&save.progress.bosses, &save.progress.recipes, &save.progress.regions] {
+            if names.len() > PROGRESS_MAX || names.iter().any(|name| name.len() > NAME_MAX) {
+                return Err(SaveError::Invalid("進行の名前が多すぎるか長すぎます"));
+            }
         }
         if let Some(player) = &save.player
             && (player.inventory.len() > crate::inventory::KINDS_MAX
@@ -263,6 +309,13 @@ impl GameSave {
         {
             return Err(SaveError::Invalid("持ち物の種類が多すぎます"));
         }
+        let mut save = save;
+        save.progress.bosses.sort();
+        save.progress.bosses.dedup();
+        save.progress.recipes.sort();
+        save.progress.recipes.dedup();
+        save.progress.regions.sort();
+        save.progress.regions.dedup();
         Ok(save)
     }
 

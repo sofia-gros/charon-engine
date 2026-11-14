@@ -403,6 +403,10 @@ pub fn run_with_streaming_options(
     app.restart = restart;
     app.background = background;
     app.pending_game_save = read_game_save(&save_root);
+    if let Some(save) = &app.pending_game_save {
+        let defs = app.options.definitions.as_deref().unwrap_or(&default_defs);
+        save.apply_progress(&mut app.game, defs);
+    }
     app.streaming = Some(StreamingState { streamer, save_root, metadata });
     app.physics = physics;
     app.physics_initialized = false;
@@ -759,19 +763,27 @@ impl App {
             .map_err(|err| err.to_string())?;
         state.metadata.tick = self.world.tick();
         self.game.fixtures.write(&state.save_root).map_err(|err| err.to_string())?;
-        // ゲーム状態 (プレイヤーの体力・マナ・位置・持ち物) は、世界とは別の game.ron (仕様 10 §13)。
-        if let Some(id) = self.player {
-            let save = GameSave::capture(
-                &self.game,
-                &self.entities,
-                id,
-                self.world.materials(),
-                self.world.tick(),
-            );
-            let save = match self.options.definitions.as_deref() {
-                Some(defs) => save.with_items(&self.game, id, defs, self.world.materials()),
-                None => save,
-            };
+        // プレイヤーがいなくても、世界の進行があれば同じ game.ron に保存する (仕様 26 §5)。
+        let save = self
+            .player
+            .map(|id| {
+                let save = GameSave::capture(
+                    &self.game,
+                    &self.entities,
+                    id,
+                    self.world.materials(),
+                    self.world.tick(),
+                );
+                match self.options.definitions.as_deref() {
+                    Some(defs) => save.with_items(&self.game, id, defs, self.world.materials()),
+                    None => save,
+                }
+            })
+            .or_else(|| {
+                (!self.game.progress.is_empty())
+                    .then(|| GameSave::capture_progress_only(&self.game, self.world.tick()))
+            });
+        if let Some(save) = save {
             save.write(&state.save_root).map_err(|err| err.to_string())?;
         }
         state.metadata.save(&state.save_root).map_err(|err| err.to_string())
@@ -943,6 +955,13 @@ impl App {
         self.physics_initialized = false;
         self.entities = EntityWorld::new();
         self.reset_game();
+        if let Some(save) = &self.pending_game_save {
+            if let Some(defs) = self.options.definitions.as_deref() {
+                save.apply_progress(&mut self.game, defs);
+            } else if let Ok(defs) = Definitions::engine_defaults(self.world.materials()) {
+                save.apply_progress(&mut self.game, &defs);
+            }
+        }
         self.game.fixtures = fixtures;
         self.player = None;
         self.spawn_pending = self.options.player_spawn;
@@ -1429,6 +1448,7 @@ fn restore_player_save(
     save.apply(game, entities, world, id);
     if let Some(defs) = defs {
         save.apply_items(game, id, defs, world.materials());
+        save.apply_progress(game, defs);
     }
 }
 

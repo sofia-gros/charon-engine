@@ -172,6 +172,7 @@ impl GameState {
         }
         trial.add_item(out, n);
         *inventory = trial;
+        self.progress.crafted(&recipe.name);
         Ok(())
     }
 }

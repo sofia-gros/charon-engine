@@ -1,0 +1,12 @@
+(
+    version: 1,
+    tick: 42,
+    player: Some((
+        hp: 80,
+        breath: 300,
+        mana: 12,
+        x16: 160,
+        y16: 416,
+        inventory: [("stone", 3)],
+    )),
+)
