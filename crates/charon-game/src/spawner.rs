@@ -56,18 +56,17 @@ impl Default for Spawner {
 }
 
 impl Spawner {
-    /// 冒険の世界 (仕様 21、表面 `y = 200`) の規則: 表面には歩く敵と弓兵、浅い洞窟には骸骨と射手、深いところには魔術師と
-    /// ゴーレム (ボス)。
+    /// 冒険の世界 (仕様 26 §4、表面 `y = 200`) の規則: 地表→石炭→鉄/金→深い金とボス。
     pub fn adventure() -> Self {
-        let mut boss = SpawnRule::new("golem", 700, 1400, 1);
+        let mut boss = SpawnRule::new("golem", 920, 1400, 1);
         boss.boss = true;
         Self {
             rules: vec![
-                SpawnRule::new("walker", 150, 270, 4),
-                SpawnRule::new("archer", 150, 270, 2),
-                SpawnRule::new("skeleton", 260, 900, 3),
-                SpawnRule::new("shooter", 260, 900, 2),
-                SpawnRule::new("mage", 380, 1400, 2),
+                SpawnRule::new("walker", 150, 260, 4),
+                SpawnRule::new("archer", 150, 260, 2),
+                SpawnRule::new("skeleton", 260, 920, 3),
+                SpawnRule::new("shooter", 260, 560, 2),
+                SpawnRule::new("mage", 560, 1400, 2),
                 boss,
             ],
             ..Self::default()
