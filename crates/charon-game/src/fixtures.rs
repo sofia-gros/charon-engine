@@ -18,6 +18,8 @@ use crate::{EntityId, EntityWorld};
 pub const FIXTURES_FILE: &str = "fixtures.ron";
 pub const MAX_FIXTURES: usize = 4096;
 pub const MAX_BYTES: usize = 16 * 1024 * 1024;
+const CHEST_KINDS_MAX: usize = 40;
+const CHEST_STACK_MAX: u32 = 99_999;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,6 +41,10 @@ pub enum FixtureError {
     Inactive,
     NotEmpty,
     NoRoom,
+    NotChest,
+    InvalidAmount,
+    UnknownItem(ItemId),
+    InsufficientItems,
     Place(PlaceError),
     Break(BreakError),
 }
@@ -142,6 +148,26 @@ impl FixtureMap {
         found
     }
 
+    fn chest<'a>(
+        &'a self,
+        world: &World,
+        pos: BlockPos,
+        defs: &Definitions,
+    ) -> Result<&'a Fixture, FixtureError> {
+        let fixture = self.get(pos).ok_or(FixtureError::Inactive)?;
+        if !self.active(world, pos) {
+            return Err(FixtureError::Inactive);
+        }
+        let is_chest = defs
+            .item_id(&fixture.item_name, world.materials())
+            .and_then(|item| defs.fixture_for_item(item))
+            .is_some_and(|def| def.kind == FixtureKind::Chest);
+        if !is_chest {
+            return Err(FixtureError::NotChest);
+        }
+        Ok(fixture)
+    }
+
     pub fn to_ron(&self) -> Result<String, FixtureSaveError> {
         if self.len() > MAX_FIXTURES {
             return Err(FixtureSaveError::TooMany);
@@ -189,8 +215,8 @@ impl FixtureMap {
             if world.materials().id(&fixture.material_name).is_none() {
                 return Err(FixtureSaveError::UnknownMaterial(fixture.material_name));
             }
-            if fixture.contents.len() > 40
-                || fixture.contents.values().any(|&n| !(1..=99_999).contains(&n))
+            if fixture.contents.len() > CHEST_KINDS_MAX
+                || fixture.contents.values().any(|&n| !(1..=CHEST_STACK_MAX).contains(&n))
             {
                 return Err(FixtureSaveError::InvalidContents);
             }
@@ -350,6 +376,77 @@ impl GameState {
         if self.events.len() < EVENTS_MAX {
             self.events.push(GameEvent::BlockBroken(pos, material));
         }
+        Ok(())
+    }
+
+    /// 名前で保存する箱へ、持ち物から指定個数を全量移す。失敗なら両方不変。
+    pub fn transfer_to_chest(
+        &mut self,
+        world: &World,
+        id: EntityId,
+        pos: BlockPos,
+        item: ItemId,
+        amount: u32,
+        defs: &Definitions,
+    ) -> Result<(), FixtureError> {
+        if !(1..=CHEST_STACK_MAX).contains(&amount) {
+            return Err(FixtureError::InvalidAmount);
+        }
+        let fixture = self.fixtures.chest(world, pos, defs)?;
+        let name =
+            defs.item_name(item, world.materials()).ok_or(FixtureError::UnknownItem(item))?;
+        let inventory = self.inventories.get(&id).ok_or(FixtureError::NotOwned)?;
+        if inventory.item_count(item) < amount {
+            return Err(FixtureError::InsufficientItems);
+        }
+        let stored = fixture.contents.get(&name).copied().unwrap_or(0);
+        if stored.checked_add(amount).is_none_or(|total| total > CHEST_STACK_MAX)
+            || (stored == 0 && fixture.contents.len() >= CHEST_KINDS_MAX)
+        {
+            return Err(FixtureError::NoRoom);
+        }
+        let inventory = self.inventories.get_mut(&id).ok_or(FixtureError::NotOwned)?;
+        let fixture = self.fixtures.0.get_mut(&pos).ok_or(FixtureError::Inactive)?;
+        if !inventory.take_item(item, amount) {
+            return Err(FixtureError::InsufficientItems);
+        }
+        *fixture.contents.entry(name).or_insert(0) += amount;
+        Ok(())
+    }
+
+    /// 有効な箱から持ち物へ全量を戻す。ホットバーの印・選択・装備には触れない。
+    pub fn transfer_from_chest(
+        &mut self,
+        world: &World,
+        id: EntityId,
+        pos: BlockPos,
+        item: ItemId,
+        amount: u32,
+        defs: &Definitions,
+    ) -> Result<(), FixtureError> {
+        if !(1..=CHEST_STACK_MAX).contains(&amount) {
+            return Err(FixtureError::InvalidAmount);
+        }
+        let fixture = self.fixtures.chest(world, pos, defs)?;
+        let name =
+            defs.item_name(item, world.materials()).ok_or(FixtureError::UnknownItem(item))?;
+        if fixture.contents.get(&name).copied().unwrap_or(0) < amount {
+            return Err(FixtureError::InsufficientItems);
+        }
+        let inventory = self.inventories.get(&id).ok_or(FixtureError::NotOwned)?;
+        if !inventory.can_hold(item, amount) {
+            return Err(FixtureError::NoRoom);
+        }
+        let inventory = self.inventories.get_mut(&id).ok_or(FixtureError::NotOwned)?;
+        let fixture = self.fixtures.0.get_mut(&pos).ok_or(FixtureError::Inactive)?;
+        let Some(stored) = fixture.contents.get_mut(&name) else {
+            return Err(FixtureError::InsufficientItems);
+        };
+        *stored -= amount;
+        if *stored == 0 {
+            fixture.contents.remove(&name);
+        }
+        inventory.add_item(item, amount);
         Ok(())
     }
 }

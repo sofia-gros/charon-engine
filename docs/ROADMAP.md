@@ -380,7 +380,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T29.1 App のアイテム保存** | [19 §7–8](spec/19-items.md)、[10 §13](spec/10-noita-like-game.md)、[TESTING](TESTING.md) | `app_save_reloads_items_hotbar_and_equipment`、`legacy_game_save_preserves_starter_items`、`scripts/check.sh` | 🟡 実装・自動テスト済み (実機の保存→再起動は未確認) |
 | **T29.2 スロットの移動・入れ替え** | [19 §3.1・§5・§8](spec/19-items.md)、[18 §1](spec/18-terraria-touch.md)、[TERRARIA_PARITY](TERRARIA_PARITY.md)、[TESTING](TESTING.md) | `inventory_slot_moves_swap_and_keep_counts`、`inventory_slot_failures_are_atomic`、`inventory_slot_ui_routes_drag`、`inventory_slot_drop_rejects_invalid_targets`、`inventory_slot_save_roundtrip`、`scripts/check.sh`。現行の印モデル内の移動であり、全スタックを持つ Terraria 型の完全再現ではない | 🟡 実装・自動テスト済み (Windows/Android 実機のドラッグは未検証) |
 
-**M30 第2段階 (採集・道具・クラフト・機能ブロック・箱)**: [仕様 24](spec/24-resource-loop.md) に正確な規則とテスト名を定めた。T30.1〜T30.4 は実装・自動テスト済み、T30.5〜T30.6 は**実装予定**であり、各状態を混同しない。T30.1 から順番に実装し、各タスクごとに `scripts/check.sh` を通して 1 コミットにする。M28 の実機比較は保留のまま。
+**M30 第2段階 (採集・道具・クラフト・機能ブロック・箱)**: [仕様 24](spec/24-resource-loop.md) に正確な規則とテスト名を定めた。T30.1〜T30.5 は実装・自動テスト済み、T30.6 は**実装予定**であり、各状態を混同しない。T30.1 から順番に実装し、各タスクごとに `scripts/check.sh` を通して 1 コミットにする。M28 の実機比較は保留のまま。
 
 | タスク | 読む仕様 | 作るもの | 完了条件 | 状態 |
 |---|---|---|---|---|
@@ -389,13 +389,13 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T30.2 道具と採掘時間** | [24 §1・§3](spec/24-resource-loop.md)、[17 §3–4](spec/17-blocks.md)、[18 §2](spec/18-terraria-touch.md)、[19 §2–3](spec/19-items.md)、[10 §12](spec/10-noita-like-game.md)、[TESTING](TESTING.md) | 木向けの斧・つるはしの力・固定 tick の完全ブロック採掘 | `mining_progress_uses_hardness_and_tool_power`、`mining_interrupt_or_failure_changes_nothing`、`axe_prefers_wood_and_pick_mines_stone`、`scripts/check.sh` | 🟡 実装・自動テスト済み (Windows 実画面・Android 実行は未検証) |
 | **T30.3 機能ブロックの基盤** | [24 §1・§4](spec/24-resource-loop.md)、[17 §3–4](spec/17-blocks.md)、[19 §2・§7](spec/19-items.md)、[04 §2–3](spec/04-world-save.md)、[TESTING](TESTING.md) | 作業台・かまど・箱の定義、配置と原子的撤去、チャンクをまたぐ保存 | `fixtures_place_only_on_complete_blocks`、`fixtures_survive_streaming_and_save`、`fixture_anchor_damage_keeps_metadata`、`scripts/check.sh` | 🟡 実装・自動テスト済み (Windows 実画面・Android 実行・Web 実ブラウザーは未検証) |
 | **T30.4 鉱石の製作** | [24 §1・§5](spec/24-resource-loop.md)、[19 §4・§7](spec/19-items.md)、[21 §4](spec/21-adventure-world.md)、[TESTING](TESTING.md) | 設備ごとのレシピ・鉄の道具・原子的クラフト | `craft_requires_the_correct_fixture_and_is_atomic`、`ore_processing_builds_an_iron_tool`、`scripts/check.sh` | 🟡 実装・自動テスト済み (Windows 実画面・Android 実行・Web 実ブラウザーは未検証) |
-| **T30.5 箱の出し入れ** | [24 §1・§4・§6](spec/24-resource-loop.md)、[19 §3・§7](spec/19-items.md)、[04 §2–3](spec/04-world-save.md)、[TESTING](TESTING.md) | 箱への指定個数の移動、上限、破損時の保全 | `chest_transfer_is_atomic_and_bounded`、`chest_contents_survive_reopen_and_anchor_damage`、`scripts/check.sh` | ⚪ 未着手 |
+| **T30.5 箱の出し入れ** | [24 §1・§4・§6](spec/24-resource-loop.md)、[19 §3・§7](spec/19-items.md)、[04 §2–3](spec/04-world-save.md)、[TESTING](TESTING.md) | 箱への指定個数の移動、上限、破損時の保全 | `chest_transfer_is_atomic_and_bounded`、`chest_contents_survive_reopen_and_anchor_damage`、`scripts/check.sh` | 🟡 実装・自動テスト済み (Windows 実画面・Android 実行・Web 実ブラウザーは未検証) |
 | **T30.6 画面と通しの復帰** | [24 §1・§7](spec/24-resource-loop.md)、[18 §1–2](spec/18-terraria-touch.md)、[19 §3–4・§7](spec/19-items.md)、[04 §2–3](spec/04-world-save.md)、[TESTING](TESTING.md) | UI コマンド・設備/箱の表示・資源ループの保存後再開 | `resource_loop_survives_world_reload`、`fixture_ui_routes_craft_and_transfer`、`scripts/check.sh`、Windows 実画面確認。Android 実行は未検証と記す | ⚪ 未着手 |
 
 | 順番 | 段階 (提案) | 必須の完了条件 |
 |---|---|---|
 | 1 | 持ち物・装備・ホットバーの保存、UI のスロット操作 | 保存→再開、入れ替えの原子性、旧データの読み込み |
-| 2 | **M30** 採集・道具・クラフト・機能ブロック・箱 ([仕様 24](spec/24-resource-loop.md)、T30.1〜T30.4 は自動テスト済み、T30.5〜T30.6 は実装前) | 伐採→採掘→装備製作→建築が、別の世界に読み直しても続く |
+| 2 | **M30** 採集・道具・クラフト・機能ブロック・箱 ([仕様 24](spec/24-resource-loop.md)、T30.1〜T30.5 は自動テスト済み、T30.6 は実装前) | 伐採→採掘→装備製作→建築が、別の世界に読み直しても続く |
 | 3 | 武器/防具/アクセサリー・攻撃種別・状態異常・Noita 型の環境反応 | 同じ入力/seed の戦闘とセル反応が決定的で、質量保存と休眠を保つ |
 | 4 | 地形・バイオーム・鉱石/資源・構造物・敵/ボス・進行 | 複数 seed とチャンク境界で、資源の循環とボスへの到達性を確認 |
 | 5 | 演出・音・UI の完成、Windows/Android 通しプレイ、配布時の権利確認 | 自作アセット、画像/実機比較、性能計測、未検証事項の明記 |
