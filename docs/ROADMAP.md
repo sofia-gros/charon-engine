@@ -434,7 +434,9 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T33.2 BGM** | [27 §1・§3](spec/27-experience.md)、[12](spec/12-audio.md)、[15 §3](spec/15-assets.md)、[TESTING](TESTING.md) | `music_transitions_without_overlapping_forever`、`music_missing_asset_is_silent_and_sfx_continue`、`scripts/check.sh` | 🟡 音楽のループ・切替フェード、デモの仮曲を実装・自動テスト済み (実機の聴感・長曲の省メモリ再生は未検証・未実装) |
 | **T33.3 日本語の UI** | [27 §1・§4](spec/27-experience.md)、[18](spec/18-terraria-touch.md)、[15](spec/15-assets.md)、[TESTING](TESTING.md) | `ui_language_falls_back_for_missing_strings`、`japanese_glyphs_render_in_the_ui`、`scripts/check.sh` | 🟡 デモ主要画面の英日切替・設定保存、OFL フォントを実装・自動テスト済み (実機の表示と容量は未検証) |
 | **T33.4 演出・UI** | [27 §1・§5](spec/27-experience.md)、[18](spec/18-terraria-touch.md)、[23](spec/23-polish.md)、[TESTING](TESTING.md) | `item_tooltips_show_definition_values`、`combat_feedback_uses_real_events`、`scripts/check.sh` | 🟡 定義値によるツールチップ・自作の仮アイコン・実イベントの戦闘表示を実装、自動テスト済み (実画面は未検証、製品用の絵は未) |
-| **T33.5 配布前の検証** | [27 §1・§6](spec/27-experience.md)、[23](spec/23-polish.md)、[PRODUCT_REVIEW §4.14・§9](PRODUCT_REVIEW.md)、[TESTING](TESTING.md) | `experience_reload_retains_settings_and_progress`、`bundled_assets_have_a_recorded_origin`、`scripts/check.sh` | 未着手 |
+| **T33.5 配布前の検証** | [27 §1・§6](spec/27-experience.md)、[23](spec/23-polish.md)、[PRODUCT_REVIEW §4.14・§9](PRODUCT_REVIEW.md)、[TESTING](TESTING.md) | `experience_reload_retains_settings_and_progress`、`bundled_assets_have_a_recorded_origin`、`scripts/check.sh` | 🟡 設定・世界・進行の別 App 復帰と素材ごとの出所記録を自動検査 ([配布前の記録](RELEASE_CHECK.md))。実機・署名・第三者通知と法的判断は未検証 |
+
+**M33 の状態: T33.0〜T33.5 の契約・実装・自動検査は完了 (実機・署名・権利の最終判断は未完了)。** `scripts/check.sh` の通過結果は T33.5 のコミットで確定する。製品版の完成とはしない。
 
 未着手 (後続の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み (マルチは後回し)、経路探索、性能の次の候補 (08 §6 の (b)(c))。
 

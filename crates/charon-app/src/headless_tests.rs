@@ -186,6 +186,151 @@ fn item_app(seed: u64, defs: &charon_game::defs::Definitions) -> App {
     app
 }
 
+/// 仕様 27 §6: 別 App で設定・地形・アイテムと世界共有の進行を復帰する。
+#[test]
+fn experience_reload_retains_settings_and_progress() {
+    use charon_game::items::{EquipSlot, ItemId};
+    use charon_game::save::GameSave;
+    use winit::keyboard::KeyCode;
+
+    for seed in 1..=8 {
+        let dir = TestDir::new();
+        let world_root = dir.0.join("world");
+        let settings_path = dir.0.join("settings.ron");
+        let world = test_world(seed);
+        let materials = Arc::clone(world.materials());
+        let defs = Definitions::engine_defaults(&materials).unwrap();
+        let mut app = item_app(seed, &defs);
+        let id = app.player.unwrap();
+        let pick = defs.item_id("wood_pickaxe", &materials).unwrap();
+        let helmet = defs.item_id("wood_helmet", &materials).unwrap();
+        let stone = material_of(&app.world, '#');
+        let position = CellPos::new(12, 10);
+        app.world.set(position, app.world.make_cell(stone, position));
+        for _ in 0..5 {
+            app.world.step();
+        }
+        let saved_cell = app.world.get(position);
+        let inv = app.game.inventories.get_mut(&id).unwrap();
+        inv.add_item(pick, 2);
+        inv.add_item(helmet, 1);
+        inv.add(stone, 7);
+        inv.pin(3, pick);
+        inv.select(3);
+        app.game.equip(id, helmet, &defs).unwrap();
+        // 進行の保存経路を検査するため、既存定義の三種類の記録を用意する。
+        app.game.progress.visit(-1, 2050);
+        app.game.progress.recipes.insert("wood_pickaxe".to_owned());
+        app.game.progress.bosses.insert("golem".to_owned());
+        let game_hash = app.game.state_hash();
+        let world_hash = app.world.state_hash();
+        app.settings.language = settings::Language::Japanese;
+        app.settings.ui_scale = 1.25;
+        app.settings.light = "Low".to_owned();
+        app.settings.music_volume = 0.3;
+        app.settings.sim_distance = 5;
+        assert!(app.settings.keys.bind(settings::Action::Dig, KeyCode::KeyG));
+        assert_eq!(app.game.state_hash(), game_hash, "seed={seed}: 言語はゲーム外");
+        assert_eq!(app.world.state_hash(), world_hash, "seed={seed}: 言語は世界外");
+        app.options.settings_path = Some(settings_path.clone());
+        app.save_settings();
+        let expected_settings = app.settings.clone();
+
+        let metadata = WorldMeta::new(seed, &materials);
+        let streamer = Streamer::with_saved_names(
+            world_root.clone(),
+            Arc::clone(&materials),
+            seed,
+            Arc::new(FlatGenerator { stone }),
+            0,
+            metadata.materials.clone(),
+        )
+        .unwrap();
+        app.streaming = Some(StreamingState { streamer, save_root: world_root.clone(), metadata });
+        app.save_world().unwrap();
+        assert!(!world_root.join("settings.ron").exists(), "seed={seed}");
+        let saved = WorldMeta::load(&world_root).unwrap().unwrap();
+        assert_eq!((saved.seed, saved.tick), (seed, 5), "seed={seed}");
+        let chunk = RegionStore::new(world_root.clone())
+            .read_chunk(ChunkPos::new(0, 0), &saved.materials, Arc::clone(&materials))
+            .unwrap()
+            .unwrap();
+        let mut loaded_world = World::new(Arc::clone(&materials), seed);
+        loaded_world.insert_loaded_chunk(ChunkPos::new(0, 0), chunk);
+        loaded_world.restore_tick(saved.tick);
+        assert_eq!(saved_cell.material, stone, "seed={seed}: 設置したセル");
+        assert_eq!(loaded_world.get(position).material, saved_cell.material, "seed={seed}");
+        assert_eq!(loaded_world.tick(), app.world.tick(), "seed={seed}");
+
+        let save = GameSave::read(&world_root).unwrap().unwrap();
+        let mut restored = item_app(seed, &defs);
+        restored.options.settings_path = Some(settings_path.clone());
+        restored.load_settings();
+        assert_eq!(restored.settings, expected_settings, "seed={seed}");
+        assert_eq!(restored.keys.bindings(), &expected_settings.keys, "seed={seed}");
+        let restored_id = restored.player.unwrap();
+        restore_player_save(
+            &mut restored.game,
+            &mut restored.entities,
+            &restored.world,
+            restored.options.definitions.as_deref(),
+            restored_id,
+            &save,
+        );
+        let inv = &restored.game.inventories[&restored_id];
+        assert_eq!(inv.item_count(pick), 2, "seed={seed}");
+        assert_eq!(inv.item_count(ItemId::cells(stone)), 7, "seed={seed}");
+        assert_eq!(inv.hotbar(3), Some(pick), "seed={seed}");
+        assert_eq!(inv.selected(), 3, "seed={seed}");
+        assert_eq!(
+            restored.game.equipment[&restored_id].get(EquipSlot::Head),
+            Some(helmet),
+            "seed={seed}"
+        );
+        assert_eq!(restored.game.progress, app.game.progress, "seed={seed}");
+    }
+}
+
+#[test]
+fn bundled_assets_have_a_recorded_origin() {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    fn files_in(dir: &Path, root: &Path, paths: &mut BTreeSet<String>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                files_in(&path, root, paths);
+            } else {
+                let relative =
+                    path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                assert!(paths.insert(relative), "重複したファイル: {}", path.display());
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let document = fs::read_to_string(root.join("docs/ASSET_ORIGINS.md")).unwrap();
+    let mut recorded = BTreeSet::new();
+    for line in document.lines().filter(|line| line.starts_with("| assets/")) {
+        let parts: Vec<_> = line.trim_matches('|').split('|').map(str::trim).collect();
+        assert_eq!(parts.len(), 3, "不完全な記録: {line}");
+        let (path, origin, rights) = (parts[0], parts[1], parts[2]);
+        assert!(!origin.is_empty() && !rights.is_empty(), "出所/権利が空: {path}");
+        assert!(recorded.insert(path.to_owned()), "重複した記録: {path}");
+        assert!(root.join(path).is_file(), "実体のない記録: {path}");
+    }
+    let mut actual = BTreeSet::new();
+    files_in(&root.join("assets"), &root, &mut actual);
+    assert_eq!(recorded, actual, "未登録または実体のない配布候補素材");
+    assert!(document.contains("https://github.com/google/fonts/"));
+    assert!(document.contains("assets/fonts/noto-sans-jp/OFL.txt"));
+    let license = fs::read_to_string(root.join("assets/fonts/noto-sans-jp/OFL.txt")).unwrap();
+    assert!(license.contains("SIL OPEN FONT LICENSE Version 1.1"));
+    assert!(root.join("LICENSE").is_file());
+}
+
 #[test]
 fn app_save_reloads_items_hotbar_and_equipment() {
     use charon_game::items::{EquipSlot, ItemId};
