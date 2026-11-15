@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use winit::event::TouchPhase;
 
-use crate::settings::UpToJump;
+use crate::settings::{AutoSelectMode, UpToJump};
 
 /// 1 フレームぶんの操作 (タッチ・ゲームパッド共通)。`aim` は 1/16 セル単位の向き (長さは意味を持たない)。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -37,6 +37,11 @@ pub(crate) struct PadOutput {
     pub hook_detach: bool,
     /// フックのスティックを傾けている間の向き (矢印の描画用)。
     pub hook_aim: Option<(i32, i32)>,
+    /// オートセレクトが有効 (押している間、または入っている間)。
+    pub auto_select: bool,
+    /// ロックオン・インタラクトのボタンが押された (このフレームだけ)。
+    pub lock_on: bool,
+    pub interact: bool,
     /// クイック回復・クイックマナのボタンが押された (このフレームだけ)。
     pub quick_heal: bool,
     pub quick_mana: bool,
@@ -72,6 +77,9 @@ impl PadOutput {
             hook_throw: other.hook_throw.or(self.hook_throw),
             hook_detach: self.hook_detach || other.hook_detach,
             hook_aim: other.hook_aim.or(self.hook_aim),
+            auto_select: self.auto_select || other.auto_select,
+            lock_on: self.lock_on || other.lock_on,
+            interact: self.interact || other.interact,
             quick_heal: self.quick_heal || other.quick_heal,
             quick_mana: self.quick_mana || other.quick_mana,
             select_slot: other.select_slot.or(self.select_slot),
@@ -113,6 +121,9 @@ enum Owner {
     AimToggle,
     QuickHeal,
     QuickMana,
+    AutoSelect,
+    Interact,
+    LockOn,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -167,6 +178,13 @@ pub(crate) struct TouchPad {
     clock: f32,
     quick_heal_tap: bool,
     quick_mana_tap: bool,
+    lock_tap: bool,
+    interact_tap: bool,
+    /// オートセレクトのボタンの動きと、`Toggle` のときの入り切り。
+    auto_mode: AutoSelectMode,
+    auto_on: bool,
+    /// 描画用: ロック中の敵と、ロックできる最優先の敵。
+    lock_view: (Option<charon_game::EntityId>, Option<charon_game::EntityId>),
     /// このフレームだけ立つ出来事。
     smart_tap: bool,
     aim_tap: bool,
@@ -226,6 +244,10 @@ pub(crate) struct Layout {
     /// クイック回復・クイックマナのボタン (半径 `1.1u`・`1.0u`)。
     pub quick_heal: [f32; 2],
     pub quick_mana: [f32; 2],
+    /// オートセレクト・インタラクト・ロックオンのボタン (半径 `0.9u`・`1.0u`・`0.9u`)。
+    pub auto_select: [f32; 2],
+    pub interact: [f32; 2],
+    pub lock_on: [f32; 2],
 }
 
 impl Layout {
@@ -254,6 +276,9 @@ impl Layout {
             action_radius: unit,
             quick_heal: [8.2 * unit, h - 5.6 * unit],
             quick_mana: [8.2 * unit, h - 3.2 * unit],
+            auto_select: [7.8 * unit, h - 8.0 * unit],
+            interact: [10.4 * unit, h - 4.4 * unit],
+            lock_on: [w * 0.5 + 3.6 * unit, h - 1.2 * unit],
         }
     }
 
@@ -282,6 +307,15 @@ impl Layout {
         }
         if near(self.action, self.action_radius * 1.2) {
             return Some(Owner::Action);
+        }
+        if near(self.auto_select, 0.9 * self.unit * 1.2) {
+            return Some(Owner::AutoSelect);
+        }
+        if near(self.interact, self.unit * 1.2) {
+            return Some(Owner::Interact);
+        }
+        if near(self.lock_on, 0.9 * self.unit * 1.2) {
+            return Some(Owner::LockOn);
         }
         if near(self.quick_heal, 1.1 * self.unit * 1.2) {
             return Some(Owner::QuickHeal);
@@ -386,6 +420,38 @@ impl TouchPad {
         }
     }
 
+    /// オートセレクトのボタンの動き (設定)。切り替えたときは、入り切りを戻す。
+    pub(crate) fn set_auto_mode(&mut self, mode: AutoSelectMode) {
+        if self.auto_mode != mode {
+            self.auto_mode = mode;
+            self.auto_on = false;
+        }
+    }
+
+    /// オートセレクトが有効か (押している間、または入っている間)。
+    pub(crate) fn auto_select(&self) -> bool {
+        match self.auto_mode {
+            AutoSelectMode::Hold => self.held("auto_select"),
+            AutoSelectMode::Toggle => self.auto_on,
+        }
+    }
+
+    /// 描画のために、ロック中の敵と、ロックできる最優先の敵を知らせる。
+    pub(crate) fn set_lock(
+        &mut self,
+        target: Option<charon_game::EntityId>,
+        candidate: Option<charon_game::EntityId>,
+    ) {
+        self.lock_view = (target, candidate);
+    }
+
+    /// ロック中の敵と、ロックできる最優先の敵 (描画用)。
+    pub(crate) fn lock_view(
+        &self,
+    ) -> (Option<charon_game::EntityId>, Option<charon_game::EntityId>) {
+        self.lock_view
+    }
+
     /// 描画のために、クイック回復・クイックマナで使えるものがあるかを知らせる。
     pub(crate) fn set_quick(&mut self, heal: bool, mana: bool) {
         self.quick_ready = [heal, mana];
@@ -483,6 +549,13 @@ impl TouchPad {
                     Owner::Smart => self.smart_tap = true,
                     Owner::AimToggle => self.aim_tap = true,
                     Owner::QuickHeal => self.quick_heal_tap = true,
+                    Owner::LockOn => self.lock_tap = true,
+                    Owner::Interact => self.interact_tap = true,
+                    Owner::AutoSelect => {
+                        if self.auto_mode == AutoSelectMode::Toggle {
+                            self.auto_on = !self.auto_on;
+                        }
+                    }
                     Owner::QuickMana => self.quick_mana_tap = true,
                     Owner::Inventory | Owner::More => self.inventory_tap = true,
                     Owner::Slot(n) => self.slot_tap = Some(n),
@@ -532,6 +605,8 @@ impl TouchPad {
         self.aim_tap = false;
         self.quick_heal_tap = false;
         self.quick_mana_tap = false;
+        self.lock_tap = false;
+        self.interact_tap = false;
         self.jump.armed = false;
         self.hook_release = None;
         self.pinch_distance = None;
@@ -623,6 +698,9 @@ impl TouchPad {
             "inventory" => Owner::Inventory,
             "world" => Owner::World,
             "action" => Owner::Action,
+            "auto_select" => Owner::AutoSelect,
+            "interact" => Owner::Interact,
+            "lock_on" => return self.lock_view.0.is_some(),
             "quick_heal" => Owner::QuickHeal,
             "quick_mana" => Owner::QuickMana,
             "aim_toggle" => return self.aim_only,
@@ -674,6 +752,9 @@ impl TouchPad {
                 | Owner::AimToggle
                 | Owner::QuickHeal
                 | Owner::QuickMana
+                | Owner::AutoSelect
+                | Owner::Interact
+                | Owner::LockOn
                 | Owner::Slot(_)
                 | Owner::More
                 | Owner::World => {}
@@ -690,6 +771,9 @@ impl TouchPad {
         if self.stick_jump(stick_tilt) {
             out.jump = true;
         }
+        out.auto_select = self.auto_select();
+        out.lock_on = std::mem::take(&mut self.lock_tap);
+        out.interact = std::mem::take(&mut self.interact_tap);
         out.quick_heal = std::mem::take(&mut self.quick_heal_tap);
         out.quick_mana = std::mem::take(&mut self.quick_mana_tap);
         out.toggle_smart = std::mem::take(&mut self.smart_tap);
@@ -1049,6 +1133,43 @@ mod tests {
         assert!(pad.output().jump, "上へ戻すと続く");
     }
 
+    /// オートセレクトは、押している間 (Hold) か、押すたびの入り切り (Toggle)。ロックとインタラクトは 1 度だけ。
+    #[test]
+    fn auto_select_modes_and_one_shot_buttons() {
+        let mut pad = pad();
+        let l = pad.layout();
+        assert!(!pad.auto_select() && !pad.output().auto_select);
+        pad.update(1, TouchPhase::Started, l.auto_select);
+        assert!(pad.auto_select() && pad.output().auto_select, "押している間");
+        pad.update(1, TouchPhase::Ended, l.auto_select);
+        assert!(!pad.auto_select(), "離したら無効");
+        pad.set_auto_mode(AutoSelectMode::Toggle);
+        pad.update(2, TouchPhase::Started, l.auto_select);
+        pad.update(2, TouchPhase::Ended, l.auto_select);
+        assert!(pad.auto_select() && pad.output().auto_select, "入った");
+        pad.update(3, TouchPhase::Started, l.auto_select);
+        pad.update(3, TouchPhase::Ended, l.auto_select);
+        assert!(!pad.auto_select(), "もう一度で切れる");
+        pad.update(4, TouchPhase::Started, l.auto_select);
+        pad.update(4, TouchPhase::Ended, l.auto_select);
+        assert!(pad.auto_select(), "入っている");
+        pad.set_auto_mode(AutoSelectMode::Hold);
+        assert!(!pad.auto_select(), "動きを切り替えたら、入り切りは戻る");
+        pad.release_all();
+        // ロックオンとインタラクトのボタンは、触れたフレームに 1 度だけ。
+        pad.update(5, TouchPhase::Started, l.lock_on);
+        pad.update(5, TouchPhase::Ended, l.lock_on);
+        let out = pad.output();
+        assert!(out.lock_on && !out.interact);
+        assert!(!pad.output().lock_on, "1 度だけ");
+        pad.update(6, TouchPhase::Started, l.interact);
+        let out = pad.output();
+        assert!(out.interact && !out.lock_on);
+        assert!(!pad.output().interact);
+        pad.set_lock(None, None);
+        assert!(!pad.held("lock_on"));
+    }
+
     /// クイック回復・クイックマナのボタンは、触れたフレームに 1 度だけ出る。
     #[test]
     fn quick_buttons_fire_once() {
@@ -1207,6 +1328,9 @@ mod tests {
                 (l.action, l.action_radius),
                 (l.quick_heal, 1.1 * u),
                 (l.quick_mana, 1.0 * u),
+                (l.auto_select, 0.9 * u),
+                (l.interact, u),
+                (l.lock_on, 0.9 * u),
             ];
             for (i, (a, ra)) in parts.iter().enumerate() {
                 assert!(a[0] - ra >= -0.1 && a[0] + ra <= w + 0.1, "{view:?}: 横に収まる {a:?}");

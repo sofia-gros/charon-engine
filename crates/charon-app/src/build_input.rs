@@ -1,11 +1,13 @@
 //! 仕様 18: カーソルと、ホットバーで選んだアイテムの使用 (ブロックを置く・壊す・消耗品)。タッチとマウスで共通。
 
 use charon_core::coords::CellPos;
+use charon_game::autoselect::{best_tool_for, is_active_chest, proximity_chest, smart_interact};
 use charon_game::cursor::{
     Cursor, CursorState, CursorUse, REACH_CELLS, center_of, cursor_at, cursor_from_offset,
     cursor_state, smart_cursor, usage_of,
 };
 use charon_game::items::{ItemClass, ItemId, ItemKind};
+use charon_game::targeting::{LockOn, LockPriority, ranked_targets};
 
 use charon_core::world::World;
 use charon_game::game::GameState;
@@ -32,6 +34,8 @@ pub(super) struct BuildFrame {
     pub fixture_command: Option<crate::ui::FixtureCommand>,
     /// 画面の操作 (使うボタン・サブ攻撃・世界の指) が、今、使っている。マウスは含まない。
     pub pad_use: bool,
+    /// ロック中の敵への向き (1/16 セル単位)。武器はこの向きへ向ける (仕様 28 §8)。
+    pub lock_aim: Option<(i32, i32)>,
 }
 
 /// 選んでいるアイテムが、武器として撃つものか (何も選んでいない・武器・セルのアイテム)。
@@ -71,6 +75,8 @@ pub(super) struct BuildCtx<'a> {
     pub use_ready: &'a mut u64,
     /// 狙う方式・スマートカーソルの記憶と感度 (仕様 28 §6)。
     pub touch: &'a mut TouchSettings,
+    /// ロックオンの状態 (仕様 28 §8)。
+    pub lock: &'a mut LockOn,
 }
 
 /// ホットバーの選択・カーソルの計算と描画の通知・選んだアイテムの使用をする。`mouse_use` はマウスの左ボタン、
@@ -85,22 +91,53 @@ pub(super) fn build_frame(
 ) -> BuildFrame {
     let (Some(id), Some(defs)) = (ctx.player, ctx.defs.clone()) else {
         ctx.touch_pad.set_cursor(None);
-        return BuildFrame { weapon: true, mine: None, fixture_command: None, pad_use: false };
+        return BuildFrame {
+            weapon: true,
+            mine: None,
+            fixture_command: None,
+            pad_use: false,
+            lock_aim: None,
+        };
     };
     if let Some(slot) = pad.select_slot
         && let Some(inventory) = ctx.game.inventories.get_mut(&id)
     {
         inventory.select(usize::from(slot));
     }
+    let center_opt = center_of(ctx.entities, id);
+    // オートセレクト (仕様 28 §8): 有効で、狙っているとき、対象のブロックに合う道具を一時的に選ぶ。ホットバーの選択は変えない。
+    let auto_tool = (pad.auto_select && (pad.world_touch.is_some() || pad.use_item || pad.action))
+        .then_some(center_opt)
+        .flatten()
+        .and_then(|center| {
+            let cell = match pad.world_touch {
+                Some(at) => crate::demo_ui::pointer_cell(at, zoom, origin),
+                None => {
+                    let tilt = ctx.touch.scale_tilt(pad.cursor_tilt.unwrap_or(*ctx.cursor_tilt));
+                    let reach = i64::from(REACH_CELLS);
+                    let off = |v: i32| (i64::from(v) * reach / 1000) as i32;
+                    Some(
+                        cursor_from_offset(center, (off(tilt.0), off(tilt.1)), CursorUse::Mine)
+                            .cell,
+                    )
+                }
+            }?;
+            best_tool_for(ctx.world, ctx.game, id, &defs, cursor_at(cell, CursorUse::Mine).block)
+        });
+    if let Some(inventory) = ctx.game.inventories.get_mut(&id) {
+        inventory.set_auto_item(auto_tool);
+    }
     // ホットバーで選んでいるアイテム。持ち物にあるか、装備している (装備すると持ち物から移る) ものだけ。
     let pinned = ctx.game.inventories.get(&id).and_then(|inv| inv.hotbar(inv.selected()));
-    let item = pinned.filter(|&i| {
-        ctx.game.inventories.get(&id).is_some_and(|inv| inv.item_count(i) > 0)
-            || ctx
-                .game
-                .equipment
-                .get(&id)
-                .is_some_and(|e| e.iter().any(|(_, equipped)| equipped == i))
+    let item = ctx.game.inventories.get(&id).and_then(|inv| inv.auto_item()).or_else(|| {
+        pinned.filter(|&i| {
+            ctx.game.inventories.get(&id).is_some_and(|inv| inv.item_count(i) > 0)
+                || ctx
+                    .game
+                    .equipment
+                    .get(&id)
+                    .is_some_and(|e| e.iter().any(|(_, equipped)| equipped == i))
+        })
     });
     // ホットバーで武器を選んだら、その武器を装備する (仕様 20 §1)。持ち物の中の別の武器と入れ替わる。
     if let Some(weapon) = item
@@ -153,9 +190,15 @@ pub(super) fn build_frame(
     let aim_mode = ctx.touch.aim_mode(category);
     let smart = ctx.touch.smart(category);
     ctx.touch_pad.set_modes(aim_mode == AimMode::AimOnly, smart);
-    let Some(center) = center_of(ctx.entities, id) else {
+    let Some(center) = center_opt else {
         ctx.touch_pad.set_cursor(None);
-        return BuildFrame { weapon, mine: None, fixture_command: None, pad_use: false };
+        return BuildFrame {
+            weapon,
+            mine: None,
+            fixture_command: None,
+            pad_use: false,
+            lock_aim: None,
+        };
     };
     if let Some(tilt) = pad.cursor_tilt {
         *ctx.cursor_tilt = tilt;
@@ -195,6 +238,37 @@ pub(super) fn build_frame(
         _ => None,
     };
     ctx.touch_pad.set_cursor(view);
+    // ロックオン (仕様 28 §8): 押すとロック・次の候補・解除。ロック中は、武器をその敵へ向ける。
+    let priority: LockPriority = ctx.touch.lock_on_priority.into();
+    let cursor_cell = cursor.map(|c| c.cell);
+    if pad.lock_on {
+        ctx.lock.press(ctx.world, ctx.entities, ctx.game, center, cursor_cell, priority);
+    }
+    ctx.lock.update(ctx.world, ctx.entities, ctx.game, center, priority);
+    let lock_aim = ctx
+        .lock
+        .target_cell(ctx.entities)
+        .zip(ctx.entities.get(id))
+        .map(|(cell, entity)| crate::player::aim_at(entity, cell));
+    let candidate =
+        ranked_targets(ctx.world, ctx.entities, ctx.game, center, cursor_cell, priority)
+            .first()
+            .copied();
+    ctx.touch_pad.set_lock(ctx.lock.target, candidate);
+    // インタラクト (仕様 28 §8): カーソルの箱 (スマート)、なければ、動かず狙わずカーソルが別の箱の上にないとき足元の箱 (近接)。
+    let mut interact_cursor = None;
+    if pad.interact {
+        interact_cursor =
+            cursor.and_then(|c| smart_interact(ctx.world, ctx.game, &defs, center, c));
+        if interact_cursor.is_none() {
+            let aiming = pad.cursor_tilt.is_some() || pad.world_touch.is_some() || pad.action;
+            let over_chest =
+                cursor.is_some_and(|c| is_active_chest(ctx.world, ctx.game, &defs, c.block));
+            if !aiming && pad.horizontal == 0 && !over_chest {
+                interact_cursor = proximity_chest(ctx.world, ctx.game, &defs, center);
+            }
+        }
+    }
     // 使う。スティックは Aim & Use のとき (ブロック・消耗品は、つまみを倒してから)、サブ攻撃ボタンはいつでも、
     // 世界の指は触れている間、使う (仕様 28 §5・§6)。設備と箱は入力を記録し、次の固定 tick で検証して適用する。
     let tilted = pad.cursor_tilt.is_some_and(|(x, y)| x.abs().max(y.abs()) >= CENTRE_TILT);
@@ -234,6 +308,11 @@ pub(super) fn build_frame(
             }
         }
     }
+    if fixture_command.is_none()
+        && let Some(chest) = interact_cursor
+    {
+        fixture_command = Some(crate::ui::FixtureCommand::Open(chest));
+    }
     BuildFrame {
         weapon: weapon && !matches!(fixture_command, Some(crate::ui::FixtureCommand::Open(_))),
         mine: if want && usage == CursorUse::Mine && fixture_command.is_none() {
@@ -243,6 +322,7 @@ pub(super) fn build_frame(
         },
         fixture_command,
         pad_use,
+        lock_aim,
     }
 }
 
@@ -500,6 +580,7 @@ mod tests {
                     cursor_tilt: &mut tilt,
                     use_ready: &mut ready,
                     touch: &mut TouchSettings::default(),
+                    lock: &mut LockOn::default(),
                 },
                 &PadOutput::default(),
                 true,
@@ -803,6 +884,7 @@ mod tests {
                 cursor_tilt: &mut tilt,
                 use_ready: &mut use_ready,
                 touch: &mut TouchSettings::default(),
+                lock: &mut LockOn::default(),
             },
             &PadOutput::default(),
             true,
@@ -848,6 +930,7 @@ mod tests {
         ready: u64,
         settings: TouchSettings,
         tilt: (i32, i32),
+        lock: LockOn,
     }
 
     impl Rig {
@@ -865,6 +948,7 @@ mod tests {
                 ready: 0,
                 settings: TouchSettings::default(),
                 tilt: (0, 0),
+                lock: LockOn::default(),
             }
         }
 
@@ -910,6 +994,7 @@ mod tests {
                     cursor_tilt: &mut self.tilt,
                     use_ready: &mut self.ready,
                     touch: &mut self.settings,
+                    lock: &mut self.lock,
                 },
                 pad,
                 false,
@@ -922,6 +1007,39 @@ mod tests {
         /// 世界の指 1 本の入力フレームを流す。
         fn touch(&mut self, at: [f32; 2]) -> BuildFrame {
             self.frame(&PadOutput { world_touch: Some(at), ..PadOutput::default() })
+        }
+
+        /// 箱の設備を `block` に置く (持ち物に 1 個足してから、固定 tick の操作として置く)。
+        fn place_chest(&mut self, block: BlockPos) {
+            let chest = self.defs.item_id("storage_box", self.world.materials()).unwrap();
+            self.game.inventories.get_mut(&self.id).unwrap().add_item(chest, 1);
+            let origin = block.origin().unwrap();
+            let cursor = Cursor::at(CellPos::new(origin.x + 4, origin.y + 4));
+            let mut open = None;
+            apply_fixture_commands(
+                &mut self.game,
+                &mut self.world,
+                &mut self.entities,
+                self.id,
+                &self.defs,
+                &mut open,
+                vec![crate::ui::FixtureCommand::Place(cursor, chest)],
+            );
+            assert!(self.game.fixtures.active(&self.world, block), "箱が置かれた");
+        }
+
+        /// プレイヤーの中心から `(dx, dy)` セルの位置に敵 (骸骨) を置く。
+        fn skeleton(&mut self, dx: i32, dy: i32) -> EntityId {
+            let c = self.center();
+            self.game
+                .spawn_enemy(
+                    &self.defs,
+                    &mut self.entities,
+                    &self.world,
+                    "skeleton",
+                    (c.x + dx, c.y + dy),
+                )
+                .unwrap()
         }
 
         fn blocks(&self, material: MaterialId) -> u32 {
@@ -1182,6 +1300,175 @@ mod tests {
         charon_core::testkit::run(&mut rig.world, CONSUME_INTERVAL);
         rig.frame(&PadOutput { quick_mana: true, ..PadOutput::default() });
         assert_eq!(rig.game.inventories[&rig.id].item_count(mana), 1);
+    }
+
+    /// インタラクトのボタン: カーソルの箱は開ける (つるはしを持っていても)。届かなければ開けない (仕様 28 §8)。
+    #[test]
+    fn smart_interact_opens_the_chest_under_the_cursor() {
+        let mut rig = Rig::new(1);
+        rig.give_item("wood_pickaxe");
+        let near = BlockPos {
+            bx: BlockPos::containing(rig.center()).bx + 2,
+            ..BlockPos::containing(rig.center())
+        };
+        rig.place_chest(near);
+        let origin = near.origin().unwrap();
+        let on_chest = [(origin.x + 4) as f32 + 0.5, (origin.y + 4) as f32 + 0.5];
+        // ボタンがなければ、つるはしでさわっても開けない。
+        let frame = rig.frame(&PadOutput { world_touch: Some(on_chest), ..PadOutput::default() });
+        assert_eq!(frame.fixture_command, None);
+        let frame = rig.frame(&PadOutput {
+            world_touch: Some(on_chest),
+            interact: true,
+            ..PadOutput::default()
+        });
+        assert_eq!(
+            frame.fixture_command,
+            Some(crate::ui::FixtureCommand::Open(Cursor::at(CellPos::new(
+                origin.x + 4,
+                origin.y + 4
+            ))))
+        );
+        // 届かない場所の箱は開けない (世界の右端に箱を置いてから、プレイヤーを左端へ移す)。
+        let here = BlockPos::containing(rig.center());
+        let far = BlockPos { bx: 7, by: here.by };
+        rig.place_chest(far);
+        rig.entities.get_mut(rig.id).unwrap().x16 = 2 * 16;
+        assert!(rig.center().x + REACH_CELLS < far.origin().unwrap().x + 4);
+        let origin = far.origin().unwrap();
+        let frame = rig.frame(&PadOutput {
+            world_touch: Some([(origin.x + 4) as f32 + 0.5, (origin.y + 4) as f32 + 0.5]),
+            interact: true,
+            ..PadOutput::default()
+        });
+        assert_eq!(frame.fixture_command, None, "届かない");
+    }
+
+    /// 動かず狙わず、カーソルも別の箱の上にないとき、足元の箱を開ける。動いている・狙っているときは開けない。
+    #[test]
+    fn proximity_interact_opens_the_chest_at_the_feet() {
+        let mut rig = Rig::new(1);
+        rig.give_item("wood_pickaxe");
+        let here = BlockPos::containing(rig.center());
+        let feet = BlockPos { bx: here.bx + 1, by: here.by };
+        rig.place_chest(feet);
+        let press = PadOutput { interact: true, ..PadOutput::default() };
+        let origin = feet.origin().unwrap();
+        // 足元の箱 (カーソルは自分の位置のまま)。
+        let frame = rig.frame(&press);
+        let opened = frame.fixture_command.expect("足元の箱を開ける");
+        assert_eq!(
+            opened,
+            crate::ui::FixtureCommand::Open(Cursor::at(CellPos::new(origin.x + 4, origin.y + 4)))
+        );
+        // 動いている・狙っている (スティックを倒している) ときは開けない。
+        assert_eq!(
+            rig.frame(&PadOutput { horizontal: 1, ..press }).fixture_command,
+            None,
+            "動いている"
+        );
+        let aiming = PadOutput { cursor_tilt: Some((900, -900)), ..press };
+        assert_eq!(rig.frame(&aiming).fixture_command, None, "狙っている");
+        // 箱から離れていれば開けない (左へ 3 ブロック)。
+        let mut far = Rig::new(1);
+        far.give_item("wood_pickaxe");
+        let here = BlockPos::containing(far.center());
+        far.place_chest(BlockPos { bx: here.bx + 4, by: here.by });
+        assert_eq!(far.frame(&press).fixture_command, None, "足元ではない");
+    }
+
+    /// オートセレクト: 有効で、対象が石ならつるはし、木なら斧を一時的に選ぶ。ホットバーの選択 (剣) は変わらず、解除すると戻る。
+    #[test]
+    fn auto_select_swaps_the_tool_while_pointing() {
+        let mut rig = Rig::new(1);
+        let sword = rig.give_item("wood_sword");
+        let pick = rig.defs.item_id("stone_pickaxe", rig.world.materials()).unwrap();
+        let axe = rig.defs.item_id("wood_axe", rig.world.materials()).unwrap();
+        let inv = rig.game.inventories.get_mut(&rig.id).unwrap();
+        inv.add_item(pick, 1);
+        inv.add_item(axe, 1);
+        let here = BlockPos::containing(rig.center());
+        let (stone_at, wood_at) =
+            (BlockPos { bx: here.bx + 2, by: here.by }, BlockPos { bx: here.bx + 3, by: here.by });
+        charon_core::testkit::place_block(&mut rig.world, stone_at.bx, stone_at.by, '#');
+        charon_core::testkit::place_block(&mut rig.world, wood_at.bx, wood_at.by, 'W');
+        let px = |p: BlockPos| {
+            let o = p.origin().unwrap();
+            [(o.x + 4) as f32 + 0.5, (o.y + 4) as f32 + 0.5]
+        };
+        // 一時的に選ばれたアイテム。剣は装備に移るので、選んでいる枠のアイテムは見ない。
+        let selected = |rig: &Rig| rig.game.inventories[&rig.id].auto_item();
+        // 有効でないときは、剣のまま (オートセレクトは何も選ばない)。
+        let frame =
+            rig.frame(&PadOutput { world_touch: Some(px(stone_at)), ..PadOutput::default() });
+        assert_eq!(selected(&rig), None);
+        assert!(frame.mine.is_none() && frame.weapon);
+        // 有効: 石にはつるはし。採掘の対象になる。ホットバーの選択は変わらない。
+        let auto =
+            |at| PadOutput { world_touch: Some(at), auto_select: true, ..PadOutput::default() };
+        let frame = rig.frame(&auto(px(stone_at)));
+        assert_eq!(selected(&rig), Some(pick));
+        assert_eq!(frame.mine.map(|c| c.block), Some(stone_at));
+        assert!(!frame.weapon, "道具なので、杖は撃たない");
+        assert_eq!(rig.game.inventories[&rig.id].selected(), 0);
+        // 木には斧。
+        rig.frame(&auto(px(wood_at)));
+        assert_eq!(selected(&rig), Some(axe));
+        // 何も指していない (指を離した) ときは、元に戻る。
+        let frame = rig.frame(&PadOutput { auto_select: true, ..PadOutput::default() });
+        assert_eq!(selected(&rig), None, "指していないときは選ばない");
+        assert!(frame.weapon);
+        // 空きを指しているときも、元のまま。
+        rig.frame(&auto(px(BlockPos { bx: here.bx + 5, by: here.by })));
+        assert_eq!(selected(&rig), None);
+        assert_eq!(
+            rig.game.inventories[&rig.id].hotbar(0),
+            Some(sword),
+            "ホットバーの印は剣のまま"
+        );
+    }
+
+    /// ロック中も、ブロックを置ける。ロックは壊れない。
+    #[test]
+    fn lock_on_still_allows_placing_blocks() {
+        let mut rig = Rig::new(1);
+        let stone = rig.give_blocks("stone", 3);
+        let enemy = rig.skeleton(20, -8);
+        rig.frame(&PadOutput { lock_on: true, ..PadOutput::default() });
+        assert_eq!(rig.lock.target, Some(enemy));
+        assert_eq!(rig.pad.lock_view().0, Some(enemy));
+        let block = BlockPos::containing(rig.center());
+        let target = BlockPos { bx: block.bx + 2, by: block.by + 1 };
+        let origin = target.origin().unwrap();
+        rig.touch([(origin.x + 4) as f32 + 0.5, (origin.y + 4) as f32 + 0.5]);
+        assert_eq!(rig.blocks(stone), 2, "置けた");
+        assert!(rig.has_block(target));
+        assert_eq!(rig.lock.target, Some(enemy), "ロックは続く");
+    }
+
+    /// ロック中は、狙いがその敵へ向く。ロックしていなければ向きは出ない。もう一度押すと (ほかに敵がいなければ) 解除する。
+    #[test]
+    fn lock_on_aims_weapons_at_the_target() {
+        let mut rig = Rig::new(1);
+        rig.give_item("starter_wand");
+        let frame = rig.frame(&PadOutput::default());
+        assert_eq!(frame.lock_aim, None);
+        rig.skeleton(20, -8);
+        let frame = rig.frame(&PadOutput { lock_on: true, ..PadOutput::default() });
+        let aim = frame.lock_aim.expect("ロック中は向きが出る");
+        assert!(aim.0 > 100, "右の敵へ: {aim:?}");
+        // 敵が左下へ移ったら、向きも変わる。
+        let enemy = rig.lock.target.unwrap();
+        let entity = rig.entities.get_mut(enemy).unwrap();
+        entity.x16 -= 16 * 60;
+        entity.y16 += 16 * 10;
+        let frame = rig.frame(&PadOutput::default());
+        let aim = frame.lock_aim.expect("追う");
+        assert!(aim.0 < 0 && aim.1 > 0, "左下へ: {aim:?}");
+        // 押すと、ほかに敵がいないので解除する。
+        let frame = rig.frame(&PadOutput { lock_on: true, ..PadOutput::default() });
+        assert_eq!(frame.lock_aim, None);
+        assert_eq!(rig.lock.target, None);
     }
 
     /// 武器は、プレイヤーから指の場所への向きへ向ける。不正な位置は無視する。

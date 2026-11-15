@@ -314,6 +314,35 @@ pub enum UpToJump {
     Swipe,
 }
 
+/// オートセレクトのボタンの動き (仕様 28 §8)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AutoSelectMode {
+    /// 押している間だけ有効。
+    #[default]
+    Hold,
+    /// 押すたびに、入り切りする。
+    Toggle,
+}
+
+/// ロックオンの候補の優先 (仕様 28 §8)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LockOnPriority {
+    /// 見通せる敵のうち、カーソルに最も近いもの。
+    #[default]
+    ClearestLine,
+    /// 壁を無視して、プレイヤーに最も近いもの。
+    TargetClosest,
+}
+
+impl From<LockOnPriority> for charon_game::targeting::LockPriority {
+    fn from(value: LockOnPriority) -> Self {
+        match value {
+            LockOnPriority::ClearestLine => Self::ClearestLine,
+            LockOnPriority::TargetClosest => Self::TargetClosest,
+        }
+    }
+}
+
 /// タッチ操作の設定 (仕様 28)。古い設定ファイルにはないので、足りない項目は既定。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -324,6 +353,10 @@ pub struct TouchSettings {
     pub aim_sensitivity: u16,
     /// 左スティックの上でジャンプする方式。
     pub up_to_jump: UpToJump,
+    /// オートセレクトのボタンの動き。
+    pub auto_select_mode: AutoSelectMode,
+    /// ロックオンの候補の優先。
+    pub lock_on_priority: LockOnPriority,
     /// 種類ごとの記憶 (`ItemCategory::ALL` の順): 狙うだけか。
     pub aim_only: Vec<bool>,
     /// 種類ごとの記憶: スマートカーソルが入っているか。
@@ -344,6 +377,8 @@ impl Default for TouchSettings {
             smart_cursor_toggle: SmartCursorToggle::default(),
             aim_sensitivity: AIM_SENSITIVITY.2,
             up_to_jump: UpToJump::default(),
+            auto_select_mode: AutoSelectMode::default(),
+            lock_on_priority: LockOnPriority::default(),
             aim_only: DEFAULT_AIM_ONLY.to_vec(),
             smart_on: DEFAULT_SMART_ON.to_vec(),
         }

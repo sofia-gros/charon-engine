@@ -916,6 +916,9 @@ fn draw_touch_pad(
         (layout.smart, "S", pad.smart(), 0.9 * layout.unit),
         (layout.aim_toggle, "A", pad.aim_only(), 0.9 * layout.unit),
         (layout.action, "!", pad.held("action"), layout.action_radius),
+        (layout.auto_select, "T", pad.auto_select(), 0.9 * layout.unit),
+        (layout.interact, "?", false, layout.unit),
+        (layout.lock_on, "L", pad.held("lock_on"), 0.9 * layout.unit),
         (layout.quick_heal, "H", !pad.quick_ready()[0], 1.1 * layout.unit),
         (layout.quick_mana, "M", !pad.quick_ready()[1], layout.unit),
     ] {
@@ -923,6 +926,8 @@ fn draw_touch_pad(
         label(center, text, 0.6);
     }
     draw_hotbar(context, &painter, scale, &layout, overlay, HOTBAR_VISIBLE, false, [0.0, 0.0]);
+    draw_lock_marks(&painter, pad, overlay, controls, scale);
+    draw_auto_slot(&painter, scale, &layout, overlay);
     // カーソル (ブロックの格子に揃う枠。置けない・届かないときは赤)。
     if let Some(view) = pad.cursor_view() {
         let color = match view.state {
@@ -935,6 +940,83 @@ fn draw_touch_pad(
         );
         painter.rect_stroke(rect, 0.0, egui::Stroke::new(2.5, color), egui::StrokeKind::Outside);
     }
+}
+
+/// ロック中の敵のまわりに黄色い三角を 3 つ、ロックできる最優先の敵には小さな三角を 1 つ出す (仕様 28 §8)。
+fn draw_lock_marks(
+    painter: &egui::Painter,
+    pad: &crate::touch_pad::TouchPad,
+    overlay: &Overlay<'_>,
+    controls: &Controls,
+    scale: f32,
+) {
+    let (target, candidate) = pad.lock_view();
+    let yellow = egui::Color32::from_rgb(255, 230, 90);
+    let center_of = |id: charon_game::EntityId| {
+        overlay.entities.get(id).map(|e| {
+            let (w, h) = (f32::from(e.width), f32::from(e.height));
+            let to = |cell: f32, origin: f32| (cell - origin) * controls.zoom * scale;
+            (
+                egui::pos2(
+                    to(e.x16 as f32 / 16.0 + w / 2.0, controls.origin[0]),
+                    to(e.y16 as f32 / 16.0 + h / 2.0, controls.origin[1]),
+                ),
+                w.max(h) / 2.0 * controls.zoom * scale,
+            )
+        })
+    };
+    let triangle = |center: egui::Pos2, radius: f32, angle: f32, size: f32| {
+        // 中心を向く三角形。
+        let direction = egui::vec2(angle.cos(), angle.sin());
+        let tip = center + direction * radius;
+        let back = tip + direction * size;
+        let side = egui::vec2(-direction.y, direction.x) * size * 0.6;
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip, back + side, back - side],
+            yellow,
+            egui::Stroke::NONE,
+        ));
+    };
+    if let Some((center, size)) = target.and_then(center_of) {
+        for k in 0..3 {
+            let angle = std::f32::consts::FRAC_PI_2 + k as f32 * std::f32::consts::TAU / 3.0;
+            triangle(center, size + 6.0, angle, 9.0);
+        }
+    } else if let Some((center, size)) = candidate.and_then(center_of) {
+        triangle(center, size + 10.0, -std::f32::consts::FRAC_PI_2, 6.0);
+    }
+}
+
+/// オートセレクトで選ばれた道具を、ホットバーの横の追加の枠に出す (仕様 28 §8)。
+fn draw_auto_slot(
+    painter: &egui::Painter,
+    scale: f32,
+    layout: &crate::touch_pad::Layout,
+    overlay: &Overlay<'_>,
+) {
+    let Some(item) = overlay
+        .player
+        .and_then(|id| overlay.game.inventories.get(&id))
+        .and_then(|inventory| inventory.auto_item())
+    else {
+        return;
+    };
+    let [_, top, right, bottom] = layout.slot_rect(crate::touch_pad::HOTBAR_VISIBLE);
+    let size = bottom - top;
+    let left = right + 0.3 * layout.unit;
+    let rect = egui::Rect::from_min_max(
+        egui::pos2(left * scale, top * scale),
+        egui::pos2((left + size) * scale, bottom * scale),
+    );
+    painter.rect(
+        rect,
+        4.0,
+        egui::Color32::from_white_alpha(28),
+        egui::Stroke::new(3.0, egui::Color32::from_rgb(255, 230, 90)),
+        egui::StrokeKind::Inside,
+    );
+    let (_, color) = item_label(overlay, item);
+    draw_item_icon(painter, rect, item_icon(overlay, item), color);
 }
 
 fn overlay_inventory_open(_overlay: &Overlay<'_>) -> bool {
@@ -2187,7 +2269,9 @@ fn touch_settings_rows(
     touch: &mut crate::settings::TouchSettings,
     lang: crate::settings::Language,
 ) {
-    use crate::settings::{AIM_SENSITIVITY, AimModeToggle, SmartCursorToggle, UpToJump};
+    use crate::settings::{
+        AIM_SENSITIVITY, AimModeToggle, AutoSelectMode, LockOnPriority, SmartCursorToggle, UpToJump,
+    };
     let strings = crate::localization::ui_strings();
     let mut sensitivity = touch.aim_sensitivity;
     ui.add(
@@ -2196,6 +2280,32 @@ fn touch_settings_rows(
             .text(strings.text(lang, "pause.aim_sensitivity")),
     );
     touch.aim_sensitivity = sensitivity;
+    ui.horizontal(|ui| {
+        ui.label(strings.text(lang, "pause.auto_select"));
+        ui.selectable_value(
+            &mut touch.auto_select_mode,
+            AutoSelectMode::Hold,
+            strings.text(lang, "auto.hold"),
+        );
+        ui.selectable_value(
+            &mut touch.auto_select_mode,
+            AutoSelectMode::Toggle,
+            strings.text(lang, "auto.toggle"),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label(strings.text(lang, "pause.lock_on"));
+        ui.selectable_value(
+            &mut touch.lock_on_priority,
+            LockOnPriority::ClearestLine,
+            strings.text(lang, "lock.clearest_line"),
+        );
+        ui.selectable_value(
+            &mut touch.lock_on_priority,
+            LockOnPriority::TargetClosest,
+            strings.text(lang, "lock.target_closest"),
+        );
+    });
     ui.horizontal(|ui| {
         ui.label(strings.text(lang, "pause.up_to_jump"));
         egui::ComboBox::from_id_salt("charon up to jump")

@@ -1,5 +1,6 @@
 //! 仕様 07 §2.1: セルと独立した、決定的なエンティティの格納。
 
+pub mod autoselect;
 pub mod blocks;
 pub mod collapse;
 pub mod combat;
@@ -23,6 +24,7 @@ pub mod respawn;
 pub mod save;
 pub mod spawner;
 pub mod status;
+pub mod targeting;
 pub mod vitals;
 pub mod wand;
 

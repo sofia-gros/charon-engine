@@ -25,6 +25,8 @@ pub struct Inventory {
     counts: BTreeMap<u32, u32>,
     hotbar: [Option<ItemId>; HOTBAR_SLOTS],
     selected: u8,
+    /// オートセレクトで一時的に選ばれたアイテム (仕様 28 §8)。保存しない。ホットバーの選択は変えない。
+    auto: Option<ItemId>,
 }
 
 /// セルのアイテムにも、ブロックのアイテムにもできない材質 (空・境界)。
@@ -220,9 +222,20 @@ impl Inventory {
         usize::from(self.selected)
     }
 
-    /// 選んでいる枠のアイテム (持っていなければ `None`)。
+    /// 選んでいるアイテム。オートセレクトで選ばれたものがあれば、それ。なければ選んでいる枠のアイテム
+    /// (持っていなければ `None`)。
     pub fn selected_item(&self) -> Option<ItemId> {
-        self.hotbar_active(self.selected())
+        self.auto_item().or_else(|| self.hotbar_active(self.selected()))
+    }
+
+    /// オートセレクトで一時的に選ぶアイテムを決める (`None` で解除)。持っていないアイテムは選べない。
+    pub fn set_auto_item(&mut self, item: Option<ItemId>) {
+        self.auto = item.filter(|&item| self.item_count(item) > 0);
+    }
+
+    /// オートセレクトで選ばれているアイテム (持ち物から無くなっていれば `None`)。
+    pub fn auto_item(&self) -> Option<ItemId> {
+        self.auto.filter(|&item| self.item_count(item) > 0)
     }
 
     /// 状態を FNV-1a 64-bit で流す (同期の照合用)。セルだけの持ち物は、これまでと同じ値。
@@ -258,6 +271,11 @@ impl Inventory {
                 feed(&slot.map_or(u32::MAX, |item| item.0).to_le_bytes());
             }
             feed(&[self.selected]);
+        }
+        // オートセレクト中だけ、選んでいるアイテムが変わるので流す。なければこれまでと同じ値。
+        if let Some(item) = self.auto_item() {
+            feed(&[0xA7, 0x70]);
+            feed(&item.0.to_le_bytes());
         }
         hash
     }

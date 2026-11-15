@@ -510,6 +510,8 @@ struct App {
     touch_pad: TouchPad,
     /// 使うボタンの最後の倒れ (千分率)。
     cursor_tilt: (i32, i32),
+    /// ロックオンの状態 (仕様 28 §8)。
+    lock_on: charon_game::targeting::LockOn,
     /// 次にブロックなどを使える世界の tick。
     use_ready: u64,
     /// フックを張りっぱなしにしているか (投げてから、切り離すまで)。数えている tick は、ロープが出るまでの猶予。
@@ -587,6 +589,7 @@ impl App {
             pointer: PointerInput::default(),
             gestures: TouchGestures::default(),
             cursor_tilt: (0, 0),
+            lock_on: charon_game::targeting::LockOn::default(),
             use_ready: 0,
             hook_latch: None,
             touch_pad: {
@@ -1066,6 +1069,10 @@ impl App {
         // 画面のスティック・ボタン (仕様 10 §10)。キーボード・マウスの操作と、使っている方が優先される形で重ねる。
         self.touch_pad.set_viewport([size.width as f32, size.height as f32]);
         self.touch_pad.advance(elapsed.as_secs_f32());
+        let auto_mode = self.gui.as_ref().map_or(self.settings.touch.auto_select_mode, |gui| {
+            gui.controls.touch.auto_select_mode
+        });
+        self.touch_pad.set_auto_mode(auto_mode);
         self.touch_pad.set_up_to_jump(
             self.gui
                 .as_ref()
@@ -1151,6 +1158,7 @@ impl App {
                     cursor_tilt: &mut self.cursor_tilt,
                     use_ready: &mut self.use_ready,
                     touch: touch_settings,
+                    lock: &mut self.lock_on,
                 },
                 &pad,
                 self.weapon_down,
@@ -1187,6 +1195,8 @@ impl App {
                 }
             }
             let tool = tool || latched_tool;
+            // ロック中は、武器をその敵へ向ける。フックの向きは、ロックの影響を受けない。
+            let lock_aim = built.lock_aim.filter(|_| pad.hook_throw.is_none());
             if !built.weapon {
                 action.fire = false;
             }
@@ -1196,6 +1206,11 @@ impl App {
             action.dig |= dig;
             if (fire || dig || (tool && pad.hook_throw.is_none())) && pad.hook_throw.is_none() {
                 action.aim = pad.aim.unwrap_or((i32::from(self.facing) * 1000, -300));
+            }
+            if let Some(aim) = lock_aim
+                && action.fire
+            {
+                action.aim = aim;
             }
         }
         let (camera, radius) = camera_range(size, zoom, origin);
