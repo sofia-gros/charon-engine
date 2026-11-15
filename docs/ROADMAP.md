@@ -440,6 +440,19 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 
 未着手 (後続の候補): 装備・アイテムの種類、ネットワークのアプリへの組み込み (マルチは後回し)、経路探索、性能の次の候補 (08 §6 の (b)(c))。
 
+**M34 Android 版 Terraria の操作の模倣 (v0.1.0)**: 2026-11-15 の持ち主の指示で、M28 の保留を解いて操作を実装する。公開資料の調査 [TERRARIA_ANDROID_UI_REFERENCE.md](TERRARIA_ANDROID_UI_REFERENCE.md) をもとに、[仕様 28](spec/28-terraria-android-controls.md) に規則・判断・テスト名・**対象にしないもの**を定めた。実機の Terraria との並べた比較は引き続き未実施で、「完全に同じ」とは主張しない。仕様 18 の「直接タップは作らない」は取り下げた (仕様変更)。全タスクが終わったら v0.1.0 として公開する。
+
+| タスク | 読む仕様 | 完了条件 | 状態 |
+|---|---|---|---|
+| **T34.0 契約** | [28](spec/28-terraria-android-controls.md)、[資料](TERRARIA_ANDROID_UI_REFERENCE.md)、[18](spec/18-terraria-touch.md) | 仕様 28 に判断・対象外・テスト名を記し `scripts/check.sh` が通る | 🟡 仕様を記述 |
+| **T34.1 世界の直接タッチとピンチ** | [28 §5](spec/28-terraria-android-controls.md) | 仕様 28 §5 の 8 テスト | 未着手 |
+| **T34.2 狙う方式・サブ攻撃・スマートカーソルの記憶** | [28 §6](spec/28-terraria-android-controls.md) | 仕様 28 §6 の 8 テスト | 未着手 |
+| **T34.3 ジャンプ方式・クイック回復/マナ** | [28 §7](spec/28-terraria-android-controls.md) | 仕様 28 §7 の 8 テスト | 未着手 |
+| **T34.4 オートセレクト・インタラクト・ロックオン** | [28 §8](spec/28-terraria-android-controls.md) | 仕様 28 §8 の 9 テスト | 未着手 |
+| **T34.5 ホットバー・体力マナ・ツールチップ** | [28 §9](spec/28-terraria-android-controls.md) | 仕様 28 §9 の 5 テスト | 未着手 |
+| **T34.6 インベントリの下のボタン** | [28 §10](spec/28-terraria-android-controls.md) | 仕様 28 §10 の 6 テスト | 未着手 |
+| **T34.7 通しと v0.1.0** | [28 §11](spec/28-terraria-android-controls.md)、[RELEASE_CHECK](RELEASE_CHECK.md) | `terraria_android_controls_chain`、`scripts/check-release-version.py v0.1.0`、`scripts/check.sh`、公開した Release の確認 | 未着手 |
+
 ---
 
 ## 仕様の確かさについて
