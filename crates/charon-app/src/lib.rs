@@ -1018,6 +1018,14 @@ impl App {
                 gui.controls.zoom * (zoom_dir as f32 * ZOOM_BUTTON_RATE * dt).exp(),
             );
         }
+        // ピンチ (仕様 28 §5): 世界の 2 本指の距離の変化で、滑らかにズームする。
+        let pinch = self.touch_pad.take_pinch_ratio();
+        if self.options.follow_player
+            && pinch != 1.0
+            && let Some(gui) = self.gui.as_mut()
+        {
+            gui.controls.zoom = charon_render::clean_zoom(gui.controls.zoom * pinch);
+        }
         let (zoom, mut origin, paused, step_once, light_quality) = self.gui.as_ref().map_or(
             (4.0, [0.0, 0.0], false, false, charon_render::LightQuality::High),
             |gui| {
@@ -1061,11 +1069,22 @@ impl App {
         let pad_input = self.gamepad.as_mut().map(gamepad::Gamepad::poll).unwrap_or_default();
         #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         let pad_input = PadOutput::default();
-        let pad = if self.options.follow_player && !self.free_camera {
+        let mut pad = if self.options.follow_player && !self.free_camera {
             self.touch_pad.output().merge(pad_input)
         } else {
             PadOutput::default()
         };
+        // 世界を直接さわる指 (仕様 28 §5): ポーズの間は使わない。武器は、指の方向へ向ける。
+        if let Some(at) = pad.world_touch {
+            if paused {
+                pad.world_touch = None;
+                pad.use_item = false;
+            } else if let Some(entity) = self.player.and_then(|id| self.entities.get(id))
+                && let Some(aim) = build_input::world_touch_aim(entity, at, zoom, origin)
+            {
+                pad.aim = Some(aim);
+            }
+        }
         if pad.toggle_paint {
             if let Some(gui) = self.gui.as_mut() {
                 gui.controls.paint = !gui.controls.paint;

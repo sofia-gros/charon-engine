@@ -2,8 +2,8 @@
 
 use charon_core::coords::CellPos;
 use charon_game::cursor::{
-    Cursor, CursorState, CursorUse, REACH_CELLS, center_of, cursor_from_offset, cursor_state,
-    smart_cursor, usage_of,
+    Cursor, CursorState, CursorUse, REACH_CELLS, center_of, cursor_at, cursor_from_offset,
+    cursor_state, smart_cursor, usage_of,
 };
 use charon_game::items::{ItemClass, ItemId, ItemKind};
 
@@ -42,6 +42,16 @@ fn weapon_like(item: Option<ItemId>, defs: &charon_game::defs::Definitions) -> b
             )
         }
     }
+}
+
+/// 世界を直接さわっている指への、プレイヤーからの向き (1/16 セル単位、武器を向ける)。位置が不正なら `None`。
+pub(super) fn world_touch_aim(
+    entity: &charon_game::Entity,
+    at: [f32; 2],
+    zoom: f32,
+    origin: [f32; 2],
+) -> Option<(i32, i32)> {
+    crate::demo_ui::pointer_cell(at, zoom, origin).map(|cell| crate::player::aim_at(entity, cell))
 }
 
 /// `build_frame` が触る項目 (App の別々の項目を借りる)。
@@ -106,7 +116,10 @@ pub(super) fn build_frame(
     }
     // カーソル: タッチの画面ではスティックの倒れ (スマートなら向き) から、そうでなければマウスの位置から。
     let touch = ctx.touch_pad.visible();
-    let cursor: Option<Cursor> = if touch {
+    let cursor: Option<Cursor> = if let Some(at) = pad.world_touch {
+        // 世界を直接さわっている指 (仕様 28 §5): 指の場所のセルを指す。届く範囲の外なら、枠は赤で何も起きない。
+        crate::demo_ui::pointer_cell(at, zoom, origin).map(|cell| cursor_at(cell, usage))
+    } else if touch {
         let tilt = *ctx.cursor_tilt;
         if ctx.touch_pad.smart() {
             let dir = ctx.touch_pad.last_aim().unwrap_or(tilt);
@@ -376,6 +389,7 @@ pub(super) fn apply_fixture_commands(
 mod tests {
     use std::sync::Arc;
 
+    use charon_core::cell::MaterialId;
     use charon_core::material::MaterialTable;
     use charon_core::testkit::{box_art, place, place_block, world_from_ascii};
     use charon_game::blocks::BlockPos;
@@ -768,6 +782,163 @@ mod tests {
             Ok(charon_game::loadout::UseOutcome::Broken)
         );
         assert_eq!(game.inventories[&id].block_count(wood), 1);
+    }
+
+    /// 世界の指のテスト用の一式。
+    struct Rig {
+        world: World,
+        entities: EntityWorld,
+        game: GameState,
+        defs: Definitions,
+        id: EntityId,
+        pad: TouchPad,
+        ready: u64,
+    }
+
+    impl Rig {
+        fn new(seed: u64) -> Self {
+            let (world, entities, game, defs, id) = setup_with_seed(seed);
+            Self { world, entities, game, defs, id, pad: TouchPad::default(), ready: 0 }
+        }
+
+        /// 材質 `name` のブロックを `count` 個持たせ、0 番の枠に印して選ぶ。
+        fn give_blocks(&mut self, name: &str, count: u32) -> MaterialId {
+            let material = self.world.materials().id(name).unwrap();
+            let inv = self.game.inventories.get_mut(&self.id).unwrap();
+            inv.add_block(material, count);
+            inv.pin(0, ItemId::block(material));
+            inv.select(0);
+            material
+        }
+
+        fn center(&self) -> CellPos {
+            center_of(&self.entities, self.id).unwrap()
+        }
+
+        /// 世界の指 1 本の入力フレームを流す (ズーム 1、原点 (0, 0) なので、画素 = セル)。
+        fn touch(&mut self, at: [f32; 2]) -> BuildFrame {
+            let mut tilt = (0, 0);
+            let output =
+                PadOutput { world_touch: Some(at), use_item: true, ..PadOutput::default() };
+            build_frame(
+                BuildCtx {
+                    world: &mut self.world,
+                    entities: &mut self.entities,
+                    game: &mut self.game,
+                    touch_pad: &mut self.pad,
+                    player: Some(self.id),
+                    defs: Some(Arc::new(self.defs.clone())),
+                    cursor_tilt: &mut tilt,
+                    use_ready: &mut self.ready,
+                },
+                &output,
+                false,
+                None,
+                1.0,
+                [0.0, 0.0],
+            )
+        }
+
+        fn blocks(&self, material: MaterialId) -> u32 {
+            self.game.inventories[&self.id].block_count(material)
+        }
+
+        fn has_block(&self, block: BlockPos) -> bool {
+            self.world.get(block.origin().unwrap()).has(charon_core::cell::FLAG_BLOCK)
+        }
+    }
+
+    /// ブロックを選んで世界をタップすると、触れたセルのブロックの格子に置かれる (仕様 28 §5)。
+    #[test]
+    fn world_tap_places_a_block_at_the_touched_cell() {
+        for seed in 1..=8 {
+            let mut rig = Rig::new(seed);
+            let stone = rig.give_blocks("stone", 3);
+            let block = BlockPos::containing(rig.center());
+            let target = BlockPos { bx: block.bx + 2, by: block.by };
+            let origin = target.origin().unwrap();
+            // ブロックの中の、中心でない場所をさわっても、そのブロックに置かれる。
+            rig.touch([(origin.x + 1) as f32 + 0.5, (origin.y + 6) as f32 + 0.5]);
+            assert_eq!(rig.blocks(stone), 2, "seed={seed}");
+            assert!(rig.has_block(target), "seed={seed}");
+            assert_eq!(
+                rig.pad.cursor_view().map(|view| view.state),
+                Some(CursorState::Ok),
+                "seed={seed}: 枠が出る"
+            );
+        }
+    }
+
+    /// 押したまま動かすと、カーソルが指を追い、通ったブロックに続けて置く。間隔 (6 tick) は守る。
+    #[test]
+    fn world_drag_follows_the_finger_and_places_continuously() {
+        let mut rig = Rig::new(1);
+        let stone = rig.give_blocks("stone", 5);
+        let block = BlockPos::containing(rig.center());
+        let first = BlockPos { bx: block.bx + 2, by: block.by };
+        let second = BlockPos { bx: block.bx + 3, by: block.by };
+        let cell = |p: BlockPos| {
+            let o = p.origin().unwrap();
+            [(o.x + 4) as f32 + 0.5, (o.y + 4) as f32 + 0.5]
+        };
+        rig.touch(cell(first));
+        rig.touch(cell(second));
+        assert!(rig.has_block(first));
+        assert!(!rig.has_block(second), "間隔の間は置かない");
+        charon_core::testkit::run(&mut rig.world, USE_INTERVAL);
+        rig.touch(cell(second));
+        assert!(rig.has_block(second));
+        assert_eq!(rig.blocks(stone), 3);
+    }
+
+    /// 届く範囲の外では、カーソルは円の縁に寄らず、枠は赤で、何も置かれない。
+    #[test]
+    fn world_touch_out_of_reach_does_nothing() {
+        let mut rig = Rig::new(1);
+        let stone = rig.give_blocks("stone", 2);
+        let center = rig.center();
+        let far = BlockPos::containing(CellPos::new(center.x + REACH_CELLS + 16, center.y));
+        let origin = far.origin().unwrap();
+        let before = rig.game.state_hash();
+        rig.touch([(origin.x + 4) as f32 + 0.5, (origin.y + 4) as f32 + 0.5]);
+        assert_eq!(rig.blocks(stone), 2);
+        assert!(!rig.has_block(far));
+        assert_eq!(rig.pad.cursor_view().map(|view| view.state), Some(CursorState::OutOfReach));
+        assert_eq!(rig.game.state_hash(), before, "失敗したら何も変えない");
+    }
+
+    /// 武器は、プレイヤーから指の場所への向きへ向ける。不正な位置は無視する。
+    #[test]
+    fn world_touch_aims_weapons_toward_the_finger() {
+        let (_world, entities, _game, _defs, id) = setup();
+        let player = entities.get(id).unwrap();
+        let center = center_of(&entities, id).unwrap();
+        let right = world_touch_aim(
+            player,
+            [(center.x + 30) as f32 + 0.5, center.y as f32 + 0.5],
+            1.0,
+            [0.0, 0.0],
+        )
+        .unwrap();
+        assert!(right.0 > 400 && right.1.abs() < 40, "{right:?}");
+        let up_left = world_touch_aim(
+            player,
+            [(center.x - 20) as f32 + 0.5, (center.y - 20) as f32 + 0.5],
+            1.0,
+            [0.0, 0.0],
+        )
+        .unwrap();
+        assert!(up_left.0 < -200 && up_left.1 < -200, "{up_left:?}");
+        // ズームと原点を使って、画素からセルへ直す。
+        let zoomed = world_touch_aim(
+            player,
+            [(center.x - 5) as f32 * 4.0 + 2.0, center.y as f32 * 4.0],
+            4.0,
+            [5.0, 0.0],
+        )
+        .unwrap();
+        assert!(zoomed.0 < 0 || zoomed.0.abs() < 40, "{zoomed:?}");
+        assert_eq!(world_touch_aim(player, [f32::NAN, 0.0], 1.0, [0.0, 0.0]), None);
     }
 
     /// App のクラフト入力はプレイヤー中心から有効な Station を探す。

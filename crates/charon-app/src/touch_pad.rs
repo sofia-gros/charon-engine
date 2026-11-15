@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use winit::event::TouchPhase;
 
 /// 1 フレームぶんの操作 (タッチ・ゲームパッド共通)。`aim` は 1/16 セル単位の向き (長さは意味を持たない)。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PadOutput {
     pub horizontal: i8,
     pub jump: bool,
@@ -39,6 +39,8 @@ pub(crate) struct PadOutput {
     pub select_slot: Option<u8>,
     /// インベントリの格子が押された (このフレームだけ)。
     pub toggle_inventory: bool,
+    /// 世界を直接さわっている 1 本の指の位置 (画面の画素、仕様 28 §5)。使うボタンの指があるとき・ピンチ中は `None`。
+    pub world_touch: Option<[f32; 2]>,
 }
 
 impl PadOutput {
@@ -60,6 +62,7 @@ impl PadOutput {
             hook_aim: other.hook_aim.or(self.hook_aim),
             select_slot: other.select_slot.or(self.select_slot),
             toggle_inventory: self.toggle_inventory || other.toggle_inventory,
+            world_touch: other.world_touch.or(self.world_touch),
         }
     }
 }
@@ -85,13 +88,22 @@ enum Owner {
     Smart,
     Slot(u8),
     More,
+    /// どの部品にも当たらない指: 世界を直接さわる (仕様 28 §5)。
+    World,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct Touch {
     owner: Owner,
     now: [f32; 2],
+    /// 世界の指が 2 本以上になった: ピンチなので、アイテムを使わない。1 本に戻っても、離すまで使わない。
+    no_use: bool,
 }
+
+/// 世界の指の本数の上限。これを超えて新しく触れたら、古い指は離したイベントを取りこぼしたものとして捨てる。
+const MAX_WORLD_FINGERS: usize = 2;
+/// 1 回の動きで変わる、ピンチの拡大率の範囲。
+const PINCH_STEP: (f32, f32) = (0.5, 2.0);
 
 #[derive(Debug, Default)]
 pub(crate) struct TouchPad {
@@ -110,6 +122,10 @@ pub(crate) struct TouchPad {
     last_aim: Option<(i32, i32)>,
     /// 描画用のカーソルの枠。
     cursor: Option<CursorView>,
+    /// 世界の指が 2 本あるときの、直前の距離。
+    pinch_distance: Option<f32>,
+    /// まだ使われていない、ピンチの拡大率 (積)。1 = 変化なし。
+    pinch_ratio: f32,
 }
 
 /// カーソルの枠 (画面の画素)と状態。
@@ -283,27 +299,57 @@ impl TouchPad {
         match phase {
             TouchPhase::Started => {
                 self.visible = true;
-                let Some(owner) = self.layout().owner_at(pos) else { return false };
-                // 同じ部品に新しく触れたら、前の指は古いもの (離したイベントを取りこぼした) とみなして捨てる。
-                self.touches.retain(|_, t| t.owner != owner);
+                if !pos[0].is_finite() || !pos[1].is_finite() {
+                    return false;
+                }
+                // どの部品にも当たらない指は、世界をさわる (仕様 28 §5)。
+                let owner = self.layout().owner_at(pos).unwrap_or(Owner::World);
+                let mut no_use = false;
+                if owner == Owner::World {
+                    // 世界の指は同時に 2 本まで。それを超えるなら、古い指は取りこぼしたものとして捨てる。
+                    if self.world_count() >= MAX_WORLD_FINGERS {
+                        self.touches.retain(|_, t| t.owner != Owner::World);
+                    }
+                    // 2 本目が触れた: ピンチ。使うのをやめる。
+                    if self.world_count() >= 1 {
+                        for touch in self.touches.values_mut().filter(|t| t.owner == Owner::World) {
+                            touch.no_use = true;
+                        }
+                        no_use = true;
+                    }
+                } else {
+                    // 同じ部品に新しく触れたら、前の指は古いもの (離したイベントを取りこぼした) とみなして捨てる。
+                    self.touches.retain(|_, t| t.owner != owner);
+                }
                 match owner {
                     Owner::Smart => self.smart = !self.smart,
                     Owner::Inventory | Owner::More => self.inventory_tap = true,
                     Owner::Slot(n) => self.slot_tap = Some(n),
                     _ => {}
                 }
-                self.touches.insert(id, Touch { owner, now: pos });
+                self.touches.insert(id, Touch { owner, now: pos, no_use });
+                if owner == Owner::World {
+                    self.pinch_distance = self.world_distance();
+                }
                 true
             }
             TouchPhase::Moved => match self.touches.get_mut(&id) {
                 Some(touch) => {
-                    touch.now = pos;
+                    if pos[0].is_finite() && pos[1].is_finite() {
+                        touch.now = pos;
+                    }
+                    if touch.owner == Owner::World {
+                        self.update_pinch();
+                    }
                     true
                 }
                 None => false,
             },
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 let Some(touch) = self.touches.remove(&id) else { return false };
+                if touch.owner == Owner::World {
+                    self.pinch_distance = self.world_distance();
+                }
                 if touch.owner == Owner::Hook && phase == TouchPhase::Ended {
                     let layout = self.layout();
                     let (dx, dy) = (touch.now[0] - layout.hook[0], touch.now[1] - layout.hook[1]);
@@ -322,6 +368,57 @@ impl TouchPad {
         self.slot_tap = None;
         self.inventory_tap = false;
         self.hook_release = None;
+        self.pinch_distance = None;
+        self.pinch_ratio = 1.0;
+    }
+
+    /// 世界をさわっている指の数。
+    fn world_count(&self) -> usize {
+        self.touches.values().filter(|t| t.owner == Owner::World).count()
+    }
+
+    /// 世界の指がちょうど 2 本のとき、その距離。
+    fn world_distance(&self) -> Option<f32> {
+        let mut fingers = self.touches.values().filter(|t| t.owner == Owner::World);
+        let (a, b) = (fingers.next()?, fingers.next()?);
+        if fingers.next().is_some() {
+            return None;
+        }
+        Some((a.now[0] - b.now[0]).hypot(a.now[1] - b.now[1])).filter(|d| d.is_finite())
+    }
+
+    /// 2 本指の距離の変化を、拡大率に積む (1 回の動きで 0.5〜2 倍まで)。
+    fn update_pinch(&mut self) {
+        let Some(distance) = self.world_distance() else {
+            self.pinch_distance = None;
+            return;
+        };
+        if let Some(previous) = self.pinch_distance
+            && previous > 0.0
+            && distance > 0.0
+        {
+            let step = (distance / previous).clamp(PINCH_STEP.0, PINCH_STEP.1);
+            let ratio = if self.pinch_ratio > 0.0 { self.pinch_ratio } else { 1.0 };
+            self.pinch_ratio = ratio * step;
+        }
+        self.pinch_distance = Some(distance);
+    }
+
+    /// ピンチで、まだ反映していない拡大率 (1 = 変化なし)。呼ぶと 1 に戻る。
+    pub(crate) fn take_pinch_ratio(&mut self) -> f32 {
+        let ratio = if self.pinch_ratio > 0.0 && self.pinch_ratio.is_finite() {
+            self.pinch_ratio
+        } else {
+            1.0
+        };
+        self.pinch_ratio = 1.0;
+        ratio
+    }
+
+    /// 世界の指がピンチ中か (テスト用)。
+    #[cfg(test)]
+    pub(crate) fn pinching(&self) -> bool {
+        self.world_count() >= 2
     }
 
     /// 左スティックに触れている指のずれ (描画用)。`(中心, 指の位置)`。
@@ -358,6 +455,7 @@ impl TouchPad {
             "zoom_in" => Owner::ZoomIn,
             "zoom_out" => Owner::ZoomOut,
             "inventory" => Owner::Inventory,
+            "world" => Owner::World,
             "smart" => return self.smart,
             _ => return false,
         };
@@ -398,8 +496,18 @@ impl TouchPad {
                 | Owner::Inventory
                 | Owner::Smart
                 | Owner::Slot(_)
-                | Owner::More => {}
+                | Owner::More
+                | Owner::World => {}
             }
+        }
+        // 世界を直接さわる指 (仕様 28 §5): 使うボタンの指がなく、ピンチでもない 1 本の指だけが、使う。
+        let use_finger = self.touches.values().any(|t| t.owner == Owner::Use);
+        let mut world = self.touches.values().filter(|t| t.owner == Owner::World);
+        if let (Some(touch), None, false) = (world.next(), world.next(), use_finger)
+            && !touch.no_use
+        {
+            out.world_touch = Some(touch.now);
+            out.use_item = true;
         }
         out.hook_aim = self.hook_aim();
         if out.use_item {
@@ -602,6 +710,97 @@ mod tests {
         }
         let out = pad.output();
         assert!(!out.use_item && out.horizontal == 0 && out.cursor_tilt.is_none());
+    }
+
+    const WORLD: [f32; 2] = [800.0, 300.0];
+
+    /// 部品に当たらない新しい指だけが、世界の指になる (仕様 28 §5)。
+    #[test]
+    fn world_touch_is_taken_only_outside_controls() {
+        let mut pad = pad();
+        let l = pad.layout();
+        // 部品の上の指は、世界の指にならない。
+        assert!(pad.update(1, TouchPhase::Started, l.jump));
+        assert!(!pad.held("world") && pad.output().world_touch.is_none());
+        pad.update(1, TouchPhase::Ended, l.jump);
+        // 何もない場所の指は、世界の指。使う指になり、動かすと追う。
+        assert!(pad.update(2, TouchPhase::Started, WORLD));
+        assert!(pad.held("world"));
+        let out = pad.output();
+        assert!(out.use_item && out.world_touch == Some(WORLD) && out.cursor_tilt.is_none());
+        pad.update(2, TouchPhase::Moved, [900.0, 350.0]);
+        assert_eq!(pad.output().world_touch, Some([900.0, 350.0]));
+        // 不正な座標の動きは無視する。不正な座標で触れても世界の指にならない。
+        pad.update(2, TouchPhase::Moved, [f32::NAN, 1.0]);
+        assert_eq!(pad.output().world_touch, Some([900.0, 350.0]));
+        assert!(!pad.update(3, TouchPhase::Started, [f32::NAN, 0.0]));
+        pad.update(2, TouchPhase::Ended, WORLD);
+        assert!(!pad.held("world") && pad.output().world_touch.is_none());
+        assert!(!pad.output().use_item);
+    }
+
+    /// 使うボタンの指があるとき、世界の指は動かさない。離すと、また動く。
+    #[test]
+    fn use_button_wins_over_world_touch() {
+        let mut pad = pad();
+        let l = pad.layout();
+        pad.update(1, TouchPhase::Started, WORLD);
+        pad.update(2, TouchPhase::Started, l.use_button);
+        let out = pad.output();
+        assert!(out.world_touch.is_none(), "{out:?}");
+        assert!(out.use_item && out.cursor_tilt == Some((0, 0)), "使うボタンが優先");
+        pad.update(2, TouchPhase::Ended, l.use_button);
+        assert_eq!(pad.output().world_touch, Some(WORLD), "使うボタンを離したら、また動く");
+    }
+
+    /// 世界の指が 2 本: ピンチでズームし、使うのをやめる。1 本に戻っても、離して触れ直すまで使わない。
+    #[test]
+    fn two_world_fingers_pinch_zoom_and_stop_using() {
+        let mut pad = pad();
+        pad.update(1, TouchPhase::Started, [700.0, 300.0]);
+        assert!(pad.output().use_item);
+        pad.update(2, TouchPhase::Started, [800.0, 300.0]);
+        assert!(pad.pinching());
+        let out = pad.output();
+        assert!(!out.use_item && out.world_touch.is_none(), "ピンチ中は使わない");
+        assert_eq!(pad.take_pinch_ratio(), 1.0, "動くまでは変化なし");
+        // 100 → 150: 1.5 倍。続けて 150 → 120: 0.8 倍。積は 1.2 倍。
+        pad.update(2, TouchPhase::Moved, [850.0, 300.0]);
+        pad.update(2, TouchPhase::Moved, [820.0, 300.0]);
+        assert!((pad.take_pinch_ratio() - 1.2).abs() < 1e-4);
+        assert_eq!(pad.take_pinch_ratio(), 1.0, "取ると 1 に戻る");
+        // 一度に大きく動いても、1 回の変化は 2 倍まで。
+        pad.update(2, TouchPhase::Moved, [3000.0, 300.0]);
+        assert!((pad.take_pinch_ratio() - 2.0).abs() < 1e-4);
+        // 1 本に戻っても使わない。触れ直せば使う。
+        pad.update(2, TouchPhase::Ended, [3000.0, 300.0]);
+        assert!(!pad.pinching());
+        assert!(!pad.output().use_item, "ピンチの名残の指は使わない");
+        pad.update(1, TouchPhase::Ended, [700.0, 300.0]);
+        pad.update(3, TouchPhase::Started, WORLD);
+        assert!(pad.output().use_item);
+    }
+
+    /// 世界の指も、離す・取り消し・全解除で、押されたままにならない。取りこぼしても、3 本目で古い指を捨てる。
+    #[test]
+    fn world_touch_never_sticks() {
+        let mut pad = pad();
+        pad.update(1, TouchPhase::Started, WORLD);
+        pad.update(1, TouchPhase::Cancelled, WORLD);
+        assert!(!pad.held("world") && !pad.output().use_item);
+        pad.update(2, TouchPhase::Started, WORLD);
+        pad.release_all();
+        assert!(!pad.held("world") && !pad.output().use_item);
+        assert_eq!(pad.take_pinch_ratio(), 1.0);
+        // 離したイベントを取りこぼした古い 2 本があっても、新しい指でやり直せる。
+        pad.update(3, TouchPhase::Started, [100.0, 300.0]);
+        pad.update(4, TouchPhase::Started, [200.0, 300.0]);
+        pad.update(5, TouchPhase::Started, WORLD);
+        assert!(!pad.pinching(), "古い指は捨てられた");
+        assert_eq!(pad.output().world_touch, Some(WORLD));
+        // 知らない指の動き・終わりは、部品のものではない。
+        assert!(!pad.update(99, TouchPhase::Moved, WORLD));
+        assert!(!pad.update(99, TouchPhase::Ended, WORLD));
     }
 
     /// UI の大きさの倍率で、ボタンの半径とスティックの半径が変わる。

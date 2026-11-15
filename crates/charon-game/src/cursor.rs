@@ -75,6 +75,12 @@ pub fn clamp_to_reach(offset: (i32, i32)) -> (i32, i32) {
     ((dx * reach / len) as i32, (dy * reach / len) as i32)
 }
 
+/// カーソルを、指す**セルそのもの**で指す (画面を直接さわる操作)。届く範囲に収めない: 外なら [`cursor_state`] が
+/// `OutOfReach` を返し、何も起きない。ブロックを使うもの (`Place`・`Mine`) は、ブロックの格子に揃う。
+pub fn cursor_at(cell: CellPos, usage: CursorUse) -> Cursor {
+    snap(cell, usage)
+}
+
 /// 向き `dir` (長さは問わない) の、円の縁へのずれ。`dir` が (0, 0) なら `None`。
 pub fn rim_offset(dir: (i32, i32)) -> Option<(i32, i32)> {
     let (dx, dy) = (i64::from(dir.0), i64::from(dir.1));
