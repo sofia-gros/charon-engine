@@ -65,7 +65,7 @@ git tag v0.0.8
 git push origin v0.0.8
 ```
 
-APK の `versionName` はアプリ版 `0.0.8`、`versionCode` は 8 に設定する。タグ・アプリ版・Android メタデータは release ワークフローで照合し、完成した APK の値も `aapt` で検査する。ただしデバッグ鍵は CI で毎回作り直すため、以前の APK に上書きインストールできない。アンインストール前に保存データを退避すること。製品版の署名ではない。
+APK の `versionName` はアプリの `Cargo.toml` の版 `0.0.8`、`versionCode` は `cargo-apk` の規則 `(1 << 24) | (major << 16) | (minor << 8) | patch` による 16777224。`version_name` / `version_code` を Android の TOML に書くと `cargo-apk` が panic する。タグ・アプリ版を release ワークフローで照合し、完成した APK の値は `aapt` で検査する。ただしデバッグ鍵は CI で毎回作り直すため、以前の APK に上書きインストールできない。アンインストール前に保存データを退避すること。製品版の署名ではない。
 
 ## 実機またはエミュレーターの確認
 

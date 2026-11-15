@@ -27,8 +27,8 @@ path = "src/demo_main.rs"
 [package.metadata.android]
 package = "dev.charon.sandbox"
 build_targets = ["aarch64-linux-android"]
-version_code = 8
-version_name = "0.0.8"
+# cargo-apk derives versionName and versionCode from the package version.
+# Defining either value here causes cargo-apk to panic.
 
 [package.metadata.android.sdk]
 min_sdk_version = 26

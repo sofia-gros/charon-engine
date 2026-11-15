@@ -24,14 +24,12 @@ def main() -> int:
         print(f"invalid release tag: {tag}", file=sys.stderr)
         return 1
     major, minor, patch = map(int, match.groups())
-    if minor >= 1000 or patch >= 1000:
-        print("minor and patch must be below 1000 for Android versionCode", file=sys.stderr)
+    if any(part > 255 for part in (major, minor, patch)):
+        print("cargo-apk requires each version component to fit in a byte", file=sys.stderr)
         return 1
     version = tag[1:]
-    code = major * 1_000_000 + minor * 1_000 + patch
-    if not 1 <= code <= 2_100_000_000:
-        print(f"Android versionCode is out of range: {code}", file=sys.stderr)
-        return 1
+    # cargo-apk's VersionCode::to_code(1): APK ID, major, minor, patch.
+    code = 1 << 24 | major << 16 | minor << 8 | patch
 
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
@@ -46,8 +44,8 @@ def main() -> int:
     with (ROOT / "apps/sandbox/Cargo.toml").open("rb") as source:
         sandbox = tomllib.load(source)
     android = sandbox["package"]["metadata"]["android"]
-    if android.get("version_name") != version or android.get("version_code") != code:
-        print(f"Android version mismatch: expected {version} (code {code})", file=sys.stderr)
+    if "version_name" in android or "version_code" in android:
+        print("cargo-apk rejects explicit Android version_name/version_code", file=sys.stderr)
         return 1
     app_dependency = sandbox["dependencies"]["charon-app"]["version"]
     if app_dependency != version:
