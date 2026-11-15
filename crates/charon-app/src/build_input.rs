@@ -12,12 +12,15 @@ use charon_game::game::GameState;
 use charon_game::{EntityId, EntityWorld};
 
 use super::PadOutput;
+use crate::settings::{AimMode, ItemCategory, TouchSettings};
 use crate::touch_pad::{CursorView, TouchPad};
 
 /// 使うボタンが、ブロックなどを使い終わったあと、次に使えるまでの tick。
 const USE_INTERVAL: u64 = 6;
 /// 消耗品の間隔 (tick)。
 const CONSUME_INTERVAL: u64 = 40;
+/// 使うボタンのつまみを、これ以上倒すまでは、ブロック・消耗品を使わない (千分率。仕様 28 §6)。
+const CENTRE_TILT: i32 = 150;
 
 /// 1 フレームの結果。
 pub(super) struct BuildFrame {
@@ -27,6 +30,8 @@ pub(super) struct BuildFrame {
     pub mine: Option<Cursor>,
     /// 設備・箱の操作は固定 tick へ渡す。
     pub fixture_command: Option<crate::ui::FixtureCommand>,
+    /// 画面の操作 (使うボタン・サブ攻撃・世界の指) が、今、使っている。マウスは含まない。
+    pub pad_use: bool,
 }
 
 /// 選んでいるアイテムが、武器として撃つものか (何も選んでいない・武器・セルのアイテム)。
@@ -64,6 +69,8 @@ pub(super) struct BuildCtx<'a> {
     pub defs: Option<std::sync::Arc<charon_game::defs::Definitions>>,
     pub cursor_tilt: &'a mut (i32, i32),
     pub use_ready: &'a mut u64,
+    /// 狙う方式・スマートカーソルの記憶と感度 (仕様 28 §6)。
+    pub touch: &'a mut TouchSettings,
 }
 
 /// ホットバーの選択・カーソルの計算と描画の通知・選んだアイテムの使用をする。`mouse_use` はマウスの左ボタン、
@@ -78,7 +85,7 @@ pub(super) fn build_frame(
 ) -> BuildFrame {
     let (Some(id), Some(defs)) = (ctx.player, ctx.defs.clone()) else {
         ctx.touch_pad.set_cursor(None);
-        return BuildFrame { weapon: true, mine: None, fixture_command: None };
+        return BuildFrame { weapon: true, mine: None, fixture_command: None, pad_use: false };
     };
     if let Some(slot) = pad.select_slot
         && let Some(inventory) = ctx.game.inventories.get_mut(&id)
@@ -107,9 +114,25 @@ pub(super) fn build_frame(
     let fixture_item = item.filter(|&i| defs.fixture_for_item(i).is_some());
     let usage = if fixture_item.is_some() { CursorUse::Place } else { usage_of(item, &defs) };
     let weapon = fixture_item.is_none() && weapon_like(item, &defs);
+    // 種類ごとの狙う方式とスマートカーソル (仕様 28 §6)。切り替えのボタンは、今の種類に効く。
+    let category = match usage {
+        CursorUse::Place => ItemCategory::Block,
+        CursorUse::Mine => ItemCategory::Tool,
+        CursorUse::Free if weapon => ItemCategory::Weapon,
+        CursorUse::Free => ItemCategory::Other,
+    };
+    if pad.toggle_aim {
+        ctx.touch.toggle_aim(category);
+    }
+    if pad.toggle_smart {
+        ctx.touch.toggle_smart(category);
+    }
+    let aim_mode = ctx.touch.aim_mode(category);
+    let smart = ctx.touch.smart(category);
+    ctx.touch_pad.set_modes(aim_mode == AimMode::AimOnly, smart);
     let Some(center) = center_of(ctx.entities, id) else {
         ctx.touch_pad.set_cursor(None);
-        return BuildFrame { weapon, mine: None, fixture_command: None };
+        return BuildFrame { weapon, mine: None, fixture_command: None, pad_use: false };
     };
     if let Some(tilt) = pad.cursor_tilt {
         *ctx.cursor_tilt = tilt;
@@ -120,8 +143,8 @@ pub(super) fn build_frame(
         // 世界を直接さわっている指 (仕様 28 §5): 指の場所のセルを指す。届く範囲の外なら、枠は赤で何も起きない。
         crate::demo_ui::pointer_cell(at, zoom, origin).map(|cell| cursor_at(cell, usage))
     } else if touch {
-        let tilt = *ctx.cursor_tilt;
-        if ctx.touch_pad.smart() {
+        let tilt = ctx.touch.scale_tilt(*ctx.cursor_tilt);
+        if smart {
             let dir = ctx.touch_pad.last_aim().unwrap_or(tilt);
             smart_cursor(ctx.world, center, dir, usage)
         } else {
@@ -149,8 +172,13 @@ pub(super) fn build_frame(
         _ => None,
     };
     ctx.touch_pad.set_cursor(view);
-    // 使う。設備と箱は入力を記録し、次の固定 tick で検証して適用する。
-    let want = pad.use_item || mouse_use;
+    // 使う。スティックは Aim & Use のとき (ブロック・消耗品は、つまみを倒してから)、サブ攻撃ボタンはいつでも、
+    // 世界の指は触れている間、使う (仕様 28 §5・§6)。設備と箱は入力を記録し、次の固定 tick で検証して適用する。
+    let tilted = pad.cursor_tilt.is_some_and(|(x, y)| x.abs().max(y.abs()) >= CENTRE_TILT);
+    let careful = matches!(category, ItemCategory::Block | ItemCategory::Other);
+    let stick_use = pad.use_item && aim_mode == AimMode::AimUse && (tilted || !careful);
+    let pad_use = stick_use || pad.action || pad.world_touch.is_some();
+    let want = pad_use || mouse_use;
     let tick = ctx.world.tick();
     let mut fixture_command = None;
     if want
@@ -192,6 +220,7 @@ pub(super) fn build_frame(
             None
         },
         fixture_command,
+        pad_use,
     }
 }
 
@@ -448,6 +477,7 @@ mod tests {
                     defs: Some(Arc::new(defs.clone())),
                     cursor_tilt: &mut tilt,
                     use_ready: &mut ready,
+                    touch: &mut TouchSettings::default(),
                 },
                 &PadOutput::default(),
                 true,
@@ -750,6 +780,7 @@ mod tests {
                 defs: Some(Arc::new(defs.clone())),
                 cursor_tilt: &mut tilt,
                 use_ready: &mut use_ready,
+                touch: &mut TouchSettings::default(),
             },
             &PadOutput::default(),
             true,
@@ -793,12 +824,41 @@ mod tests {
         id: EntityId,
         pad: TouchPad,
         ready: u64,
+        settings: TouchSettings,
+        tilt: (i32, i32),
     }
 
     impl Rig {
         fn new(seed: u64) -> Self {
             let (world, entities, game, defs, id) = setup_with_seed(seed);
-            Self { world, entities, game, defs, id, pad: TouchPad::default(), ready: 0 }
+            let mut pad = TouchPad::default();
+            pad.show();
+            Self {
+                world,
+                entities,
+                game,
+                defs,
+                id,
+                pad,
+                ready: 0,
+                settings: TouchSettings::default(),
+                tilt: (0, 0),
+            }
+        }
+
+        /// 持ち物の `name` を 1 個持たせ、0 番の枠に印して選ぶ。
+        fn give_item(&mut self, name: &str) -> ItemId {
+            let item = self.defs.item_id(name, self.world.materials()).unwrap();
+            let inv = self.game.inventories.get_mut(&self.id).unwrap();
+            inv.add_item(item, 1);
+            inv.pin(0, item);
+            inv.select(0);
+            item
+        }
+
+        /// 使うボタンのスティックを `tilt` (千分率) へ倒した入力。
+        fn stick(tilt: (i32, i32)) -> PadOutput {
+            PadOutput { use_item: true, cursor_tilt: Some(tilt), ..PadOutput::default() }
         }
 
         /// 材質 `name` のブロックを `count` 個持たせ、0 番の枠に印して選ぶ。
@@ -815,11 +875,8 @@ mod tests {
             center_of(&self.entities, self.id).unwrap()
         }
 
-        /// 世界の指 1 本の入力フレームを流す (ズーム 1、原点 (0, 0) なので、画素 = セル)。
-        fn touch(&mut self, at: [f32; 2]) -> BuildFrame {
-            let mut tilt = (0, 0);
-            let output =
-                PadOutput { world_touch: Some(at), use_item: true, ..PadOutput::default() };
+        /// 入力 1 フレームを流す (ズーム 1、原点 (0, 0) なので、画素 = セル)。
+        fn frame(&mut self, pad: &PadOutput) -> BuildFrame {
             build_frame(
                 BuildCtx {
                     world: &mut self.world,
@@ -828,15 +885,21 @@ mod tests {
                     touch_pad: &mut self.pad,
                     player: Some(self.id),
                     defs: Some(Arc::new(self.defs.clone())),
-                    cursor_tilt: &mut tilt,
+                    cursor_tilt: &mut self.tilt,
                     use_ready: &mut self.ready,
+                    touch: &mut self.settings,
                 },
-                &output,
+                pad,
                 false,
                 None,
                 1.0,
                 [0.0, 0.0],
             )
+        }
+
+        /// 世界の指 1 本の入力フレームを流す。
+        fn touch(&mut self, at: [f32; 2]) -> BuildFrame {
+            self.frame(&PadOutput { world_touch: Some(at), ..PadOutput::default() })
         }
 
         fn blocks(&self, material: MaterialId) -> u32 {
@@ -905,6 +968,143 @@ mod tests {
         assert!(!rig.has_block(far));
         assert_eq!(rig.pad.cursor_view().map(|view| view.state), Some(CursorState::OutOfReach));
         assert_eq!(rig.game.state_hash(), before, "失敗したら何も変えない");
+    }
+
+    /// ブロックの既定は Aim Only: スティックはカーソルを動かすだけで、置かない (仕様 28 §6)。
+    #[test]
+    fn aim_only_moves_the_cursor_without_using() {
+        let mut rig = Rig::new(1);
+        let stone = rig.give_blocks("stone", 3);
+        let frame = rig.frame(&Rig::stick((500, 0)));
+        assert!(!frame.pad_use, "スティックだけでは使わない");
+        assert_eq!(rig.blocks(stone), 3);
+        assert!(rig.pad.cursor_view().is_some(), "カーソルは動く (枠が出る)");
+        assert!(rig.pad.aim_only(), "描画に、狙うだけと知らせる");
+    }
+
+    /// Aim Only では、サブ攻撃ボタンを押している間、カーソルの場所に使う。スティックを離してもカーソルは残る。
+    #[test]
+    fn action_button_uses_at_the_cursor_in_aim_only() {
+        let mut rig = Rig::new(1);
+        let stone = rig.give_blocks("stone", 3);
+        rig.frame(&Rig::stick((500, 0)));
+        let frame = rig.frame(&PadOutput { action: true, ..Rig::stick((500, 0)) });
+        assert!(frame.pad_use);
+        assert_eq!(rig.blocks(stone), 2, "置いた");
+        // スティックを離しても、カーソルは動かした場所に残り、サブ攻撃で続けて使える。
+        charon_core::testkit::run(&mut rig.world, USE_INTERVAL);
+        let frame = rig.frame(&PadOutput { action: true, ..PadOutput::default() });
+        assert!(frame.pad_use);
+        assert_eq!(rig.tilt, (500, 0), "倒れを覚えている");
+    }
+
+    /// 武器の既定は Aim & Use: スティックで撃ち続ける。
+    #[test]
+    fn aim_and_use_keeps_the_weapon_firing_with_the_stick() {
+        let mut rig = Rig::new(1);
+        rig.give_item("starter_wand");
+        let frame = rig.frame(&Rig::stick((0, 0)));
+        assert!(frame.pad_use && frame.weapon, "中心をたたいただけでも、武器は撃つ");
+        assert!(!rig.pad.aim_only());
+        let frame = rig.frame(&PadOutput::default());
+        assert!(!frame.pad_use, "離したら撃たない");
+    }
+
+    /// 切り替えて Aim & Use にしたブロックは、つまみを倒すまで置かない。
+    #[test]
+    fn centre_tap_does_not_place_blocks() {
+        let mut rig = Rig::new(1);
+        let stone = rig.give_blocks("stone", 3);
+        rig.frame(&PadOutput { toggle_aim: true, ..PadOutput::default() });
+        assert!(!rig.pad.aim_only(), "Aim & Use に切り替わった");
+        let frame = rig.frame(&Rig::stick((0, 0)));
+        assert!(!frame.pad_use && rig.blocks(stone) == 3, "中心だけでは置かない");
+        let frame = rig.frame(&Rig::stick((149, 0)));
+        assert!(!frame.pad_use, "150‰ 未満");
+        let frame = rig.frame(&Rig::stick((200, 0)));
+        assert!(frame.pad_use);
+        assert_eq!(rig.blocks(stone), 2);
+    }
+
+    /// 切り替えは、今の種類だけに効く。種類ごとに覚える。
+    #[test]
+    fn aim_mode_is_remembered_by_item_category() {
+        let mut rig = Rig::new(1);
+        rig.give_blocks("stone", 1);
+        rig.frame(&PadOutput { toggle_aim: true, ..PadOutput::default() });
+        rig.frame(&PadOutput { toggle_smart: true, ..PadOutput::default() });
+        assert!(!rig.pad.aim_only() && rig.pad.smart(), "ブロックは Aim & Use・スマート");
+        rig.give_item("wood_pickaxe");
+        rig.frame(&PadOutput::default());
+        assert!(!rig.pad.aim_only(), "つるはしは元のまま Aim & Use");
+        assert!(rig.pad.smart(), "つるはしは元のままスマート");
+        rig.frame(&PadOutput { toggle_smart: true, ..PadOutput::default() });
+        assert!(!rig.pad.smart(), "つるはしのスマートだけ切れる");
+        rig.give_blocks("stone", 1);
+        rig.frame(&PadOutput::default());
+        assert!(rig.pad.smart(), "ブロックのスマートは残っている");
+    }
+
+    /// 設定「Aim Mode Toggle」「Smart Cursor Toggle」の 4 つの動き。
+    #[test]
+    fn aim_and_smart_toggle_modes_follow_settings() {
+        use crate::settings::{AimModeToggle, SmartCursorToggle};
+        let toggles = PadOutput { toggle_aim: true, toggle_smart: true, ..PadOutput::default() };
+        // 全部の種類を同じにする。
+        let mut rig = Rig::new(1);
+        rig.settings.aim_mode_toggle = AimModeToggle::ForAllItems;
+        rig.settings.smart_cursor_toggle = SmartCursorToggle::ForAllItems;
+        rig.give_blocks("stone", 1);
+        rig.frame(&toggles);
+        rig.give_item("starter_wand");
+        rig.frame(&PadOutput::default());
+        for category in crate::settings::ItemCategory::ALL {
+            assert_eq!(
+                rig.settings.aim_mode(category),
+                rig.settings.aim_mode(crate::settings::ItemCategory::Block),
+                "{category:?}"
+            );
+            assert_eq!(
+                rig.settings.smart(category),
+                rig.settings.smart(crate::settings::ItemCategory::Block)
+            );
+        }
+        // 常に Aim & Use / 常に Off: ボタンは何もしない。
+        let mut rig = Rig::new(1);
+        rig.settings.aim_mode_toggle = AimModeToggle::AlwaysAimUse;
+        rig.settings.smart_cursor_toggle = SmartCursorToggle::AlwaysOff;
+        rig.give_blocks("stone", 1);
+        rig.frame(&toggles);
+        assert!(
+            !rig.pad.aim_only() && !rig.pad.smart(),
+            "ブロックでも Aim & Use、スマートは切れたまま"
+        );
+        // 常に Aim Only / 常に On。
+        let mut rig = Rig::new(1);
+        rig.settings.aim_mode_toggle = AimModeToggle::AlwaysAimOnly;
+        rig.settings.smart_cursor_toggle = SmartCursorToggle::AlwaysOn;
+        rig.give_item("starter_wand");
+        rig.frame(&toggles);
+        assert!(rig.pad.aim_only() && rig.pad.smart(), "武器でも Aim Only・スマート");
+        let frame = rig.frame(&Rig::stick((900, 0)));
+        assert!(!frame.pad_use, "Aim Only の武器は、スティックでは撃たない");
+        let frame = rig.frame(&PadOutput { action: true, ..PadOutput::default() });
+        assert!(frame.pad_use && frame.weapon, "サブ攻撃で撃つ");
+    }
+
+    /// 感度は、スティックの倒れでカーソルが動く距離を変える。
+    #[test]
+    fn aim_sensitivity_scales_the_tilt() {
+        let mut places = Vec::new();
+        for sensitivity in [50, 100, 150] {
+            let mut rig = Rig::new(1);
+            rig.settings.aim_sensitivity = sensitivity;
+            rig.give_blocks("stone", 1);
+            rig.frame(&Rig::stick((400, 0)));
+            let view = rig.pad.cursor_view().unwrap();
+            places.push(view.rect[0]);
+        }
+        assert!(places[0] < places[1] && places[1] < places[2], "{places:?}");
     }
 
     /// 武器は、プレイヤーから指の場所への向きへ向ける。不正な位置は無視する。

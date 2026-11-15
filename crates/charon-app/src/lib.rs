@@ -643,6 +643,7 @@ impl App {
             self.settings.language = controls.language;
             self.settings.sim_distance = controls.sim_distance;
             self.settings.keys = controls.bindings.clone();
+            self.settings.touch = controls.touch.clone();
         }
         self.settings.sanitize();
         if let Err(err) = self.settings.write(&path) {
@@ -1127,6 +1128,12 @@ impl App {
                 gui.controls.inventory_open = !gui.controls.inventory_open;
             }
             let mouse_cell = pointer_cell(self.cursor, zoom, origin);
+            // 狙う方式・スマートカーソルの記憶と感度 (仕様 28 §6)。画面がなければ既定。
+            let mut fallback_touch = settings::TouchSettings::default();
+            let touch_settings = match self.gui.as_mut() {
+                Some(gui) => &mut gui.controls.touch,
+                None => &mut fallback_touch,
+            };
             let built = build_input::build_frame(
                 build_input::BuildCtx {
                     world: &mut self.world,
@@ -1137,6 +1144,7 @@ impl App {
                     defs: self.options.definitions.clone(),
                     cursor_tilt: &mut self.cursor_tilt,
                     use_ready: &mut self.use_ready,
+                    touch: touch_settings,
                 },
                 &pad,
                 self.weapon_down,
@@ -1151,7 +1159,7 @@ impl App {
                 gui.controls.inv_commands.push(ui::InvCommand::Fixture(command));
             }
             // 使うボタンは、武器を選んでいるときは武器を撃つ (向きは使うボタンの倒れ)。
-            let fire = pad.fire || button_fire || (pad.use_item && built.weapon && !paint);
+            let fire = pad.fire || button_fire || (built.pad_use && built.weapon && !paint);
             let tool = pad.tool || button_tool;
             // フック (仕様 18 §2.1): フックのスティックを離した向きへ投げて、切り離す (タップ・ジャンプ) まで張ったままにする。
             let mut latched_tool = false;
@@ -1821,6 +1829,7 @@ impl ApplicationHandler for App {
                 gui.controls.music_volume = self.settings.music_volume;
                 gui.controls.language = self.settings.language;
                 gui.controls.sim_distance = self.settings.sim_distance;
+                gui.controls.touch = self.settings.touch.clone();
                 gui.controls.bindings = self.keys.bindings().clone();
                 #[cfg(target_arch = "wasm32")]
                 {

@@ -40,7 +40,14 @@ pub(crate) struct PadOutput {
     /// インベントリの格子が押された (このフレームだけ)。
     pub toggle_inventory: bool,
     /// 世界を直接さわっている 1 本の指の位置 (画面の画素、仕様 28 §5)。使うボタンの指があるとき・ピンチ中は `None`。
+    /// 世界の指は、狙う方式に関係なく、触れている間、使う。
     pub world_touch: Option<[f32; 2]>,
+    /// サブ攻撃ボタンを押している (仕様 28 §6)。
+    pub action: bool,
+    /// 狙う方式の切り替えボタンが押された (このフレームだけ)。
+    pub toggle_aim: bool,
+    /// スマートカーソルの `+` が押された (このフレームだけ)。
+    pub toggle_smart: bool,
 }
 
 impl PadOutput {
@@ -63,6 +70,9 @@ impl PadOutput {
             select_slot: other.select_slot.or(self.select_slot),
             toggle_inventory: self.toggle_inventory || other.toggle_inventory,
             world_touch: other.world_touch.or(self.world_touch),
+            action: self.action || other.action,
+            toggle_aim: self.toggle_aim || other.toggle_aim,
+            toggle_smart: self.toggle_smart || other.toggle_smart,
         }
     }
 }
@@ -90,6 +100,10 @@ enum Owner {
     More,
     /// どの部品にも当たらない指: 世界を直接さわる (仕様 28 §5)。
     World,
+    /// サブ攻撃ボタン (仕様 28 §6)。
+    Action,
+    /// 狙う方式の切り替えボタン。
+    AimToggle,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -112,9 +126,12 @@ pub(crate) struct TouchPad {
     touches: BTreeMap<u64, Touch>,
     /// 部品全体の大きさの倍率 (0 は 1 とみなす)。
     scale: f32,
-    /// スマートカーソルが入っているか。
+    /// 描画用: 今の種類の狙う方式が Aim Only か、スマートカーソルが入っているか (`build_frame` が知らせる)。
+    aim_only: bool,
     smart: bool,
     /// このフレームだけ立つ出来事。
+    smart_tap: bool,
+    aim_tap: bool,
     slot_tap: Option<u8>,
     inventory_tap: bool,
     hook_release: Option<HookRelease>,
@@ -163,6 +180,11 @@ pub(crate) struct Layout {
     /// インベントリの格子と、スマートカーソルの `+`。半径は `0.9u`。
     pub inventory: [f32; 2],
     pub smart: [f32; 2],
+    /// 狙う方式の切り替えボタン (半径 `0.9u`)。
+    pub aim_toggle: [f32; 2],
+    /// サブ攻撃ボタン (使うボタンの左上、半径 `1.0u`)。
+    pub action: [f32; 2],
+    pub action_radius: f32,
 }
 
 impl Layout {
@@ -186,6 +208,9 @@ impl Layout {
             zoom_in: [w * 0.5 + 1.2 * unit, h - 1.2 * unit],
             inventory: [1.2 * unit, h - 8.0 * unit],
             smart: [3.4 * unit, h - 8.0 * unit],
+            aim_toggle: [5.6 * unit, h - 8.0 * unit],
+            action: [use_button[0] - 1.9 * unit, use_button[1] - 3.6 * unit],
+            action_radius: unit,
         }
     }
 
@@ -211,6 +236,12 @@ impl Layout {
         }
         if near(self.hook, self.hook_radius * 1.3) {
             return Some(Owner::Hook);
+        }
+        if near(self.action, self.action_radius * 1.2) {
+            return Some(Owner::Action);
+        }
+        if near(self.aim_toggle, 0.9 * self.unit * 1.2) {
+            return Some(Owner::AimToggle);
         }
         if near(self.jump, self.jump_radius * 1.2) {
             return Some(Owner::Jump);
@@ -289,9 +320,20 @@ impl TouchPad {
         self.last_aim
     }
 
-    /// スマートカーソルが入っているか。
+    /// スマートカーソルが入っているか (今の種類、`build_frame` が知らせた値)。
     pub(crate) fn smart(&self) -> bool {
         self.smart
+    }
+
+    /// 今の種類の狙う方式が Aim Only か。
+    pub(crate) fn aim_only(&self) -> bool {
+        self.aim_only
+    }
+
+    /// 描画のために、今の種類の狙う方式とスマートカーソルを知らせる。
+    pub(crate) fn set_modes(&mut self, aim_only: bool, smart: bool) {
+        self.aim_only = aim_only;
+        self.smart = smart;
     }
 
     /// タッチのイベントを反映する。この指が部品のものなら true。
@@ -322,7 +364,8 @@ impl TouchPad {
                     self.touches.retain(|_, t| t.owner != owner);
                 }
                 match owner {
-                    Owner::Smart => self.smart = !self.smart,
+                    Owner::Smart => self.smart_tap = true,
+                    Owner::AimToggle => self.aim_tap = true,
                     Owner::Inventory | Owner::More => self.inventory_tap = true,
                     Owner::Slot(n) => self.slot_tap = Some(n),
                     _ => {}
@@ -367,6 +410,8 @@ impl TouchPad {
         self.touches.clear();
         self.slot_tap = None;
         self.inventory_tap = false;
+        self.smart_tap = false;
+        self.aim_tap = false;
         self.hook_release = None;
         self.pinch_distance = None;
         self.pinch_ratio = 1.0;
@@ -456,6 +501,8 @@ impl TouchPad {
             "zoom_out" => Owner::ZoomOut,
             "inventory" => Owner::Inventory,
             "world" => Owner::World,
+            "action" => Owner::Action,
+            "aim_toggle" => return self.aim_only,
             "smart" => return self.smart,
             _ => return false,
         };
@@ -490,11 +537,13 @@ impl TouchPad {
                         self.last_aim = Some(tilt);
                     }
                 }
+                Owner::Action => out.action = true,
                 Owner::Hook => {}
                 Owner::ZoomIn
                 | Owner::ZoomOut
                 | Owner::Inventory
                 | Owner::Smart
+                | Owner::AimToggle
                 | Owner::Slot(_)
                 | Owner::More
                 | Owner::World => {}
@@ -507,10 +556,11 @@ impl TouchPad {
             && !touch.no_use
         {
             out.world_touch = Some(touch.now);
-            out.use_item = true;
         }
+        out.toggle_smart = std::mem::take(&mut self.smart_tap);
+        out.toggle_aim = std::mem::take(&mut self.aim_tap);
         out.hook_aim = self.hook_aim();
-        if out.use_item {
+        if out.use_item || out.action {
             out.aim = Some(self.last_aim.unwrap_or(DEFAULT_AIM));
         }
         if let Some(release) = self.hook_release.take() {
@@ -659,13 +709,18 @@ mod tests {
         pad.update(3, TouchPhase::Started, l.inventory);
         pad.update(3, TouchPhase::Ended, l.inventory);
         assert!(pad.output().toggle_inventory && !pad.output().toggle_inventory);
-        // `+` はスマートカーソルの入り切り。
-        assert!(!pad.smart());
+        // `+` はスマートカーソルの切り替え。触れたフレームに 1 度だけ出る (状態は種類ごとの記憶で、`build_frame` が持つ)。
+        assert!(!pad.output().toggle_smart);
         pad.update(4, TouchPhase::Started, l.smart);
         pad.update(4, TouchPhase::Ended, l.smart);
-        assert!(pad.smart());
-        pad.update(5, TouchPhase::Started, l.smart);
-        assert!(!pad.smart());
+        assert!(pad.output().toggle_smart);
+        assert!(!pad.output().toggle_smart, "1 度だけ");
+        // 狙う方式の切り替えも同じ。
+        pad.update(5, TouchPhase::Started, l.aim_toggle);
+        pad.update(5, TouchPhase::Ended, l.aim_toggle);
+        let out = pad.output();
+        assert!(out.toggle_aim && !out.toggle_smart);
+        assert!(!pad.output().toggle_aim);
     }
 
     /// ズームのボタン: 押している間、拡大 (+1)・縮小 (-1)。離すと止まる。
@@ -727,7 +782,7 @@ mod tests {
         assert!(pad.update(2, TouchPhase::Started, WORLD));
         assert!(pad.held("world"));
         let out = pad.output();
-        assert!(out.use_item && out.world_touch == Some(WORLD) && out.cursor_tilt.is_none());
+        assert!(!out.use_item && out.world_touch == Some(WORLD) && out.cursor_tilt.is_none());
         pad.update(2, TouchPhase::Moved, [900.0, 350.0]);
         assert_eq!(pad.output().world_touch, Some([900.0, 350.0]));
         // 不正な座標の動きは無視する。不正な座標で触れても世界の指にならない。
@@ -758,11 +813,11 @@ mod tests {
     fn two_world_fingers_pinch_zoom_and_stop_using() {
         let mut pad = pad();
         pad.update(1, TouchPhase::Started, [700.0, 300.0]);
-        assert!(pad.output().use_item);
+        assert!(pad.output().world_touch.is_some());
         pad.update(2, TouchPhase::Started, [800.0, 300.0]);
         assert!(pad.pinching());
         let out = pad.output();
-        assert!(!out.use_item && out.world_touch.is_none(), "ピンチ中は使わない");
+        assert!(out.world_touch.is_none(), "ピンチ中は使わない");
         assert_eq!(pad.take_pinch_ratio(), 1.0, "動くまでは変化なし");
         // 100 → 150: 1.5 倍。続けて 150 → 120: 0.8 倍。積は 1.2 倍。
         pad.update(2, TouchPhase::Moved, [850.0, 300.0]);
@@ -775,10 +830,10 @@ mod tests {
         // 1 本に戻っても使わない。触れ直せば使う。
         pad.update(2, TouchPhase::Ended, [3000.0, 300.0]);
         assert!(!pad.pinching());
-        assert!(!pad.output().use_item, "ピンチの名残の指は使わない");
+        assert!(pad.output().world_touch.is_none(), "ピンチの名残の指は使わない");
         pad.update(1, TouchPhase::Ended, [700.0, 300.0]);
         pad.update(3, TouchPhase::Started, WORLD);
-        assert!(pad.output().use_item);
+        assert!(pad.output().world_touch.is_some());
     }
 
     /// 世界の指も、離す・取り消し・全解除で、押されたままにならない。取りこぼしても、3 本目で古い指を捨てる。
@@ -787,10 +842,10 @@ mod tests {
         let mut pad = pad();
         pad.update(1, TouchPhase::Started, WORLD);
         pad.update(1, TouchPhase::Cancelled, WORLD);
-        assert!(!pad.held("world") && !pad.output().use_item);
+        assert!(!pad.held("world") && pad.output().world_touch.is_none());
         pad.update(2, TouchPhase::Started, WORLD);
         pad.release_all();
-        assert!(!pad.held("world") && !pad.output().use_item);
+        assert!(!pad.held("world") && pad.output().world_touch.is_none());
         assert_eq!(pad.take_pinch_ratio(), 1.0);
         // 離したイベントを取りこぼした古い 2 本があっても、新しい指でやり直せる。
         pad.update(3, TouchPhase::Started, [100.0, 300.0]);
@@ -848,6 +903,8 @@ mod tests {
                 (l.zoom_out, 0.8 * u),
                 (l.inventory, 0.9 * u),
                 (l.smart, 0.9 * u),
+                (l.aim_toggle, 0.9 * u),
+                (l.action, l.action_radius),
             ];
             for (i, (a, ra)) in parts.iter().enumerate() {
                 assert!(a[0] - ra >= -0.1 && a[0] + ra <= w + 0.1, "{view:?}: 横に収まる {a:?}");

@@ -9,7 +9,7 @@ use winit::event::WindowEvent;
 use winit::window::Window;
 
 use crate::demo_ui::{DemoAction, DemoUi, FrameStats, Overlay};
-use crate::settings::{Action, KeyBindings, Language};
+use crate::settings::{Action, KeyBindings, Language, TouchSettings};
 
 #[derive(Debug)]
 pub(super) struct Controls {
@@ -50,6 +50,8 @@ pub(super) struct Controls {
     pub(super) rebinding: Option<Action>,
     /// キー割り当て (画面に出す・変更する。アプリの入力と同期する)。
     pub(super) bindings: KeyBindings,
+    /// タッチ操作の設定 (狙う方式・スマートカーソルの記憶・感度。仕様 28)。
+    pub(super) touch: TouchSettings,
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) save: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -133,6 +135,7 @@ impl Controls {
             open_chest: None,
             rebinding: None,
             bindings: KeyBindings::default(),
+            touch: TouchSettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             save: false,
             #[cfg(not(target_arch = "wasm32"))]

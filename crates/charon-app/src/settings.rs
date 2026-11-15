@@ -243,6 +243,168 @@ pub enum Language {
     Japanese,
 }
 
+/// 選んでいるアイテムの種類 (仕様 28 §6)。狙う方式とスマートカーソルの記憶の単位。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemCategory {
+    /// 置くもの (ブロック・設備)。
+    Block,
+    /// つるはし・斧。
+    Tool,
+    /// 武器・セルのアイテム・何も選んでいない。
+    Weapon,
+    /// 消耗品・そのほか。
+    Other,
+}
+
+impl ItemCategory {
+    pub const ALL: [Self; 4] = [Self::Block, Self::Tool, Self::Weapon, Self::Other];
+
+    fn index(self) -> usize {
+        match self {
+            Self::Block => 0,
+            Self::Tool => 1,
+            Self::Weapon => 2,
+            Self::Other => 3,
+        }
+    }
+}
+
+/// 狙う方式 (仕様 28 §6)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AimMode {
+    /// スティックに触れている間、使う。
+    AimUse,
+    /// スティックはカーソルを動かすだけ。使うのはサブ攻撃ボタン。
+    AimOnly,
+}
+
+/// 狙う方式の切り替えボタンの動き。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AimModeToggle {
+    /// 今の種類の方式を反転して覚える。
+    #[default]
+    ByItemType,
+    /// 全部の種類を同じにする。
+    ForAllItems,
+    AlwaysAimUse,
+    AlwaysAimOnly,
+}
+
+/// スマートカーソルの切り替えボタンの動き。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SmartCursorToggle {
+    #[default]
+    ByItemType,
+    ForAllItems,
+    AlwaysOff,
+    AlwaysOn,
+}
+
+/// タッチ操作の設定 (仕様 28)。古い設定ファイルにはないので、足りない項目は既定。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TouchSettings {
+    pub aim_mode_toggle: AimModeToggle,
+    pub smart_cursor_toggle: SmartCursorToggle,
+    /// 使うボタンの感度 (50〜150 %)。
+    pub aim_sensitivity: u16,
+    /// 種類ごとの記憶 (`ItemCategory::ALL` の順): 狙うだけか。
+    pub aim_only: Vec<bool>,
+    /// 種類ごとの記憶: スマートカーソルが入っているか。
+    pub smart_on: Vec<bool>,
+}
+
+/// 種類ごとの既定: ブロックと消耗品は狙うだけ、道具と武器は狙って使う (仕様 28 §1)。
+const DEFAULT_AIM_ONLY: [bool; 4] = [true, false, false, true];
+/// 種類ごとの既定: つるはし・斧だけスマートカーソルが入っている。
+const DEFAULT_SMART_ON: [bool; 4] = [false, true, false, false];
+/// 感度の範囲と既定。
+pub const AIM_SENSITIVITY: (u16, u16, u16) = (50, 150, 100);
+
+impl Default for TouchSettings {
+    fn default() -> Self {
+        Self {
+            aim_mode_toggle: AimModeToggle::default(),
+            smart_cursor_toggle: SmartCursorToggle::default(),
+            aim_sensitivity: AIM_SENSITIVITY.2,
+            aim_only: DEFAULT_AIM_ONLY.to_vec(),
+            smart_on: DEFAULT_SMART_ON.to_vec(),
+        }
+    }
+}
+
+impl TouchSettings {
+    /// 値を範囲に収める。記憶の数が合わないときは既定に戻す。
+    pub fn sanitize(&mut self) {
+        self.aim_sensitivity = self.aim_sensitivity.clamp(AIM_SENSITIVITY.0, AIM_SENSITIVITY.1);
+        if self.aim_only.len() != ItemCategory::ALL.len() {
+            self.aim_only = DEFAULT_AIM_ONLY.to_vec();
+        }
+        if self.smart_on.len() != ItemCategory::ALL.len() {
+            self.smart_on = DEFAULT_SMART_ON.to_vec();
+        }
+    }
+
+    /// 今の種類の狙う方式。
+    pub fn aim_mode(&self, category: ItemCategory) -> AimMode {
+        let only = match self.aim_mode_toggle {
+            AimModeToggle::AlwaysAimUse => false,
+            AimModeToggle::AlwaysAimOnly => true,
+            _ => self.aim_only.get(category.index()).copied().unwrap_or(false),
+        };
+        if only { AimMode::AimOnly } else { AimMode::AimUse }
+    }
+
+    /// 狙う方式の切り替えボタン。
+    pub fn toggle_aim(&mut self, category: ItemCategory) {
+        let next = !self.aim_only.get(category.index()).copied().unwrap_or(false);
+        match self.aim_mode_toggle {
+            AimModeToggle::ByItemType => {
+                if let Some(slot) = self.aim_only.get_mut(category.index()) {
+                    *slot = next;
+                }
+            }
+            AimModeToggle::ForAllItems => self.aim_only.iter_mut().for_each(|v| *v = next),
+            AimModeToggle::AlwaysAimUse | AimModeToggle::AlwaysAimOnly => {}
+        }
+    }
+
+    /// 今の種類で、スマートカーソルが入っているか。
+    pub fn smart(&self, category: ItemCategory) -> bool {
+        match self.smart_cursor_toggle {
+            SmartCursorToggle::AlwaysOff => false,
+            SmartCursorToggle::AlwaysOn => true,
+            _ => self.smart_on.get(category.index()).copied().unwrap_or(false),
+        }
+    }
+
+    /// スマートカーソルの切り替えボタン (`+`)。
+    pub fn toggle_smart(&mut self, category: ItemCategory) {
+        let next = !self.smart_on.get(category.index()).copied().unwrap_or(false);
+        match self.smart_cursor_toggle {
+            SmartCursorToggle::ByItemType => {
+                if let Some(slot) = self.smart_on.get_mut(category.index()) {
+                    *slot = next;
+                }
+            }
+            SmartCursorToggle::ForAllItems => self.smart_on.iter_mut().for_each(|v| *v = next),
+            SmartCursorToggle::AlwaysOff | SmartCursorToggle::AlwaysOn => {}
+        }
+    }
+
+    /// 使うボタンの倒れ (千分率) に、感度を掛ける。長さは 1000 までに収める (向きは変わらない)。
+    pub fn scale_tilt(&self, tilt: (i32, i32)) -> (i32, i32) {
+        let percent = i64::from(self.aim_sensitivity.clamp(AIM_SENSITIVITY.0, AIM_SENSITIVITY.1));
+        let (x, y) = (i64::from(tilt.0) * percent / 100, i64::from(tilt.1) * percent / 100);
+        let length = (x * x + y * y).isqrt();
+        if length > 1000 {
+            ((x * 1000 / length) as i32, (y * 1000 / length) as i32)
+        } else {
+            (x as i32, y as i32)
+        }
+    }
+}
+
 /// 設定ファイルの版。
 pub const SETTINGS_VERSION: u32 = 1;
 /// 設定ファイルの大きさの上限 (バイト)。
@@ -269,6 +431,9 @@ pub struct Settings {
     #[serde(default)]
     pub sim_distance: u32,
     pub keys: KeyBindings,
+    /// タッチ操作の設定 (仕様 28)。古い設定ファイルにはない。
+    #[serde(default)]
+    pub touch: TouchSettings,
 }
 
 impl Default for Settings {
@@ -284,6 +449,7 @@ impl Default for Settings {
             language: Language::English,
             sim_distance: 0,
             keys: KeyBindings::default(),
+            touch: TouchSettings::default(),
         }
     }
 }
@@ -340,6 +506,7 @@ impl Settings {
         self.music_volume = clamp(self.music_volume, 0.0, 1.0, 0.7);
         self.sim_distance = self.sim_distance.min(charon_world::streaming::MAX_SIM_DISTANCE);
         self.keys.sanitize();
+        self.touch.sanitize();
     }
 
     pub fn to_ron(&self) -> Result<String, SettingsError> {
@@ -519,5 +686,68 @@ mod tests {
         std::fs::write(&path, old).unwrap();
         assert_eq!(Settings::read(&path), Err(SettingsError::Version(9)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 仕様 28 §6: タッチの設定は保存・復帰でき、範囲外を収め、`touch` のない古いファイルを既定で読める。
+    #[test]
+    fn aim_settings_roundtrip_and_clamp() {
+        let mut settings = Settings::default();
+        settings.touch.aim_mode_toggle = AimModeToggle::ForAllItems;
+        settings.touch.smart_cursor_toggle = SmartCursorToggle::AlwaysOn;
+        settings.touch.aim_sensitivity = 80;
+        settings.touch.toggle_aim(ItemCategory::Weapon);
+        let text = settings.to_ron().unwrap();
+        assert_eq!(Settings::from_ron(&text).unwrap().touch, settings.touch);
+        // 範囲外・数の合わない記憶は収める。
+        let mut wild = TouchSettings {
+            aim_sensitivity: 9999,
+            aim_only: vec![true],
+            smart_on: vec![],
+            ..TouchSettings::default()
+        };
+        wild.sanitize();
+        assert_eq!(wild.aim_sensitivity, 150);
+        assert_eq!(wild.aim_only.len(), 4);
+        assert_eq!(wild.smart_on.len(), 4);
+        wild.aim_sensitivity = 0;
+        wild.sanitize();
+        assert_eq!(wild.aim_sensitivity, 50);
+        // `touch` のない古いファイルは、既定で読める。
+        let mut old = Settings::default();
+        old.sanitize();
+        let full = old.to_ron().unwrap();
+        let start = full.find("touch:").unwrap();
+        let without = format!("{}\n)", full[..start].trim_end());
+        let parsed = Settings::from_ron(&without).unwrap();
+        assert_eq!(parsed.touch, TouchSettings::default());
+        // 一部の項目だけの `touch` も、足りない項目は既定。
+        let partial =
+            full.replace(&full[start..full.rfind(')').unwrap()], "touch: (aim_sensitivity: 70),\n");
+        assert_eq!(Settings::from_ron(&partial).unwrap().touch.aim_sensitivity, 70);
+        assert_eq!(Settings::from_ron(&partial).unwrap().touch.aim_only, DEFAULT_AIM_ONLY);
+    }
+
+    /// 種類ごとの既定、切り替え、感度。
+    #[test]
+    fn touch_settings_defaults_and_toggles() {
+        let mut touch = TouchSettings::default();
+        assert_eq!(touch.aim_mode(ItemCategory::Block), AimMode::AimOnly);
+        assert_eq!(touch.aim_mode(ItemCategory::Other), AimMode::AimOnly);
+        assert_eq!(touch.aim_mode(ItemCategory::Tool), AimMode::AimUse);
+        assert_eq!(touch.aim_mode(ItemCategory::Weapon), AimMode::AimUse);
+        assert!(touch.smart(ItemCategory::Tool));
+        assert!(!touch.smart(ItemCategory::Block) && !touch.smart(ItemCategory::Weapon));
+        // 倒れの感度: 50% は半分、150% は 1.5 倍で、長さは 1000 まで。
+        assert_eq!(touch.scale_tilt((400, 0)), (400, 0));
+        touch.aim_sensitivity = 50;
+        assert_eq!(touch.scale_tilt((400, -200)), (200, -100));
+        touch.aim_sensitivity = 150;
+        assert_eq!(touch.scale_tilt((400, 0)), (600, 0));
+        assert_eq!(touch.scale_tilt((1000, 0)), (1000, 0), "1000 で止まる");
+        let diagonal = touch.scale_tilt((1000, 1000));
+        assert!(
+            diagonal.0 == diagonal.1 && (diagonal.0 * diagonal.0 * 2) <= 1_000_000,
+            "{diagonal:?}"
+        );
     }
 }

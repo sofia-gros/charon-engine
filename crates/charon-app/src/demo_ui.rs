@@ -763,6 +763,7 @@ fn draw_pause_menu(context: &egui::Context, controls: &mut Controls) -> Option<D
                     .text(strings.text(lang, "pause.character_scale")),
             );
             sim_distance_slider(ui, &mut controls.sim_distance, lang);
+            touch_settings_rows(ui, &mut controls.touch, lang);
             ui.horizontal(|ui| {
                 ui.label(strings.text(lang, "pause.light"));
                 for (quality, name) in [
@@ -913,6 +914,8 @@ fn draw_touch_pad(
         (layout.zoom_out, "-", pad.held("zoom_out"), 0.8 * layout.unit),
         (layout.inventory, "[]", overlay_inventory_open(overlay), 0.9 * layout.unit),
         (layout.smart, "S", pad.smart(), 0.9 * layout.unit),
+        (layout.aim_toggle, "A", pad.aim_only(), 0.9 * layout.unit),
+        (layout.action, "!", pad.held("action"), layout.action_radius),
     ] {
         painter.circle(at(center), radius * scale, if held { knob } else { fill }, line);
         label(center, text, 0.6);
@@ -2176,6 +2179,81 @@ fn player_info(ui: &mut egui::Ui, overlay: &Overlay<'_>) {
 
 /// 更新距離 (チャンク) のスライダー: 0 は `Auto` (画面のまわりだけ)。カメラからこの距離の外のチャンクは、
 /// コールドフリーズする (砂・水・煙・熱の更新を一切しない、仕様 02 §9.4)。
+/// タッチ操作の設定 (仕様 28 §6): 狙う方式とスマートカーソルの切り替えの動き、使うボタンの感度。
+fn touch_settings_rows(
+    ui: &mut egui::Ui,
+    touch: &mut crate::settings::TouchSettings,
+    lang: crate::settings::Language,
+) {
+    use crate::settings::{AIM_SENSITIVITY, AimModeToggle, SmartCursorToggle};
+    let strings = crate::localization::ui_strings();
+    let mut sensitivity = touch.aim_sensitivity;
+    ui.add(
+        egui::Slider::new(&mut sensitivity, AIM_SENSITIVITY.0..=AIM_SENSITIVITY.1)
+            .suffix("%")
+            .text(strings.text(lang, "pause.aim_sensitivity")),
+    );
+    touch.aim_sensitivity = sensitivity;
+    ui.horizontal(|ui| {
+        ui.label(strings.text(lang, "pause.aim_toggle"));
+        egui::ComboBox::from_id_salt("charon aim toggle")
+            .selected_text(strings.text(lang, aim_toggle_key(touch.aim_mode_toggle)))
+            .show_ui(ui, |ui| {
+                for value in [
+                    AimModeToggle::ByItemType,
+                    AimModeToggle::ForAllItems,
+                    AimModeToggle::AlwaysAimUse,
+                    AimModeToggle::AlwaysAimOnly,
+                ] {
+                    ui.selectable_value(
+                        &mut touch.aim_mode_toggle,
+                        value,
+                        strings.text(lang, aim_toggle_key(value)),
+                    );
+                }
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.label(strings.text(lang, "pause.smart_toggle"));
+        egui::ComboBox::from_id_salt("charon smart toggle")
+            .selected_text(strings.text(lang, smart_toggle_key(touch.smart_cursor_toggle)))
+            .show_ui(ui, |ui| {
+                for value in [
+                    SmartCursorToggle::ByItemType,
+                    SmartCursorToggle::ForAllItems,
+                    SmartCursorToggle::AlwaysOff,
+                    SmartCursorToggle::AlwaysOn,
+                ] {
+                    ui.selectable_value(
+                        &mut touch.smart_cursor_toggle,
+                        value,
+                        strings.text(lang, smart_toggle_key(value)),
+                    );
+                }
+            });
+    });
+}
+
+fn aim_toggle_key(value: crate::settings::AimModeToggle) -> &'static str {
+    use crate::settings::AimModeToggle;
+    match value {
+        AimModeToggle::ByItemType => "toggle.by_item_type",
+        AimModeToggle::ForAllItems => "toggle.for_all_items",
+        AimModeToggle::AlwaysAimUse => "toggle.always_aim_use",
+        AimModeToggle::AlwaysAimOnly => "toggle.always_aim_only",
+    }
+}
+
+fn smart_toggle_key(value: crate::settings::SmartCursorToggle) -> &'static str {
+    use crate::settings::SmartCursorToggle;
+    match value {
+        SmartCursorToggle::ByItemType => "toggle.by_item_type",
+        SmartCursorToggle::ForAllItems => "toggle.for_all_items",
+        SmartCursorToggle::AlwaysOff => "toggle.always_off",
+        SmartCursorToggle::AlwaysOn => "toggle.always_on",
+    }
+}
+
 fn sim_distance_slider(ui: &mut egui::Ui, distance: &mut u32, lang: crate::settings::Language) {
     let strings = crate::localization::ui_strings();
     let response = ui.add(
