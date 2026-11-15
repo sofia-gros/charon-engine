@@ -237,6 +237,12 @@ pub(super) struct Overlay<'a> {
     pub(super) defs: Option<&'a charon_game::defs::Definitions>,
 }
 
+/// 文字列から決まる固定の ID (状態をフレームをまたいで持つため)。
+#[allow(deprecated)]
+fn stable_id(name: &str) -> egui::Id {
+    egui::Id::new(name)
+}
+
 /// ドラッグ元をフレーム間で記憶し、離した位置の枠を見つける (仕様 19 §3.1)。
 fn inventory_drag_slot(
     context: &egui::Context,
@@ -832,7 +838,6 @@ fn draw_touch_pad(
     overlay: &Overlay<'_>,
     controls: &Controls,
 ) {
-    use crate::touch_pad::HOTBAR_VISIBLE;
     let painter = context.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::unique("charon touch pad"),
@@ -925,7 +930,16 @@ fn draw_touch_pad(
         painter.circle(at(center), radius * scale, if held { knob } else { fill }, line);
         label(center, text, 0.6);
     }
-    draw_hotbar(context, &painter, scale, &layout, overlay, HOTBAR_VISIBLE, false, [0.0, 0.0]);
+    draw_hotbar(
+        context,
+        &painter,
+        scale,
+        &layout,
+        overlay,
+        layout.hotbar_visible(),
+        false,
+        [0.0, 0.0],
+    );
     draw_lock_marks(&painter, pad, overlay, controls, scale);
     draw_auto_slot(&painter, scale, &layout, overlay);
     // カーソル (ブロックの格子に揃う枠。置けない・届かないときは赤)。
@@ -1864,7 +1878,7 @@ fn draw_hotbar(
     let Some(inventory) = overlay.player.and_then(|id| overlay.game.inventories.get(&id)) else {
         return;
     };
-    let more = !numbers;
+    let more = !numbers && layout.has_more();
     for slot in 0..(visible + usize::from(more)) {
         let [l, t, r, b] = layout.slot_rect(slot);
         let rect = egui::Rect::from_min_max(at([l, t]), at([r, b]));
@@ -1924,8 +1938,15 @@ fn draw_hotbar(
             }
         }
     }
-    // 選んでいるアイテムの名前と数 (画面の上)。
-    if let Some(item) = inventory.selected_item() {
+    // 選んでいるアイテムの名前と数 (画面の上)。選び直してから設定の秒数 (仕様 28 §9) だけ出す。
+    let fade = overlay.pad.map_or(crate::hud_fade::NAME_FADE_DEFAULT, |pad| pad.tooltip_fade());
+    let now = context.input(|input| input.time);
+    let key = (inventory.selected(), inventory.selected_item());
+    let name_visible = context.data_mut(|data| {
+        data.get_temp_mut_or_default::<crate::hud_fade::NameFade>(stable_id("charon name fade"))
+            .visible(now, key, fade)
+    });
+    if let Some(item) = inventory.selected_item().filter(|_| name_visible) {
         let (name, _) = item_label(overlay, item);
         painter.text(
             egui::pos2(context.content_rect().center().x, unit * 0.6),
@@ -2069,16 +2090,38 @@ fn draw_hearts_and_stars(context: &egui::Context, overlay: &Overlay<'_>) {
     let hearts = count(i64::from(vitals.max_hp)).min(20);
     let stars = count(i64::from(wand.mana_max)).min(10);
     let (size, gap) = (18.0, 3.0);
-    egui::Area::new(egui::Id::unique("charon hearts"))
+    egui::Area::new(stable_id("charon hearts"))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
         .order(egui::Order::Foreground)
-        .interactable(false)
+        .interactable(true)
         .show(context, |ui| {
             let rows = hearts.div_ceil(10).max(1);
             let width = 10.0 * (size + gap) + size + 2.0 * gap;
             let tall = (stars as f32 * (size + gap)).max(rows as f32 * (size + gap));
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, tall), egui::Sense::hover());
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, tall), egui::Sense::click());
+            // タップ、または体力・マナが変わったとき (使った・回復中) から 3 秒、数値を出す (仕様 28 §9)。
+            let now = ui.input(|input| input.time);
+            let current = (vitals.hp, wand.mana.min(1_000_000));
+            let numbers = ui.data_mut(|data| {
+                data.get_temp_mut_or_default::<crate::hud_fade::VitalsPopup>(stable_id(
+                    "charon vitals popup",
+                ))
+                .visible(now, current, response.clicked())
+            });
             let painter = ui.painter();
+            if numbers {
+                painter.text(
+                    egui::pos2(rect.right(), rect.bottom() + 2.0),
+                    egui::Align2::RIGHT_TOP,
+                    format!(
+                        "{}: {}/{}   {}: {}/{}",
+                        "HP", vitals.hp, vitals.max_hp, "MP", wand.mana, wand.mana_max
+                    ),
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::WHITE,
+                );
+            }
             let dim = egui::Color32::from_black_alpha(120);
             for i in 0..hearts {
                 let left = (i64::from(vitals.hp) - i as i64 * 20).clamp(0, 20);
@@ -2280,6 +2323,25 @@ fn touch_settings_rows(
             .text(strings.text(lang, "pause.aim_sensitivity")),
     );
     touch.aim_sensitivity = sensitivity;
+    ui.horizontal(|ui| {
+        ui.label(strings.text(lang, "pause.hotbar"));
+        ui.selectable_value(
+            &mut touch.hotbar_orientation,
+            crate::settings::HotbarOrientation::Horizontal,
+            strings.text(lang, "hotbar.horizontal"),
+        );
+        ui.selectable_value(
+            &mut touch.hotbar_orientation,
+            crate::settings::HotbarOrientation::Vertical,
+            strings.text(lang, "hotbar.vertical"),
+        );
+    });
+    let (low, high) = crate::hud_fade::NAME_FADE_RANGE;
+    ui.add(
+        egui::Slider::new(&mut touch.tooltip_fade, low..=high)
+            .suffix(" s")
+            .text(strings.text(lang, "pause.tooltip_fade")),
+    );
     ui.horizontal(|ui| {
         ui.label(strings.text(lang, "pause.auto_select"));
         ui.selectable_value(

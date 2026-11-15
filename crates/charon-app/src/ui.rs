@@ -96,6 +96,8 @@ pub(super) enum InvCommand {
     CraftBlock(MaterialId),
     /// 設備・箱も持ち物の操作と同じキューで順序を守る。
     Fixture(FixtureCommand),
+    /// ホットバーの枠から外へ引いて、スタックごと投げる (仕様 28 §9)。落とせるのは材質のセルだけ。
+    Throw(charon_game::items::ItemId),
 }
 
 /// 設備の配置と箱の開閉・指定個数の移動。失敗時は UI の開閉状態も先行させない。

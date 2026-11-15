@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use winit::event::TouchPhase;
 
-use crate::settings::{AutoSelectMode, UpToJump};
+use crate::settings::{AutoSelectMode, HotbarOrientation, UpToJump};
 
 /// 1 フレームぶんの操作 (タッチ・ゲームパッド共通)。`aim` は 1/16 セル単位の向き (長さは意味を持たない)。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -47,6 +47,8 @@ pub(crate) struct PadOutput {
     pub quick_mana: bool,
     /// ホットバーの枠がタップされた (このフレームだけ)。
     pub select_slot: Option<u8>,
+    /// ホットバーの枠から外へ引いて離した: その枠のアイテムを投げる (このフレームだけ、仕様 28 §9)。
+    pub throw_slot: Option<u8>,
     /// インベントリの格子が押された (このフレームだけ)。
     pub toggle_inventory: bool,
     /// 世界を直接さわっている 1 本の指の位置 (画面の画素、仕様 28 §5)。使うボタンの指があるとき・ピンチ中は `None`。
@@ -83,6 +85,7 @@ impl PadOutput {
             quick_heal: self.quick_heal || other.quick_heal,
             quick_mana: self.quick_mana || other.quick_mana,
             select_slot: other.select_slot.or(self.select_slot),
+            throw_slot: other.throw_slot.or(self.throw_slot),
             toggle_inventory: self.toggle_inventory || other.toggle_inventory,
             world_touch: other.world_touch.or(self.world_touch),
             action: self.action || other.action,
@@ -98,8 +101,13 @@ const WALK_ZONE: f32 = 0.3;
 const HOOK_TILT: f32 = 0.3;
 /// 狙いの既定の向き (右上)。使うボタンをまだ倒していないとき。
 const DEFAULT_AIM: (i32, i32) = (1000, -400);
-/// ホットバーに見える枠の数 (残りは `...` からインベントリで)。
+/// ホットバー (横) に見える枠の数 (残りは `...` からインベントリで)。
 pub(crate) const HOTBAR_VISIBLE: usize = 5;
+/// ホットバー (縦) の枠の数と、1 列の行数。
+pub(crate) const HOTBAR_VERTICAL_SLOTS: usize = 10;
+const HOTBAR_VERTICAL_ROWS: usize = 5;
+/// 枠をこの枠の数より外へ引いて離すと、投げる (仕様 28 §9)。
+const THROW_SLOTS: f32 = 1.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Owner {
@@ -171,6 +179,10 @@ pub(crate) struct TouchPad {
     smart: bool,
     /// 描画用: クイック回復・クイックマナで使えるものがあるか。
     quick_ready: [bool; 2],
+    /// ホットバーの並び (設定)。
+    hotbar: HotbarOrientation,
+    /// 選んだアイテムの名前を出しておく時間 (設定、秒)。描画が使う。
+    tooltip_fade: Option<f32>,
     /// 左スティックの上でジャンプする方式と、その状態。
     up_to_jump: UpToJump,
     jump: JumpState,
@@ -189,6 +201,7 @@ pub(crate) struct TouchPad {
     smart_tap: bool,
     aim_tap: bool,
     slot_tap: Option<u8>,
+    throw_tap: Option<u8>,
     inventory_tap: bool,
     hook_release: Option<HookRelease>,
     /// 使うボタンを最後に倒した向き (離してもカーソルの向きとして残る)。
@@ -244,6 +257,8 @@ pub(crate) struct Layout {
     /// クイック回復・クイックマナのボタン (半径 `1.1u`・`1.0u`)。
     pub quick_heal: [f32; 2],
     pub quick_mana: [f32; 2],
+    /// ホットバーの並び。
+    pub hotbar: HotbarOrientation,
     /// オートセレクト・インタラクト・ロックオンのボタン (半径 `0.9u`・`1.0u`・`0.9u`)。
     pub auto_select: [f32; 2],
     pub interact: [f32; 2],
@@ -253,7 +268,13 @@ pub(crate) struct Layout {
 impl Layout {
     /// `scale` は部品全体の大きさの倍率 (UI の大きさの設定)。0 以下・有限でない値は 1 とみなす。
     pub(crate) fn new(viewport: [f32; 2], scale: f32) -> Self {
+        Self::with_hotbar(viewport, scale, HotbarOrientation::Horizontal)
+    }
+
+    /// ホットバーの並びを指定した配置。縦型は左上に 2 列 × 5 行を使うので、その下の段のボタンを右へずらす。
+    pub(crate) fn with_hotbar(viewport: [f32; 2], scale: f32, hotbar: HotbarOrientation) -> Self {
         let (w, h) = (viewport[0], viewport[1]);
+        let shift = if hotbar == HotbarOrientation::Vertical { 3.6 } else { 0.0 };
         let scale = if scale.is_finite() && scale > 0.0 { scale.clamp(0.5, 3.0) } else { 1.0 };
         let unit = (w.min(h) * 0.07).max(20.0) * scale;
         let use_button = [w - 2.6 * unit, h - 2.6 * unit];
@@ -269,14 +290,15 @@ impl Layout {
             jump_radius: 1.2 * unit,
             zoom_out: [w * 0.5 - 1.2 * unit, h - 1.2 * unit],
             zoom_in: [w * 0.5 + 1.2 * unit, h - 1.2 * unit],
-            inventory: [1.2 * unit, h - 8.0 * unit],
-            smart: [3.4 * unit, h - 8.0 * unit],
-            aim_toggle: [5.6 * unit, h - 8.0 * unit],
+            inventory: [(1.2 + shift) * unit, h - 8.0 * unit],
+            smart: [(3.4 + shift) * unit, h - 8.0 * unit],
+            aim_toggle: [(5.6 + shift) * unit, h - 8.0 * unit],
             action: [use_button[0] - 1.9 * unit, use_button[1] - 3.6 * unit],
             action_radius: unit,
             quick_heal: [8.2 * unit, h - 5.6 * unit],
             quick_mana: [8.2 * unit, h - 3.2 * unit],
-            auto_select: [7.8 * unit, h - 8.0 * unit],
+            hotbar,
+            auto_select: [(7.8 + shift) * unit, h - 8.0 * unit],
             interact: [10.4 * unit, h - 4.4 * unit],
             lock_on: [w * 0.5 + 3.6 * unit, h - 1.2 * unit],
         }
@@ -287,11 +309,37 @@ impl Layout {
         self.stick_radius
     }
 
-    /// ホットバーの枠 `slot` (`0..HOTBAR_VISIBLE`) の矩形 `[左, 上, 右, 下]`。`slot == HOTBAR_VISIBLE` は `...`。
+    /// 見えるホットバーの枠の数。横は 5 (そのあとに `...`)、縦は 10。
+    pub(crate) fn hotbar_visible(&self) -> usize {
+        match self.hotbar {
+            HotbarOrientation::Horizontal => HOTBAR_VISIBLE,
+            HotbarOrientation::Vertical => HOTBAR_VERTICAL_SLOTS,
+        }
+    }
+
+    /// `...` (持ち物を開く) の枠があるか。縦型にはない。
+    pub(crate) fn has_more(&self) -> bool {
+        self.hotbar == HotbarOrientation::Horizontal
+    }
+
+    /// ホットバーの枠 `slot` (`0..hotbar_visible()`) の矩形 `[左, 上, 右, 下]`。横型で `slot == HOTBAR_VISIBLE` は `...`。
+    /// 縦型は、左の列が 0〜4、右の列が 5〜9 (上から下へ)。
     pub(crate) fn slot_rect(&self, slot: usize) -> [f32; 4] {
-        let size = 1.5 * self.unit;
-        let left = 0.4 * self.unit + slot as f32 * (size + 0.15 * self.unit);
-        let top = 0.4 * self.unit;
+        // 縦型は 5 行が左スティックの上に収まるよう、少し小さくする。
+        let (size, gap) = match self.hotbar {
+            HotbarOrientation::Horizontal => (1.5 * self.unit, 0.15 * self.unit),
+            HotbarOrientation::Vertical => (1.2 * self.unit, 0.1 * self.unit),
+        };
+        let pitch = size + gap;
+        let (left, top) = match self.hotbar {
+            HotbarOrientation::Horizontal => {
+                (0.4 * self.unit + slot as f32 * pitch, 0.4 * self.unit)
+            }
+            HotbarOrientation::Vertical => (
+                0.4 * self.unit + (slot / HOTBAR_VERTICAL_ROWS) as f32 * pitch,
+                0.4 * self.unit + (slot % HOTBAR_VERTICAL_ROWS) as f32 * pitch,
+            ),
+        };
         [left, top, left + size, top + size]
     }
 
@@ -344,10 +392,12 @@ impl Layout {
         if near(self.stick, self.stick_radius * 1.15) {
             return Some(Owner::Stick);
         }
-        for slot in 0..=HOTBAR_VISIBLE {
+        let visible = self.hotbar_visible();
+        let last = if self.has_more() { visible } else { visible - 1 };
+        for slot in 0..=last {
             let [l, t, r, b] = self.slot_rect(slot);
             if pos[0] >= l && pos[0] <= r && pos[1] >= t && pos[1] <= b {
-                return Some(if slot == HOTBAR_VISIBLE {
+                return Some(if self.has_more() && slot == visible {
                     Owner::More
                 } else {
                     Owner::Slot(slot as u8)
@@ -381,7 +431,22 @@ impl TouchPad {
     }
 
     pub(crate) fn layout(&self) -> Layout {
-        Layout::new(self.viewport, self.scale)
+        Layout::with_hotbar(self.viewport, self.scale, self.hotbar)
+    }
+
+    /// ホットバーの並び (設定)。
+    pub(crate) fn set_hotbar(&mut self, hotbar: HotbarOrientation) {
+        self.hotbar = hotbar;
+    }
+
+    /// 選んだアイテムの名前を出しておく時間 (設定、秒)。
+    pub(crate) fn set_tooltip_fade(&mut self, secs: f32) {
+        self.tooltip_fade = Some(secs);
+    }
+
+    /// 選んだアイテムの名前を出しておく時間 (秒)。まだ設定されていなければ既定。
+    pub(crate) fn tooltip_fade(&self) -> f32 {
+        self.tooltip_fade.unwrap_or(crate::hud_fade::NAME_FADE_DEFAULT)
     }
 
     /// 部品全体の大きさの倍率 (UI の大きさ)。
@@ -558,7 +623,6 @@ impl TouchPad {
                     }
                     Owner::QuickMana => self.quick_mana_tap = true,
                     Owner::Inventory | Owner::More => self.inventory_tap = true,
-                    Owner::Slot(n) => self.slot_tap = Some(n),
                     _ => {}
                 }
                 self.touches.insert(id, Touch { owner, now: pos, no_use });
@@ -584,6 +648,18 @@ impl TouchPad {
                 if touch.owner == Owner::World {
                     self.pinch_distance = self.world_distance();
                 }
+                // ホットバーの枠は、指を離したときに選ぶ。外へ引いて離したら、投げる (仕様 28 §9)。
+                if let (Owner::Slot(n), TouchPhase::Ended) = (touch.owner, phase) {
+                    let [l, t, r, b] = self.layout().slot_rect(usize::from(n));
+                    let reach = THROW_SLOTS * (r - l);
+                    let near = (l - reach..=r + reach).contains(&touch.now[0])
+                        && (t - reach..=b + reach).contains(&touch.now[1]);
+                    if near {
+                        self.slot_tap = Some(n);
+                    } else {
+                        self.throw_tap = Some(n);
+                    }
+                }
                 if touch.owner == Owner::Hook && phase == TouchPhase::Ended {
                     let layout = self.layout();
                     let (dx, dy) = (touch.now[0] - layout.hook[0], touch.now[1] - layout.hook[1]);
@@ -600,6 +676,7 @@ impl TouchPad {
     pub(crate) fn release_all(&mut self) {
         self.touches.clear();
         self.slot_tap = None;
+        self.throw_tap = None;
         self.inventory_tap = false;
         self.smart_tap = false;
         self.aim_tap = false;
@@ -794,6 +871,7 @@ impl TouchPad {
             }
         }
         out.select_slot = self.slot_tap.take();
+        out.throw_slot = self.throw_tap.take();
         out.toggle_inventory = std::mem::take(&mut self.inventory_tap);
         out.zoom = self.zoom_direction();
         out
@@ -1131,6 +1209,109 @@ mod tests {
         assert!(!pad.output().jump, "下へ倒すと止まる");
         tilt(&mut pad, 1, -0.3, -0.8);
         assert!(pad.output().jump, "上へ戻すと続く");
+    }
+
+    /// 縦型のホットバー (2 列 × 5 行) は 10 枠が全部画面に収まり、枠どうしも、仮想コントロールとも重ならない。
+    #[test]
+    fn hotbar_vertical_layout_fits_without_overlap() {
+        for view in [[1600.0, 900.0], [800.0, 400.0], [2400.0, 1080.0]] {
+            let l = Layout::with_hotbar(view, 1.0, HotbarOrientation::Vertical);
+            let u = l.unit;
+            assert_eq!((l.hotbar_visible(), l.has_more()), (10, false));
+            // 左の列が 0〜4、右の列が 5〜9。
+            assert_eq!(l.slot_rect(0)[0], l.slot_rect(4)[0]);
+            assert!(l.slot_rect(5)[0] > l.slot_rect(4)[2], "右の列");
+            assert_eq!(l.slot_rect(5)[1], l.slot_rect(0)[1], "同じ行");
+            let slots: Vec<[f32; 4]> = (0..10).map(|s| l.slot_rect(s)).collect();
+            for (i, a) in slots.iter().enumerate() {
+                assert!(
+                    a[0] >= 0.0 && a[1] >= 0.0 && a[2] <= view[0] && a[3] <= view[1],
+                    "{view:?}: 収まる {a:?}"
+                );
+                for b in &slots[i + 1..] {
+                    assert!(
+                        a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1],
+                        "枠どうしは重ならない"
+                    );
+                }
+            }
+            let parts = [
+                (l.stick, l.stick_radius),
+                (l.use_button, l.use_radius),
+                (l.hook, l.hook_radius),
+                (l.jump, l.jump_radius),
+                (l.zoom_in, 0.8 * u),
+                (l.zoom_out, 0.8 * u),
+                (l.inventory, 0.9 * u),
+                (l.smart, 0.9 * u),
+                (l.aim_toggle, 0.9 * u),
+                (l.action, l.action_radius),
+                (l.quick_heal, 1.1 * u),
+                (l.quick_mana, 1.0 * u),
+                (l.auto_select, 0.9 * u),
+                (l.interact, u),
+                (l.lock_on, 0.9 * u),
+            ];
+            for (i, (a, ra)) in parts.iter().enumerate() {
+                assert!(a[0] - ra >= -0.1 && a[0] + ra <= view[0] + 0.1, "{view:?}: 横 {a:?}");
+                for (b, rb) in &parts[i + 1..] {
+                    assert!(
+                        (a[0] - b[0]).hypot(a[1] - b[1]) >= ra + rb - 0.1,
+                        "{view:?}: 部品どうし"
+                    );
+                }
+                // 枠 (矩形) と円: 円の中心から矩形までの最短距離が、半径以上。
+                for r in &slots {
+                    let nearest = [a[0].clamp(r[0], r[2]), a[1].clamp(r[1], r[3])];
+                    assert!(
+                        (a[0] - nearest[0]).hypot(a[1] - nearest[1]) >= ra - 0.1,
+                        "{view:?}: 枠と部品が重ならない {a:?} {r:?}"
+                    );
+                }
+            }
+            // 枠の中の指は、その番号の枠。`...` はない。
+            let mut pad = TouchPad::default();
+            pad.set_viewport(view);
+            pad.set_hotbar(HotbarOrientation::Vertical);
+            for slot in 0..10 {
+                let r = l.slot_rect(slot);
+                let center = [(r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0];
+                assert!(pad.update(1, TouchPhase::Started, center));
+                pad.update(1, TouchPhase::Ended, center);
+                let out = pad.output();
+                assert_eq!((out.select_slot, out.toggle_inventory), (Some(slot as u8), false));
+            }
+        }
+    }
+
+    /// ホットバーの枠を外へ引いて離すと投げ、近いままなら選ぶだけ。取り消しでは何もしない。
+    #[test]
+    fn dragging_a_hotbar_slot_outside_drops_the_stack() {
+        let mut pad = pad();
+        let l = pad.layout();
+        let r = l.slot_rect(2);
+        let size = r[2] - r[0];
+        let center = [(r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0];
+        // 外へ 3 枠分引いて離す: 投げる。選ぶだけではない。
+        pad.update(1, TouchPhase::Started, center);
+        assert_eq!(pad.output().select_slot, None, "触れただけでは選ばない");
+        pad.update(1, TouchPhase::Moved, [center[0], center[1] + 3.0 * size]);
+        pad.update(1, TouchPhase::Ended, [center[0], center[1] + 3.0 * size]);
+        let out = pad.output();
+        assert_eq!((out.throw_slot, out.select_slot), (Some(2), None));
+        assert_eq!(pad.output().throw_slot, None, "1 度だけ");
+        // 枠の近く (1 枠分) までなら、選ぶだけ。
+        pad.update(2, TouchPhase::Started, center);
+        pad.update(2, TouchPhase::Moved, [center[0] + size, center[1]]);
+        pad.update(2, TouchPhase::Ended, [center[0] + size, center[1]]);
+        let out = pad.output();
+        assert_eq!((out.throw_slot, out.select_slot), (None, Some(2)));
+        // 取り消し (指が取り上げられた): 選びも投げもしない。
+        pad.update(3, TouchPhase::Started, center);
+        pad.update(3, TouchPhase::Moved, [center[0], center[1] + 3.0 * size]);
+        pad.update(3, TouchPhase::Cancelled, center);
+        let out = pad.output();
+        assert_eq!((out.throw_slot, out.select_slot), (None, None));
     }
 
     /// オートセレクトは、押している間 (Hold) か、押すたびの入り切り (Toggle)。ロックとインタラクトは 1 度だけ。

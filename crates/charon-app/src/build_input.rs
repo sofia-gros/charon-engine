@@ -421,6 +421,13 @@ pub(super) fn apply_inventory_commands(
                     eprintln!("外せません: {err}");
                 }
             }
+            InvCommand::Throw(item) => {
+                // 落ちているものは材質のセルだけ (仕様 10 §19)。道具・ブロックは、まだ投げられない。
+                if let ItemClass::Cells(material) = item.class() {
+                    let count = game.inventories.get(&id).map_or(0, |inv| inv.count(material));
+                    game.drop_item(entities, id, material, count);
+                }
+            }
             InvCommand::Craft(recipe) => {
                 if let Err(err) = game.craft(id, &recipe, &nearby, defs) {
                     eprintln!("作れません: {err}");
@@ -1469,6 +1476,39 @@ mod tests {
         let frame = rig.frame(&PadOutput { lock_on: true, ..PadOutput::default() });
         assert_eq!(frame.lock_aim, None);
         assert_eq!(rig.lock.target, None);
+    }
+
+    /// 投げる操作は、材質のセルのスタックを全部落とす。道具・ブロックは、まだ投げられず何も変えない。
+    #[test]
+    fn throw_command_drops_cell_stacks() {
+        let mut rig = Rig::new(1);
+        let sand = rig.world.materials().id("sand").unwrap();
+        let sword = rig.defs.item_id("wood_sword", rig.world.materials()).unwrap();
+        let inv = rig.game.inventories.get_mut(&rig.id).unwrap();
+        inv.add(sand, 5);
+        inv.add_item(sword, 1);
+        let commands = |item| vec![crate::ui::InvCommand::Throw(item)];
+        let throw = |rig: &mut Rig, item| {
+            apply_inventory_commands(
+                &mut rig.game,
+                &rig.world,
+                &rig.entities,
+                rig.id,
+                &rig.defs,
+                commands(item),
+            );
+        };
+        let before = rig.game.state_hash();
+        throw(&mut rig, sword);
+        assert_eq!(rig.game.state_hash(), before, "道具は投げられない: 何も変えない");
+        throw(&mut rig, ItemId::cells(sand));
+        assert_eq!(rig.game.inventories[&rig.id].count(sand), 0, "全部出た");
+        assert_eq!(
+            rig.game.drops.iter().map(|d| (d.material, d.count)).collect::<Vec<_>>(),
+            vec![(sand, 5)]
+        );
+        throw(&mut rig, ItemId::cells(sand));
+        assert_eq!(rig.game.drops.len(), 1, "持っていないものは落とせない");
     }
 
     /// 武器は、プレイヤーから指の場所への向きへ向ける。不正な位置は無視する。

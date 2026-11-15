@@ -18,6 +18,7 @@ mod gamepad;
 mod gesture;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod headless_tests;
+mod hud_fade;
 pub mod localization;
 mod player;
 mod pointer;
@@ -1073,6 +1074,10 @@ impl App {
             gui.controls.touch.auto_select_mode
         });
         self.touch_pad.set_auto_mode(auto_mode);
+        let touch_config =
+            self.gui.as_ref().map_or(&self.settings.touch, |gui| &gui.controls.touch);
+        self.touch_pad.set_hotbar(touch_config.hotbar_orientation);
+        self.touch_pad.set_tooltip_fade(touch_config.tooltip_fade);
         self.touch_pad.set_up_to_jump(
             self.gui
                 .as_ref()
@@ -1139,6 +1144,16 @@ impl App {
                 && let Some(gui) = self.gui.as_mut()
             {
                 gui.controls.inventory_open = !gui.controls.inventory_open;
+            }
+            // ホットバーの枠から外へ引いて離したら、そのアイテムをスタックごと投げる (仕様 28 §9)。
+            if let Some(slot) = pad.throw_slot
+                && let Some(item) = self
+                    .player
+                    .and_then(|id| self.game.inventories.get(&id))
+                    .and_then(|inventory| inventory.hotbar(usize::from(slot)))
+                && let Some(gui) = self.gui.as_mut()
+            {
+                gui.controls.inv_commands.push(ui::InvCommand::Throw(item));
             }
             let mouse_cell = pointer_cell(self.cursor, zoom, origin);
             // 狙う方式・スマートカーソルの記憶と感度 (仕様 28 §6)。画面がなければ既定。

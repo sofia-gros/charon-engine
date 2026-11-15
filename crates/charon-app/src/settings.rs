@@ -314,6 +314,16 @@ pub enum UpToJump {
     Swipe,
 }
 
+/// ホットバーの並び (仕様 28 §9)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HotbarOrientation {
+    /// 横一列 (見える 5 枠と `...`)。持ち主の確認した形。
+    #[default]
+    Horizontal,
+    /// 2 列 × 5 行の 10 枠。
+    Vertical,
+}
+
 /// オートセレクトのボタンの動き (仕様 28 §8)。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutoSelectMode {
@@ -357,6 +367,10 @@ pub struct TouchSettings {
     pub auto_select_mode: AutoSelectMode,
     /// ロックオンの候補の優先。
     pub lock_on_priority: LockOnPriority,
+    /// ホットバーの並び。
+    pub hotbar_orientation: HotbarOrientation,
+    /// 選んだアイテムの名前を出しておく時間 (0〜15 秒、0 は出さない)。
+    pub tooltip_fade: f32,
     /// 種類ごとの記憶 (`ItemCategory::ALL` の順): 狙うだけか。
     pub aim_only: Vec<bool>,
     /// 種類ごとの記憶: スマートカーソルが入っているか。
@@ -379,6 +393,8 @@ impl Default for TouchSettings {
             up_to_jump: UpToJump::default(),
             auto_select_mode: AutoSelectMode::default(),
             lock_on_priority: LockOnPriority::default(),
+            hotbar_orientation: HotbarOrientation::default(),
+            tooltip_fade: crate::hud_fade::NAME_FADE_DEFAULT,
             aim_only: DEFAULT_AIM_ONLY.to_vec(),
             smart_on: DEFAULT_SMART_ON.to_vec(),
         }
@@ -389,6 +405,12 @@ impl TouchSettings {
     /// 値を範囲に収める。記憶の数が合わないときは既定に戻す。
     pub fn sanitize(&mut self) {
         self.aim_sensitivity = self.aim_sensitivity.clamp(AIM_SENSITIVITY.0, AIM_SENSITIVITY.1);
+        let (low, high) = crate::hud_fade::NAME_FADE_RANGE;
+        self.tooltip_fade = if self.tooltip_fade.is_finite() {
+            self.tooltip_fade.clamp(low, high)
+        } else {
+            crate::hud_fade::NAME_FADE_DEFAULT
+        };
         if self.aim_only.len() != ItemCategory::ALL.len() {
             self.aim_only = DEFAULT_AIM_ONLY.to_vec();
         }
@@ -777,6 +799,38 @@ mod tests {
             full.replace(&full[start..full.rfind(')').unwrap()], "touch: (aim_sensitivity: 70),\n");
         assert_eq!(Settings::from_ron(&partial).unwrap().touch.aim_sensitivity, 70);
         assert_eq!(Settings::from_ron(&partial).unwrap().touch.aim_only, DEFAULT_AIM_ONLY);
+    }
+
+    /// 仕様 28 §9: ホットバーの向きと名前の消える時間は保存・復帰でき、範囲外を収め、古いファイルは既定で読める。
+    #[test]
+    fn hotbar_orientation_setting_roundtrips() {
+        assert_eq!(TouchSettings::default().hotbar_orientation, HotbarOrientation::Horizontal);
+        assert_eq!(TouchSettings::default().tooltip_fade, 1.0);
+        let mut settings = Settings::default();
+        settings.touch.hotbar_orientation = HotbarOrientation::Vertical;
+        settings.touch.tooltip_fade = 6.5;
+        let back = Settings::from_ron(&settings.to_ron().unwrap()).unwrap();
+        assert_eq!(back.touch.hotbar_orientation, HotbarOrientation::Vertical);
+        assert_eq!(back.touch.tooltip_fade, 6.5);
+        let mut wild = TouchSettings { tooltip_fade: 99.0, ..TouchSettings::default() };
+        wild.sanitize();
+        assert_eq!(wild.tooltip_fade, 15.0);
+        wild.tooltip_fade = -3.0;
+        wild.sanitize();
+        assert_eq!(wild.tooltip_fade, 0.0);
+        wild.tooltip_fade = f32::NAN;
+        wild.sanitize();
+        assert_eq!(wild.tooltip_fade, 1.0);
+        // 項目が欠けた `touch` は、足りない分が既定。
+        let partial = Settings::default().to_ron().unwrap();
+        let start = partial.find("touch:").unwrap();
+        let text = partial.replace(
+            &partial[start..partial.rfind(')').unwrap()],
+            "touch: (hotbar_orientation: Vertical),\n",
+        );
+        let parsed = Settings::from_ron(&text).unwrap();
+        assert_eq!(parsed.touch.hotbar_orientation, HotbarOrientation::Vertical);
+        assert_eq!(parsed.touch.tooltip_fade, 1.0);
     }
 
     /// 種類ごとの既定、切り替え、感度。
