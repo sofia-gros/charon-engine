@@ -916,6 +916,8 @@ fn draw_touch_pad(
         (layout.smart, "S", pad.smart(), 0.9 * layout.unit),
         (layout.aim_toggle, "A", pad.aim_only(), 0.9 * layout.unit),
         (layout.action, "!", pad.held("action"), layout.action_radius),
+        (layout.quick_heal, "H", !pad.quick_ready()[0], 1.1 * layout.unit),
+        (layout.quick_mana, "M", !pad.quick_ready()[1], layout.unit),
     ] {
         painter.circle(at(center), radius * scale, if held { knob } else { fill }, line);
         label(center, text, 0.6);
@@ -2185,7 +2187,7 @@ fn touch_settings_rows(
     touch: &mut crate::settings::TouchSettings,
     lang: crate::settings::Language,
 ) {
-    use crate::settings::{AIM_SENSITIVITY, AimModeToggle, SmartCursorToggle};
+    use crate::settings::{AIM_SENSITIVITY, AimModeToggle, SmartCursorToggle, UpToJump};
     let strings = crate::localization::ui_strings();
     let mut sensitivity = touch.aim_sensitivity;
     ui.add(
@@ -2194,6 +2196,22 @@ fn touch_settings_rows(
             .text(strings.text(lang, "pause.aim_sensitivity")),
     );
     touch.aim_sensitivity = sensitivity;
+    ui.horizontal(|ui| {
+        ui.label(strings.text(lang, "pause.up_to_jump"));
+        egui::ComboBox::from_id_salt("charon up to jump")
+            .selected_text(strings.text(lang, up_to_jump_key(touch.up_to_jump)))
+            .show_ui(ui, |ui| {
+                for value in
+                    [UpToJump::DoubleTap, UpToJump::SingleTap, UpToJump::Swipe, UpToJump::Disabled]
+                {
+                    ui.selectable_value(
+                        &mut touch.up_to_jump,
+                        value,
+                        strings.text(lang, up_to_jump_key(value)),
+                    );
+                }
+            });
+    });
     ui.horizontal(|ui| {
         ui.label(strings.text(lang, "pause.aim_toggle"));
         egui::ComboBox::from_id_salt("charon aim toggle")
@@ -2232,6 +2250,16 @@ fn touch_settings_rows(
                 }
             });
     });
+}
+
+fn up_to_jump_key(value: crate::settings::UpToJump) -> &'static str {
+    use crate::settings::UpToJump;
+    match value {
+        UpToJump::DoubleTap => "jump.double_tap",
+        UpToJump::SingleTap => "jump.single_tap",
+        UpToJump::Swipe => "jump.swipe",
+        UpToJump::Disabled => "jump.disabled",
+    }
 }
 
 fn aim_toggle_key(value: crate::settings::AimModeToggle) -> &'static str {

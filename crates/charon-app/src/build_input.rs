@@ -111,6 +111,29 @@ pub(super) fn build_frame(
     {
         eprintln!("武器を装備できません: {err}");
     }
+    // 消耗品の枠をタップしたら、選ぶと同時にすぐ使う (仕様 28 §7)。間隔の間は選ぶだけ。クイック回復・クイックマナも同じ間隔。
+    let tick = ctx.world.tick();
+    let consumable =
+        |i: ItemId| matches!(defs.item_def(i).map(|d| &d.kind), Some(ItemKind::Consumable { .. }));
+    if pad.select_slot.is_some()
+        && tick >= *ctx.use_ready
+        && let Some(drink) = item.filter(|&i| consumable(i))
+        && ctx.game.use_consumable(id, drink, &defs)
+    {
+        *ctx.use_ready = tick + CONSUME_INTERVAL;
+    }
+    let heal_item = ctx.game.quick_heal_item(id, &defs);
+    let mana_item = ctx.game.quick_mana_item(id, &defs);
+    ctx.touch_pad.set_quick(heal_item.is_some(), mana_item.is_some());
+    for (pressed, quick) in [(pad.quick_heal, heal_item), (pad.quick_mana, mana_item)] {
+        if pressed
+            && tick >= *ctx.use_ready
+            && let Some(drink) = quick
+            && ctx.game.use_consumable(id, drink, &defs)
+        {
+            *ctx.use_ready = tick + CONSUME_INTERVAL;
+        }
+    }
     let fixture_item = item.filter(|&i| defs.fixture_for_item(i).is_some());
     let usage = if fixture_item.is_some() { CursorUse::Place } else { usage_of(item, &defs) };
     let weapon = fixture_item.is_none() && weapon_like(item, &defs);
@@ -179,7 +202,6 @@ pub(super) fn build_frame(
     let stick_use = pad.use_item && aim_mode == AimMode::AimUse && (tilted || !careful);
     let pad_use = stick_use || pad.action || pad.world_touch.is_some();
     let want = pad_use || mouse_use;
-    let tick = ctx.world.tick();
     let mut fixture_command = None;
     if want
         && tick >= *ctx.use_ready
@@ -1105,6 +1127,61 @@ mod tests {
             places.push(view.rect[0]);
         }
         assert!(places[0] < places[1] && places[1] < places[2], "{places:?}");
+    }
+
+    /// 消耗品の枠をタップすると、選ぶと同時にすぐ使う。道具・武器は選ぶだけ。間隔の間は選ぶだけ (仕様 28 §7)。
+    #[test]
+    fn hotbar_tap_uses_a_consumable_at_once() {
+        let mut rig = Rig::new(1);
+        let potion = rig.defs.item_id("heal_potion", rig.world.materials()).unwrap();
+        let sword = rig.defs.item_id("wood_sword", rig.world.materials()).unwrap();
+        let inv = rig.game.inventories.get_mut(&rig.id).unwrap();
+        inv.add_item(potion, 3);
+        inv.add_item(sword, 1);
+        inv.pin(1, potion);
+        inv.pin(2, sword);
+        rig.game.vitals.get_mut(rig.id).unwrap().hp = 20;
+        let tap = |slot| PadOutput { select_slot: Some(slot), ..PadOutput::default() };
+        rig.frame(&tap(2));
+        assert_eq!(rig.game.vitals.get(rig.id).unwrap().hp, 20, "武器は選ぶだけ");
+        assert_eq!(rig.game.inventories[&rig.id].item_count(potion), 3);
+        rig.frame(&tap(1));
+        assert_eq!(rig.game.vitals.get(rig.id).unwrap().hp, 70, "回復薬はすぐ使う");
+        assert_eq!(rig.game.inventories[&rig.id].item_count(potion), 2);
+        assert_eq!(rig.game.inventories[&rig.id].selected(), 1, "選ばれてもいる");
+        // 間隔の間は、タップしても選ぶだけ。間隔が過ぎたら、また使う。
+        rig.frame(&tap(2));
+        rig.frame(&tap(1));
+        assert_eq!(rig.game.inventories[&rig.id].item_count(potion), 2, "間隔の間は使わない");
+        charon_core::testkit::run(&mut rig.world, CONSUME_INTERVAL);
+        rig.frame(&tap(1));
+        assert_eq!(rig.game.inventories[&rig.id].item_count(potion), 1);
+        assert_eq!(rig.game.vitals.get(rig.id).unwrap().hp, 100, "上限で止まる");
+    }
+
+    /// クイック回復・クイックマナのボタンは、使えるときだけ使い、使えるかを描画に知らせる。
+    #[test]
+    fn quick_buttons_drink_only_when_useful() {
+        let mut rig = Rig::new(1);
+        let potion = rig.defs.item_id("heal_potion", rig.world.materials()).unwrap();
+        let mana = rig.defs.item_id("mana_potion", rig.world.materials()).unwrap();
+        let inv = rig.game.inventories.get_mut(&rig.id).unwrap();
+        inv.add_item(potion, 2);
+        inv.add_item(mana, 2);
+        let press = PadOutput { quick_heal: true, quick_mana: true, ..PadOutput::default() };
+        rig.frame(&press);
+        assert_eq!(rig.pad.quick_ready(), [false, false], "満タンなので使えない");
+        assert_eq!(rig.game.inventories[&rig.id].item_count(potion), 2);
+        rig.game.vitals.get_mut(rig.id).unwrap().hp = 10;
+        rig.game.wands.get_mut(&rig.id).unwrap().mana = 0;
+        rig.frame(&PadOutput::default());
+        assert_eq!(rig.pad.quick_ready(), [true, true], "ボタンが使える");
+        rig.frame(&press);
+        assert_eq!(rig.game.inventories[&rig.id].item_count(potion), 1, "回復薬を 1 個");
+        assert_eq!(rig.game.inventories[&rig.id].item_count(mana), 2, "同じ間隔の中: マナはまだ");
+        charon_core::testkit::run(&mut rig.world, CONSUME_INTERVAL);
+        rig.frame(&PadOutput { quick_mana: true, ..PadOutput::default() });
+        assert_eq!(rig.game.inventories[&rig.id].item_count(mana), 1);
     }
 
     /// 武器は、プレイヤーから指の場所への向きへ向ける。不正な位置は無視する。

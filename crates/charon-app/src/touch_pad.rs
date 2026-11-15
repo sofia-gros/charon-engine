@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use winit::event::TouchPhase;
 
+use crate::settings::UpToJump;
+
 /// 1 フレームぶんの操作 (タッチ・ゲームパッド共通)。`aim` は 1/16 セル単位の向き (長さは意味を持たない)。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PadOutput {
@@ -35,6 +37,9 @@ pub(crate) struct PadOutput {
     pub hook_detach: bool,
     /// フックのスティックを傾けている間の向き (矢印の描画用)。
     pub hook_aim: Option<(i32, i32)>,
+    /// クイック回復・クイックマナのボタンが押された (このフレームだけ)。
+    pub quick_heal: bool,
+    pub quick_mana: bool,
     /// ホットバーの枠がタップされた (このフレームだけ)。
     pub select_slot: Option<u8>,
     /// インベントリの格子が押された (このフレームだけ)。
@@ -67,6 +72,8 @@ impl PadOutput {
             hook_throw: other.hook_throw.or(self.hook_throw),
             hook_detach: self.hook_detach || other.hook_detach,
             hook_aim: other.hook_aim.or(self.hook_aim),
+            quick_heal: self.quick_heal || other.quick_heal,
+            quick_mana: self.quick_mana || other.quick_mana,
             select_slot: other.select_slot.or(self.select_slot),
             toggle_inventory: self.toggle_inventory || other.toggle_inventory,
             world_touch: other.world_touch.or(self.world_touch),
@@ -104,6 +111,8 @@ enum Owner {
     Action,
     /// 狙う方式の切り替えボタン。
     AimToggle,
+    QuickHeal,
+    QuickMana,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -112,6 +121,26 @@ struct Touch {
     now: [f32; 2],
     /// 世界の指が 2 本以上になった: ピンチなので、アイテムを使わない。1 本に戻っても、離すまで使わない。
     no_use: bool,
+}
+
+/// 「上へ倒した」とみなす倒れ (半径に対する割合)。歩く (`WALK_ZONE`) より大きい。
+const UP_TILT: f32 = 0.5;
+/// ダブルタップとみなす間隔 (秒)。
+const DOUBLE_TAP_SECS: f32 = 0.3;
+/// スワイプとみなす、上への動きの速さ: この時間 (秒) で `UP_TILT` を超える。
+const SWIPE_SECS: f32 = 0.15;
+
+/// 左スティックの上でジャンプする方式の状態 (仕様 28 §7)。
+#[derive(Clone, Copy, Debug, Default)]
+struct JumpState {
+    /// 前のフレームで、上へ倒していたか。
+    up: bool,
+    /// 直前に上へ倒し始めた時刻 (秒)。
+    last_up_at: Option<f32>,
+    /// ダブルタップ・スワイプが成立した (指を離すまで)。
+    armed: bool,
+    /// スワイプの判定のための、倒していない状態になった時刻と倒れ。
+    rest: Option<(f32, f32)>,
 }
 
 /// 世界の指の本数の上限。これを超えて新しく触れたら、古い指は離したイベントを取りこぼしたものとして捨てる。
@@ -129,6 +158,15 @@ pub(crate) struct TouchPad {
     /// 描画用: 今の種類の狙う方式が Aim Only か、スマートカーソルが入っているか (`build_frame` が知らせる)。
     aim_only: bool,
     smart: bool,
+    /// 描画用: クイック回復・クイックマナで使えるものがあるか。
+    quick_ready: [bool; 2],
+    /// 左スティックの上でジャンプする方式と、その状態。
+    up_to_jump: UpToJump,
+    jump: JumpState,
+    /// 時計 (秒)。`advance` で進める。
+    clock: f32,
+    quick_heal_tap: bool,
+    quick_mana_tap: bool,
     /// このフレームだけ立つ出来事。
     smart_tap: bool,
     aim_tap: bool,
@@ -185,6 +223,9 @@ pub(crate) struct Layout {
     /// サブ攻撃ボタン (使うボタンの左上、半径 `1.0u`)。
     pub action: [f32; 2],
     pub action_radius: f32,
+    /// クイック回復・クイックマナのボタン (半径 `1.1u`・`1.0u`)。
+    pub quick_heal: [f32; 2],
+    pub quick_mana: [f32; 2],
 }
 
 impl Layout {
@@ -211,6 +252,8 @@ impl Layout {
             aim_toggle: [5.6 * unit, h - 8.0 * unit],
             action: [use_button[0] - 1.9 * unit, use_button[1] - 3.6 * unit],
             action_radius: unit,
+            quick_heal: [8.2 * unit, h - 5.6 * unit],
+            quick_mana: [8.2 * unit, h - 3.2 * unit],
         }
     }
 
@@ -239,6 +282,12 @@ impl Layout {
         }
         if near(self.action, self.action_radius * 1.2) {
             return Some(Owner::Action);
+        }
+        if near(self.quick_heal, 1.1 * self.unit * 1.2) {
+            return Some(Owner::QuickHeal);
+        }
+        if near(self.quick_mana, 1.0 * self.unit * 1.2) {
+            return Some(Owner::QuickMana);
         }
         if near(self.aim_toggle, 0.9 * self.unit * 1.2) {
             return Some(Owner::AimToggle);
@@ -325,6 +374,73 @@ impl TouchPad {
         self.smart
     }
 
+    /// 左スティックの上でジャンプする方式 (設定)。
+    pub(crate) fn set_up_to_jump(&mut self, mode: UpToJump) {
+        self.up_to_jump = mode;
+    }
+
+    /// 時計を進める (秒)。ダブルタップなどの時間の判定に使う。不正な値は無視する。
+    pub(crate) fn advance(&mut self, dt: f32) {
+        if dt.is_finite() && dt > 0.0 {
+            self.clock += dt.min(1.0);
+        }
+    }
+
+    /// 描画のために、クイック回復・クイックマナで使えるものがあるかを知らせる。
+    pub(crate) fn set_quick(&mut self, heal: bool, mana: bool) {
+        self.quick_ready = [heal, mana];
+    }
+
+    /// クイック回復・クイックマナのボタンが使えるか (描画用)。
+    pub(crate) fn quick_ready(&self) -> [bool; 2] {
+        self.quick_ready
+    }
+
+    /// 左スティックの倒れ (半径に対する割合) から、上のジャンプを判定する (仕様 28 §7)。
+    fn stick_jump(&mut self, tilt: Option<[f32; 2]>) -> bool {
+        let now = self.clock;
+        let up = tilt.is_some_and(|t| -t[1] > UP_TILT);
+        let state = &mut self.jump;
+        if tilt.is_none() {
+            // 指を離した: 成立は取り消す。次のダブルタップの判定のために、時刻は残す。
+            state.armed = false;
+            state.rest = None;
+            state.up = false;
+            return false;
+        }
+        let rising = up && !state.up;
+        state.up = up;
+        match self.up_to_jump {
+            UpToJump::Disabled => state.armed = false,
+            UpToJump::SingleTap => state.armed = true,
+            UpToJump::DoubleTap => {
+                if rising {
+                    if state.last_up_at.is_some_and(|t| now - t <= DOUBLE_TAP_SECS) {
+                        state.armed = true;
+                    }
+                    state.last_up_at = Some(now);
+                }
+            }
+            UpToJump::Swipe => {
+                let dy = tilt.map_or(0.0, |t| t[1]);
+                // 倒していない状態 (または止まった時点) を覚え、そこから短い時間で `UP_TILT` を超えたらスワイプ。
+                match state.rest {
+                    Some((t, from)) if !state.armed => {
+                        if from - dy > UP_TILT && now - t <= SWIPE_SECS {
+                            state.armed = true;
+                        } else if now - t > SWIPE_SECS || dy > from {
+                            state.rest = Some((now, dy));
+                        }
+                    }
+                    None => state.rest = Some((now, dy)),
+                    _ => {}
+                }
+            }
+        }
+        // 成立していて、上へ倒している間だけ押す。横・下へ倒して上でなくなると、飛行は一時止まり、上へ戻すと続く。
+        state.armed && up
+    }
+
     /// 今の種類の狙う方式が Aim Only か。
     pub(crate) fn aim_only(&self) -> bool {
         self.aim_only
@@ -366,6 +482,8 @@ impl TouchPad {
                 match owner {
                     Owner::Smart => self.smart_tap = true,
                     Owner::AimToggle => self.aim_tap = true,
+                    Owner::QuickHeal => self.quick_heal_tap = true,
+                    Owner::QuickMana => self.quick_mana_tap = true,
                     Owner::Inventory | Owner::More => self.inventory_tap = true,
                     Owner::Slot(n) => self.slot_tap = Some(n),
                     _ => {}
@@ -412,6 +530,9 @@ impl TouchPad {
         self.inventory_tap = false;
         self.smart_tap = false;
         self.aim_tap = false;
+        self.quick_heal_tap = false;
+        self.quick_mana_tap = false;
+        self.jump.armed = false;
         self.hook_release = None;
         self.pinch_distance = None;
         self.pinch_ratio = 1.0;
@@ -502,6 +623,8 @@ impl TouchPad {
             "inventory" => Owner::Inventory,
             "world" => Owner::World,
             "action" => Owner::Action,
+            "quick_heal" => Owner::QuickHeal,
+            "quick_mana" => Owner::QuickMana,
             "aim_toggle" => return self.aim_only,
             "smart" => return self.smart,
             _ => return false,
@@ -518,6 +641,7 @@ impl TouchPad {
     pub(crate) fn output(&mut self) -> PadOutput {
         let layout = self.layout();
         let mut out = PadOutput::default();
+        let mut stick_tilt = None;
         for touch in self.touches.values() {
             match touch.owner {
                 Owner::Stick => {
@@ -525,7 +649,11 @@ impl TouchPad {
                     if dx.abs() > layout.stick_radius * WALK_ZONE {
                         out.horizontal = if dx > 0.0 { 1 } else { -1 };
                     }
-                    // 上へ倒してもジャンプしない (仕様 18 §1)。
+                    // 上のジャンプは、設定の方式で下で判定する (仕様 28 §7)。
+                    stick_tilt = Some([
+                        dx / layout.stick_radius,
+                        (touch.now[1] - layout.stick[1]) / layout.stick_radius,
+                    ]);
                 }
                 Owner::Jump => out.jump = true,
                 Owner::Use => {
@@ -544,6 +672,8 @@ impl TouchPad {
                 | Owner::Inventory
                 | Owner::Smart
                 | Owner::AimToggle
+                | Owner::QuickHeal
+                | Owner::QuickMana
                 | Owner::Slot(_)
                 | Owner::More
                 | Owner::World => {}
@@ -557,6 +687,11 @@ impl TouchPad {
         {
             out.world_touch = Some(touch.now);
         }
+        if self.stick_jump(stick_tilt) {
+            out.jump = true;
+        }
+        out.quick_heal = std::mem::take(&mut self.quick_heal_tap);
+        out.quick_mana = std::mem::take(&mut self.quick_mana_tap);
         out.toggle_smart = std::mem::take(&mut self.smart_tap);
         out.toggle_aim = std::mem::take(&mut self.aim_tap);
         out.hook_aim = self.hook_aim();
@@ -769,6 +904,171 @@ mod tests {
 
     const WORLD: [f32; 2] = [800.0, 300.0];
 
+    /// 左スティックの指 `id` を、半径に対する割合 `(dx, dy)` へ動かす。
+    fn tilt(pad: &mut TouchPad, id: u64, dx: f32, dy: f32) {
+        let l = pad.layout();
+        pad.update(
+            id,
+            TouchPhase::Moved,
+            [l.stick[0] + dx * l.stick_radius, l.stick[1] + dy * l.stick_radius],
+        );
+    }
+
+    /// 上へ 2 回すばやく倒すとジャンプし、倒し続けると押し続ける。1 回だけでは跳ばない (仕様 28 §7)。
+    #[test]
+    fn double_tap_up_jumps_and_hold_keeps_jumping() {
+        let mut pad = pad();
+        let l = pad.layout();
+        pad.update(1, TouchPhase::Started, l.stick);
+        tilt(&mut pad, 1, 0.0, -0.8);
+        assert!(!pad.output().jump, "1 回目は跳ばない");
+        pad.advance(0.1);
+        tilt(&mut pad, 1, 0.0, 0.0);
+        assert!(!pad.output().jump);
+        pad.advance(0.1);
+        tilt(&mut pad, 1, 0.0, -0.8);
+        assert!(pad.output().jump, "0.2 秒で 2 回目: ジャンプ");
+        pad.advance(1.0);
+        assert!(pad.output().jump, "倒し続けると、押し続ける (浮遊・高く跳ぶ)");
+        // 倒し方が上でなくなると止まり、上へ戻すと続く。斜めの上でも、押し続ける。
+        tilt(&mut pad, 1, 0.0, 0.0);
+        assert!(!pad.output().jump);
+        tilt(&mut pad, 1, 0.6, -0.7);
+        let out = pad.output();
+        assert!(out.jump && out.horizontal == 1, "斜め上: 飛びながら進む");
+        // 指を離すと止まり、触れ直して 1 回だけ倒しても跳ばない。
+        pad.update(1, TouchPhase::Ended, l.stick);
+        assert!(!pad.output().jump);
+        pad.advance(2.0);
+        pad.update(2, TouchPhase::Started, l.stick);
+        tilt(&mut pad, 2, 0.0, -0.8);
+        assert!(!pad.output().jump);
+    }
+
+    /// 0.3 秒を超えると、2 回目はダブルタップにならない。
+    #[test]
+    fn double_tap_window_expires() {
+        let mut pad = pad();
+        let l = pad.layout();
+        pad.update(1, TouchPhase::Started, l.stick);
+        tilt(&mut pad, 1, 0.0, -0.8);
+        pad.output();
+        pad.advance(0.1);
+        tilt(&mut pad, 1, 0.0, 0.0);
+        pad.output();
+        pad.advance(0.31);
+        tilt(&mut pad, 1, 0.0, -0.8);
+        assert!(!pad.output().jump, "最初から 0.41 秒: 2 回目ではなく、新しい 1 回目");
+        // その新しい 1 回目から 0.3 秒以内の次は、ダブルタップ。
+        pad.advance(0.1);
+        tilt(&mut pad, 1, 0.0, 0.0);
+        pad.output();
+        pad.advance(0.1);
+        tilt(&mut pad, 1, 0.0, -0.8);
+        assert!(pad.output().jump);
+        // 指を離して触れ直しても、間隔が短ければダブルタップ (タップ、離す、タップ)。
+        let mut pad2 = self::pad();
+        pad2.update(1, TouchPhase::Started, l.stick);
+        tilt(&mut pad2, 1, 0.0, -0.8);
+        pad2.output();
+        pad2.update(1, TouchPhase::Ended, l.stick);
+        pad2.output();
+        pad2.advance(0.2);
+        pad2.update(2, TouchPhase::Started, l.stick);
+        tilt(&mut pad2, 2, 0.0, -0.8);
+        assert!(pad2.output().jump, "離して触れ直した 2 回目");
+    }
+
+    /// 1 回で跳ぶ方式、すばやいはじき、スティックのジャンプなし。
+    #[test]
+    fn single_tap_swipe_and_disabled_up_to_jump() {
+        let l = pad().layout();
+        // SingleTap: 上へ倒すだけでジャンプ。
+        let mut pad = pad();
+        pad.set_up_to_jump(UpToJump::SingleTap);
+        pad.update(1, TouchPhase::Started, l.stick);
+        tilt(&mut pad, 1, 0.0, -0.8);
+        assert!(pad.output().jump);
+        tilt(&mut pad, 1, 0.0, 0.0);
+        assert!(!pad.output().jump);
+        // Disabled: 何回倒しても、ジャンプしない。ジャンプボタンは使える。
+        let mut pad = self::pad();
+        pad.set_up_to_jump(UpToJump::Disabled);
+        pad.update(1, TouchPhase::Started, l.stick);
+        for _ in 0..3 {
+            tilt(&mut pad, 1, 0.0, -0.8);
+            assert!(!pad.output().jump);
+            pad.advance(0.05);
+            tilt(&mut pad, 1, 0.0, 0.0);
+            pad.output();
+            pad.advance(0.05);
+        }
+        pad.update(2, TouchPhase::Started, l.jump);
+        assert!(pad.output().jump, "ジャンプボタンは、どの方式でも使える");
+        // Swipe: 短い時間で大きく上へ動くとジャンプ。ゆっくり倒してもジャンプしない。
+        let mut pad = self::pad();
+        pad.set_up_to_jump(UpToJump::Swipe);
+        pad.update(1, TouchPhase::Started, l.stick);
+        pad.output();
+        pad.advance(0.05);
+        tilt(&mut pad, 1, 0.0, -0.9);
+        assert!(pad.output().jump, "0.05 秒で 0.9 上へ");
+        let mut slow = self::pad();
+        slow.set_up_to_jump(UpToJump::Swipe);
+        slow.update(1, TouchPhase::Started, l.stick);
+        slow.output();
+        for step in 1..=4 {
+            slow.advance(0.1);
+            tilt(&mut slow, 1, 0.0, -0.22 * step as f32);
+            assert!(!slow.output().jump, "ゆっくり倒す: step {step}");
+        }
+    }
+
+    /// 横・下へ倒すと飛行は一時止まり、上へ戻すと続く。
+    #[test]
+    fn side_or_down_pauses_flight_until_up_again() {
+        let mut pad = pad();
+        let l = pad.layout();
+        pad.update(1, TouchPhase::Started, l.stick);
+        for _ in 0..2 {
+            tilt(&mut pad, 1, 0.0, -0.8);
+            pad.output();
+            pad.advance(0.1);
+            tilt(&mut pad, 1, 0.0, 0.0);
+            pad.output();
+            pad.advance(0.1);
+        }
+        tilt(&mut pad, 1, 0.0, -0.8);
+        assert!(pad.output().jump, "飛んでいる");
+        tilt(&mut pad, 1, 0.9, 0.0);
+        let out = pad.output();
+        assert!(!out.jump && out.horizontal == 1, "横へ倒すと、止まって歩く");
+        tilt(&mut pad, 1, 0.0, 0.9);
+        assert!(!pad.output().jump, "下へ倒すと止まる");
+        tilt(&mut pad, 1, -0.3, -0.8);
+        assert!(pad.output().jump, "上へ戻すと続く");
+    }
+
+    /// クイック回復・クイックマナのボタンは、触れたフレームに 1 度だけ出る。
+    #[test]
+    fn quick_buttons_fire_once() {
+        let mut pad = pad();
+        let l = pad.layout();
+        assert_eq!(pad.quick_ready(), [false, false]);
+        pad.set_quick(true, false);
+        assert_eq!(pad.quick_ready(), [true, false]);
+        pad.update(1, TouchPhase::Started, l.quick_heal);
+        pad.update(1, TouchPhase::Ended, l.quick_heal);
+        let out = pad.output();
+        assert!(out.quick_heal && !out.quick_mana);
+        assert!(!pad.output().quick_heal, "1 度だけ");
+        pad.update(2, TouchPhase::Started, l.quick_mana);
+        let out = pad.output();
+        assert!(out.quick_mana && !out.quick_heal);
+        pad.advance(f32::NAN);
+        pad.advance(-1.0);
+    }
+
     /// 部品に当たらない新しい指だけが、世界の指になる (仕様 28 §5)。
     #[test]
     fn world_touch_is_taken_only_outside_controls() {
@@ -905,6 +1205,8 @@ mod tests {
                 (l.smart, 0.9 * u),
                 (l.aim_toggle, 0.9 * u),
                 (l.action, l.action_radius),
+                (l.quick_heal, 1.1 * u),
+                (l.quick_mana, 1.0 * u),
             ];
             for (i, (a, ra)) in parts.iter().enumerate() {
                 assert!(a[0] - ra >= -0.1 && a[0] + ra <= w + 0.1, "{view:?}: 横に収まる {a:?}");

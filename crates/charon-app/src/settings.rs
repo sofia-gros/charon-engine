@@ -300,6 +300,20 @@ pub enum SmartCursorToggle {
     AlwaysOn,
 }
 
+/// 左スティックを上へ倒してジャンプする方式 (仕様 28 §7)。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UpToJump {
+    /// 上へ倒しても、ジャンプしない (ジャンプボタンだけ)。
+    Disabled,
+    /// 上を 2 回すばやく倒すとジャンプ。倒し続けると押し続ける。
+    #[default]
+    DoubleTap,
+    /// 上へ倒すとジャンプ。
+    SingleTap,
+    /// 上へすばやくはじくとジャンプ。
+    Swipe,
+}
+
 /// タッチ操作の設定 (仕様 28)。古い設定ファイルにはないので、足りない項目は既定。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -308,6 +322,8 @@ pub struct TouchSettings {
     pub smart_cursor_toggle: SmartCursorToggle,
     /// 使うボタンの感度 (50〜150 %)。
     pub aim_sensitivity: u16,
+    /// 左スティックの上でジャンプする方式。
+    pub up_to_jump: UpToJump,
     /// 種類ごとの記憶 (`ItemCategory::ALL` の順): 狙うだけか。
     pub aim_only: Vec<bool>,
     /// 種類ごとの記憶: スマートカーソルが入っているか。
@@ -327,6 +343,7 @@ impl Default for TouchSettings {
             aim_mode_toggle: AimModeToggle::default(),
             smart_cursor_toggle: SmartCursorToggle::default(),
             aim_sensitivity: AIM_SENSITIVITY.2,
+            up_to_jump: UpToJump::default(),
             aim_only: DEFAULT_AIM_ONLY.to_vec(),
             smart_on: DEFAULT_SMART_ON.to_vec(),
         }

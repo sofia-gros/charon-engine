@@ -1065,6 +1065,12 @@ impl App {
         }
         // 画面のスティック・ボタン (仕様 10 §10)。キーボード・マウスの操作と、使っている方が優先される形で重ねる。
         self.touch_pad.set_viewport([size.width as f32, size.height as f32]);
+        self.touch_pad.advance(elapsed.as_secs_f32());
+        self.touch_pad.set_up_to_jump(
+            self.gui
+                .as_ref()
+                .map_or(self.settings.touch.up_to_jump, |gui| gui.controls.touch.up_to_jump),
+        );
         self.touch_pad.set_scale(self.gui.as_ref().map_or(1.0, |gui| gui.controls.ui_scale));
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         let pad_input = self.gamepad.as_mut().map(gamepad::Gamepad::poll).unwrap_or_default();

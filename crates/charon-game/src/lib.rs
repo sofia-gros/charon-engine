@@ -18,6 +18,7 @@ pub mod mods;
 pub mod net;
 pub mod progression;
 pub mod projectile;
+pub mod quick;
 pub mod respawn;
 pub mod save;
 pub mod spawner;

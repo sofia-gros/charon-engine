@@ -447,7 +447,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T34.0 契約** | [28](spec/28-terraria-android-controls.md)、[資料](TERRARIA_ANDROID_UI_REFERENCE.md)、[18](spec/18-terraria-touch.md) | 仕様 28 に判断・対象外・テスト名を記し `scripts/check.sh` が通る | 🟡 仕様を記述 |
 | **T34.1 世界の直接タッチとピンチ** | [28 §5](spec/28-terraria-android-controls.md) | 仕様 28 §5 の 8 テスト | 🟡 実装・自動テスト済み (指で触れた実機は未検証) |
 | **T34.2 狙う方式・サブ攻撃・スマートカーソルの記憶** | [28 §6](spec/28-terraria-android-controls.md) | 仕様 28 §6 の 8 テスト (+ `touch_settings_defaults_and_toggles`) | 🟡 実装・自動テスト済み (指で触れた実機は未検証) |
-| **T34.3 ジャンプ方式・クイック回復/マナ** | [28 §7](spec/28-terraria-android-controls.md) | 仕様 28 §7 の 8 テスト | 未着手 |
+| **T34.3 ジャンプ方式・クイック回復/マナ** | [28 §7](spec/28-terraria-android-controls.md) | 仕様 28 §7 の 8 テスト (+ `quick_buttons_fire_once`、`quick_buttons_drink_only_when_useful`) | 🟡 実装・自動テスト済み (指で触れた実機は未検証) |
 | **T34.4 オートセレクト・インタラクト・ロックオン** | [28 §8](spec/28-terraria-android-controls.md) | 仕様 28 §8 の 9 テスト | 未着手 |
 | **T34.5 ホットバー・体力マナ・ツールチップ** | [28 §9](spec/28-terraria-android-controls.md) | 仕様 28 §9 の 5 テスト | 未着手 |
 | **T34.6 インベントリの下のボタン** | [28 §10](spec/28-terraria-android-controls.md) | 仕様 28 §10 の 6 テスト | 未着手 |
