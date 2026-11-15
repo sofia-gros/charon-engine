@@ -1560,8 +1560,8 @@ impl DemoUi {
                 .show(context, |ui| {
                     ui.label(
                         egui::RichText::new(format!(
-                            "Development Build\nCharon Engine v{}",
-                            charon_core::VERSION
+                            "Development Build\nCharon Demo v{}",
+                            env!("CARGO_PKG_VERSION")
                         ))
                         .size(9.0)
                         .color(egui::Color32::from_gray(190)),

@@ -1,7 +1,7 @@
 [package]
 name = "charon-app"
 description = "Charon Engine の共通ウィンドウと固定 tick メインループ"
-version.workspace = true
+version = "0.0.8"
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true

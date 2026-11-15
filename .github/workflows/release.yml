@@ -14,7 +14,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: タグ・アプリ・Android の版を照合
+        run: python3 scripts/check-release-version.py "$GITHUB_REF_NAME"
+
   windows:
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +46,7 @@ jobs:
           if-no-files-found: error
 
   android:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +77,7 @@ jobs:
           ls -l target/release/apk/
           cp target/release/apk/charon-sandbox.apk "charon-demo-${{ github.ref_name }}-android-arm64.apk"
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "charon-demo-${{ github.ref_name }}-android-arm64.apk"
+          python3 scripts/check-release-version.py "$GITHUB_REF_NAME" "charon-demo-${{ github.ref_name }}-android-arm64.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: android
@@ -86,3 +97,7 @@ jobs:
           files: dist/*
           generate_release_notes: true
           prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          body: |
+            ⚠️ 開発中のプレリリースです。製品版としての配布可否は判定していません。Windows/Android の新しい画面・音・保存の実機確認と、素材・第三者ライセンスの最終確認は未完了で、第三者通知文も同梱していません。詳細は[配布前の記録](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/RELEASE_CHECK.md)を参照してください。
+
+            Android APK は毎回新しいデバッグ鍵で署名されるため、以前の APK に上書きインストールできません。保存データを退避せずにアンインストールすると失われる可能性があります。正式な更新用署名ではありません。

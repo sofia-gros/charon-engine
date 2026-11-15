@@ -60,9 +60,12 @@ keytool -genkeypair -v -keystore apps/sandbox/debug.keystore -storepass android 
 リリース用の APK は `cargo apk build --release -p charon-sandbox --lib` で作る (`--lib` がないと、デスクトップの bin と cdylib が混ざって cargo-apk が失敗する)。`v*` のタグを push すると、`.github/workflows/release.yml` が Windows 版 (`charon-demo-<タグ>-windows-x64.zip`、exe と `assets`) と Android 版 (`charon-demo-<タグ>-android-arm64.apk`) をビルドして GitHub Releases に載せる。
 
 ```bash
-git tag v0.0.1
-git push origin v0.0.1
+python3 scripts/check-release-version.py v0.0.8
+git tag v0.0.8
+git push origin v0.0.8
 ```
+
+APK の `versionName` はアプリ版 `0.0.8`、`versionCode` は 8 に設定する。タグ・アプリ版・Android メタデータは release ワークフローで照合し、完成した APK の値も `aapt` で検査する。ただしデバッグ鍵は CI で毎回作り直すため、以前の APK に上書きインストールできない。アンインストール前に保存データを退避すること。製品版の署名ではない。
 
 ## 実機またはエミュレーターの確認
 

@@ -12,7 +12,7 @@
 ![Rust](https://img.shields.io/badge/rust-1.99%2B%20(stable)-orange?logo=rust)
 ![Edition](https://img.shields.io/badge/edition-2024-orange)
 ![unsafe](https://img.shields.io/badge/unsafe-forbidden-success)
-![Status](https://img.shields.io/badge/status-M26%20%E5%AE%9F%E8%A3%85%E6%B8%88%E3%81%BF%20(%E5%AE%9F%E6%A9%9F%E6%9C%AA)-blue)
+![Status](https://img.shields.io/badge/status-M33%20%E8%87%AA%E5%8B%95%E6%A4%9C%E6%9F%BB%E6%B8%88%E3%81%BF%20(%E5%AE%9F%E6%A9%9F%E6%9C%AA)-yellow)
 ![wgpu](https://img.shields.io/badge/renderer-wgpu%20%2B%20WGSL-informational)
 
 [ロードマップ](docs/ROADMAP.md) ・ [実装の状況](docs/STATUS.md) ・ [仕様](docs/spec/) ・ [ゲーム API](docs/GAME_API.md) ・ [テストの書き方](docs/TESTING.md) ・ [実装者向けの規則](CLAUDE.md)
@@ -147,7 +147,7 @@ cargo run -p charon-sandbox --bin charon-demo
 
 ### ダウンロード
 
-[Releases](https://github.com/sofia-gros/charon-engine/releases) に、タグ (`v*`) ごとの **Windows 版** (zip を展開して `charon-demo.exe`) と **Android 版** (apk、arm64) があります。ビルドは `.github/workflows/release.yml` です ([Android の手順](docs/BUILD_ANDROID.md))。
+[Releases](https://github.com/sofia-gros/charon-engine/releases) に、タグ (`v*`) ごとの **Windows 版** (zip を展開して `charon-demo.exe`) と **Android 版** (apk、arm64) があります。v0.0.8 は実機・第三者通知などが未検証のプレリリースです。Android APK はビルドごとに異なるデバッグ鍵で署名しているため、前の APK に上書き更新できません (アンインストール前に保存を退避)。ビルドは `.github/workflows/release.yml` です ([Android の手順](docs/BUILD_ANDROID.md)、[配布前の記録](docs/RELEASE_CHECK.md))。
 
 ```bash
 cargo run -p charon-sandbox --bin charon-sandbox
