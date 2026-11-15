@@ -96,6 +96,8 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # v0.0.8 のタグは CI 失敗で Release がないため、直前の公開版を基点にする。
+          previous_tag: ${{ github.ref_name == 'v0.0.9' && 'v0.0.7' || '' }}
           prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
           body: |
             ⚠️ 開発中のプレリリースです。製品版としての配布可否は判定していません。Windows/Android の新しい画面・音・保存の実機確認と、素材・第三者ライセンスの最終確認は未完了で、第三者通知文も同梱していません。詳細は[配布前の記録](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/RELEASE_CHECK.md)を参照してください。

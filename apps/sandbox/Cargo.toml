@@ -1,7 +1,7 @@
 [package]
 name = "charon-sandbox"
 description = "Charon Engine の動作確認用サンドボックス"
-version = "0.0.8"
+version = "0.0.9"
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
@@ -47,7 +47,7 @@ path = "debug.keystore"
 keystore_password = "android"
 
 [dependencies]
-charon-app = { version = "0.0.8", path = "../../crates/charon-app", default-features = false }
+charon-app = { version = "0.0.9", path = "../../crates/charon-app", default-features = false }
 charon-core = { version = "0.1.0", path = "../../crates/charon-core", default-features = false }
 charon-physics = { version = "0.1.0", path = "../../crates/charon-physics", default-features = false }
 charon-world = { version = "0.1.0", path = "../../crates/charon-world", default-features = false }

@@ -147,7 +147,7 @@ cargo run -p charon-sandbox --bin charon-demo
 
 ### ダウンロード
 
-[Releases](https://github.com/sofia-gros/charon-engine/releases) に、タグ (`v*`) ごとの **Windows 版** (zip を展開して `charon-demo.exe`) と **Android 版** (apk、arm64) があります。v0.0.8 は実機・第三者通知などが未検証のプレリリースです。Android APK はビルドごとに異なるデバッグ鍵で署名しているため、前の APK に上書き更新できません (アンインストール前に保存を退避)。ビルドは `.github/workflows/release.yml` です ([Android の手順](docs/BUILD_ANDROID.md)、[配布前の記録](docs/RELEASE_CHECK.md))。
+[Releases](https://github.com/sofia-gros/charon-engine/releases) に、タグ (`v*`) ごとの **Windows 版** (zip を展開して `charon-demo.exe`) と **Android 版** (apk、arm64) があります。v0.0.9 は実機・第三者通知などが未検証のプレリリースです。Android APK はビルドごとに異なるデバッグ鍵で署名しているため、前の APK に上書き更新できません (アンインストール前に保存を退避)。ビルドは `.github/workflows/release.yml` です ([Android の手順](docs/BUILD_ANDROID.md)、[配布前の記録](docs/RELEASE_CHECK.md))。
 
 ```bash
 cargo run -p charon-sandbox --bin charon-sandbox
