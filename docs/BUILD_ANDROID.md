@@ -60,12 +60,12 @@ keytool -genkeypair -v -keystore apps/sandbox/debug.keystore -storepass android 
 リリース用の APK は `cargo apk build --release -p charon-sandbox --lib` で作る (`--lib` がないと、デスクトップの bin と cdylib が混ざって cargo-apk が失敗する)。`v*` のタグを push すると、`.github/workflows/release.yml` が Windows 版 (`charon-demo-<タグ>-windows-x64.zip`、exe と `assets`) と Android 版 (`charon-demo-<タグ>-android-arm64.apk`) をビルドして GitHub Releases に載せる。
 
 ```bash
-python3 scripts/check-release-version.py v0.0.9
-git tag v0.0.9
-git push origin v0.0.9
+python3 scripts/check-release-version.py v0.1.0
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
-APK の `versionName` はアプリの `Cargo.toml` の版 `0.0.9`、`versionCode` は `cargo-apk` の規則 `(1 << 24) | (major << 16) | (minor << 8) | patch` による 16777225。`version_name` / `version_code` を Android の TOML に書くと `cargo-apk` が panic する。タグ・アプリ版を release ワークフローで照合し、完成した APK の値は `aapt` で検査する。ただしデバッグ鍵は CI で毎回作り直すため、以前の APK に上書きインストールできない。アンインストール前に保存データを退避すること。製品版の署名ではない。
+APK の `versionName` はワークスペースの版 `0.1.0` (アプリの `Cargo.toml` は `version.workspace = true`)、`versionCode` は `cargo-apk` の規則 `(1 << 24) | (major << 16) | (minor << 8) | patch` による 16777472。`version_name` / `version_code` を Android の TOML に書くと `cargo-apk` が panic する。タグ・アプリ版を release ワークフローで照合し、完成した APK の値は `aapt` で検査する。ただしデバッグ鍵は CI で毎回作り直すため、以前の APK に上書きインストールできない。アンインストール前に保存データを退避すること。製品版の署名ではない。
 
 ## 実機またはエミュレーターの確認
 

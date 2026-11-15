@@ -224,7 +224,7 @@
 ## 11. T34.7 通しと v0.1.0
 
 - **通しのヘッドレステスト** `terraria_android_controls_chain`: seed 1〜8 で、世界のタップでブロックを置く → ロックオンで敵を撃つ → 箱を開けてクイックスタック → クイック回復 → 保存して別の App で復帰 (設定・お気に入り・持ち物が戻る)。
-- **版**: アプリを `0.1.0` にする (`cargo-apk` の `versionCode` は `(1 << 24) | (0 << 16) | (1 << 8) | 0` = 16777472)。`scripts/check-release-version.py v0.1.0` と `scripts/check.sh` を通す。
+- **版**: アプリを `0.1.0` にする (ワークスペースの版に揃える。`cargo-apk` の `versionCode` は `(1 << 24) | (0 << 16) | (1 << 8) | 0` = 16777472)。`scripts/check-release-version.py v0.1.0` と `scripts/check.sh` を通す。
 - **公開**: `v0.1.0` のタグで、プレリリースの扱いにするかは [release.yml](../../.github/workflows/release.yml) に従う (`v0.` はプレリリース)。説明には、§3 の「後続に回すもの」と、実機・署名・権利が**未確認**であることを書く。
 - 公開結果は GitHub Releases で確認してから「公開済み」と書く。
 

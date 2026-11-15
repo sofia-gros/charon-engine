@@ -451,7 +451,9 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T34.4 オートセレクト・インタラクト・ロックオン** | [28 §8](spec/28-terraria-android-controls.md) | 仕様 28 §8 の 9 テスト (+ `auto_select_swaps_the_tool_while_pointing`、`auto_select_modes_and_one_shot_buttons`) | 🟡 実装・自動テスト済み (指で触れた実機は未検証) |
 | **T34.5 ホットバー・体力マナ・ツールチップ** | [28 §9](spec/28-terraria-android-controls.md) | 仕様 28 §9 の 5 テスト (+ `throw_command_drops_cell_stacks`) | 🟡 実装・自動テスト済み (投げられるのは材質のセルだけ。指で触れた実機は未検証) |
 | **T34.6 インベントリの下のボタン** | [28 §10](spec/28-terraria-android-controls.md) | 仕様 28 §10 の 6 テスト | 🟡 実装・自動テスト済み (Split・Sort は持ち物が種類別の個数のため作らない。指で触れた実機は未検証) |
-| **T34.7 通しと v0.1.0** | [28 §11](spec/28-terraria-android-controls.md)、[RELEASE_CHECK](RELEASE_CHECK.md) | `terraria_android_controls_chain`、`scripts/check-release-version.py v0.1.0`、`scripts/check.sh`、公開した Release の確認 | 未着手 |
+| **T34.7 通しと v0.1.0** | [28 §11](spec/28-terraria-android-controls.md)、[RELEASE_CHECK](RELEASE_CHECK.md) | `terraria_android_controls_chain`、`scripts/check-release-version.py v0.1.0`、`scripts/check.sh`、公開した Release の確認 | 🟡 通しテストと版数 (0.1.0) は完了。Release の公開結果は GitHub で確認してから記録する |
+
+**M34 の状態: T34.1〜T34.7 の実装と自動テストは完了。** 操作エディタ・ラジアル・ページ群などと、指で触れた実機での確認・実機の Terraria との並べた比較は未完了。M28 は保留のまま。
 
 ---
 

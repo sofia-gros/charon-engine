@@ -1543,6 +1543,91 @@ mod tests {
         assert_eq!(rig.game.drops.len(), 1, "持っていないものは落とせない");
     }
 
+    /// 仕様 28 §11: 世界のタップで置く → ロックオンで敵へ向ける → 箱へクイックスタック → クイック回復 → 保存して別のゲームへ復帰。
+    /// 同じ seed なら、結果 (ゲームと世界のハッシュ) が毎回同じ。
+    fn android_chain(seed: u64) -> (u64, u64) {
+        use charon_game::save::GameSave;
+        let mut rig = Rig::new(seed);
+        // 1. ブロックを選んで、世界の 1 点をタップして置く。
+        let stone = rig.give_blocks("stone", 4);
+        let here = BlockPos::containing(rig.center());
+        let target = BlockPos { bx: here.bx + 2, by: here.by };
+        let origin = target.origin().unwrap();
+        rig.touch([(origin.x + 4) as f32 + 0.5, (origin.y + 4) as f32 + 0.5]);
+        assert_eq!(rig.blocks(stone), 3, "seed={seed}");
+        assert!(rig.has_block(target), "seed={seed}");
+        // 2. 杖を選んで、ロックオンで敵へ向ける。ロック中もブロックを置ける。
+        rig.give_item("starter_wand");
+        let enemy = rig.skeleton(26, -26);
+        let frame = rig.frame(&PadOutput { lock_on: true, ..PadOutput::default() });
+        assert_eq!(rig.lock.target, Some(enemy), "seed={seed}");
+        assert!(frame.lock_aim.is_some_and(|aim| aim.0 > 0), "seed={seed}");
+        // 3. 箱を置き、砂を入れておいてから、クイックスタックで砂を移す (お気に入りの泥は移さない)。
+        let chest_at = BlockPos { bx: here.bx + 3, by: here.by + 1 };
+        rig.place_chest(chest_at);
+        let sand = ItemId::cells(rig.world.materials().id("sand").unwrap());
+        let dirt = ItemId::cells(rig.world.materials().id("dirt").unwrap());
+        let inv = rig.game.inventories.get_mut(&rig.id).unwrap();
+        inv.add_item(sand, 1);
+        inv.add_item(dirt, 1);
+        rig.game.transfer_to_chest(&rig.world, rig.id, chest_at, sand, 1, &rig.defs).unwrap();
+        rig.game.transfer_to_chest(&rig.world, rig.id, chest_at, dirt, 1, &rig.defs).unwrap();
+        let inv = rig.game.inventories.get_mut(&rig.id).unwrap();
+        inv.add_item(sand, 5);
+        inv.add_item(dirt, 5);
+        inv.set_favorite(dirt, true);
+        apply_inventory_commands(
+            &mut rig.game,
+            &rig.world,
+            &rig.entities,
+            rig.id,
+            &rig.defs,
+            vec![InvCommand::QuickStack(None)],
+        );
+        let chest = rig.game.fixtures.get(chest_at).unwrap();
+        assert_eq!(chest.contents["cells:sand"], 6, "seed={seed}: 砂は箱へ");
+        assert_eq!(chest.contents["cells:dirt"], 1, "seed={seed}: お気に入りは移らない");
+        assert_eq!(rig.game.inventories[&rig.id].item_count(dirt), 5);
+        // 4. 傷ついたら、クイック回復。
+        let potion = rig.defs.item_id("heal_potion", rig.world.materials()).unwrap();
+        rig.game.inventories.get_mut(&rig.id).unwrap().add_item(potion, 2);
+        rig.game.vitals.get_mut(rig.id).unwrap().hp = 20;
+        charon_core::testkit::run(&mut rig.world, USE_INTERVAL + 1);
+        rig.frame(&PadOutput::default());
+        rig.frame(&PadOutput { quick_heal: true, ..PadOutput::default() });
+        assert_eq!(rig.game.vitals.get(rig.id).unwrap().hp, 70, "seed={seed}");
+        // 5. 設定を変えて保存し、別のゲームへ戻す。設定・お気に入り・持ち物が戻る。
+        let mut settings = crate::settings::Settings::default();
+        settings.touch.aim_sensitivity = 70;
+        settings.touch.hotbar_orientation = crate::settings::HotbarOrientation::Vertical;
+        settings.touch.toggle_aim(crate::settings::ItemCategory::Weapon);
+        let settings_text = settings.to_ron().unwrap();
+        let save = GameSave::capture(&rig.game, &rig.entities, rig.id, rig.world.materials(), 9)
+            .with_items(&rig.game, rig.id, &rig.defs, rig.world.materials());
+        let loaded = GameSave::from_ron(&save.to_ron().unwrap()).unwrap();
+        let mut other = Rig::new(seed);
+        loaded.apply(&mut other.game, &mut other.entities, &other.world, other.id);
+        loaded.apply_items(&mut other.game, other.id, &other.defs, other.world.materials());
+        let back = &other.game.inventories[&other.id];
+        assert!(back.is_favorite(dirt), "seed={seed}: お気に入りが戻る");
+        assert_eq!(back.item_count(dirt), 5);
+        assert_eq!(back.item_count(potion), 1);
+        assert_eq!(back.block_count(stone), 3);
+        assert_eq!(other.game.vitals.get(other.id).unwrap().hp, 70);
+        let restored = crate::settings::Settings::from_ron(&settings_text).unwrap();
+        assert_eq!(restored.touch, settings.touch, "seed={seed}: 設定が戻る");
+        (rig.game.state_hash(), rig.world.state_hash())
+    }
+
+    /// 仕様 28 §11 の通し。seed 1〜8 で、同じ seed を 2 回流して、結果が一致する。
+    #[test]
+    fn terraria_android_controls_chain() {
+        for seed in 1..=8 {
+            assert_eq!(android_chain(seed), android_chain(seed), "seed={seed}: 決定的");
+        }
+        assert_ne!(android_chain(1), android_chain(2), "seed が違えば、世界が違う");
+    }
+
     /// 武器は、プレイヤーから指の場所への向きへ向ける。不正な位置は無視する。
     #[test]
     fn world_touch_aims_weapons_toward_the_finger() {
