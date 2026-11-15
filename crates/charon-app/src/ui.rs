@@ -46,6 +46,8 @@ pub(super) struct Controls {
     pub(super) inv_commands: Vec<InvCommand>,
     /// 成功して開いた箱だけを表示する。
     pub(super) open_chest: Option<charon_game::blocks::BlockPos>,
+    /// 持ち物の画面で、最後にタップしたアイテム。下のボタン (Use・Favorite・ゴミ箱) の対象 (仕様 28 §10)。
+    pub(super) inv_picked: Option<charon_game::items::ItemId>,
     /// キー割り当ての変更中の操作 (次に押したキーを割り当てる)。
     pub(super) rebinding: Option<Action>,
     /// キー割り当て (画面に出す・変更する。アプリの入力と同期する)。
@@ -98,6 +100,12 @@ pub(super) enum InvCommand {
     Fixture(FixtureCommand),
     /// ホットバーの枠から外へ引いて、スタックごと投げる (仕様 28 §9)。落とせるのは材質のセルだけ。
     Throw(charon_game::items::ItemId),
+    /// お気に入りを切り替える (仕様 28 §10)。
+    Favorite(charon_game::items::ItemId),
+    /// ゴミ箱へ入れる (スタックが全部消える)。
+    Trash(charon_game::items::ItemId),
+    /// クイックスタック。箱を開いているときは、その箱だけ。
+    QuickStack(Option<charon_game::blocks::BlockPos>),
 }
 
 /// 設備の配置と箱の開閉・指定個数の移動。失敗時は UI の開閉状態も先行させない。
@@ -135,6 +143,7 @@ impl Controls {
             inventory_open: false,
             inv_commands: Vec::new(),
             open_chest: None,
+            inv_picked: None,
             rebinding: None,
             bindings: KeyBindings::default(),
             touch: TouchSettings::default(),

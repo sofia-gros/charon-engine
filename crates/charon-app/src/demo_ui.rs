@@ -416,10 +416,20 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                                     egui::Color32::WHITE,
                                                 );
                                             }
+                                            if inventory.is_favorite(item) {
+                                                ui.painter().text(
+                                                    rect.left_top() + egui::vec2(3.0, 1.0),
+                                                    egui::Align2::LEFT_TOP,
+                                                    "*",
+                                                    egui::FontId::proportional(14.0),
+                                                    egui::Color32::from_rgb(255, 215, 80),
+                                                );
+                                            }
                                             let tooltip =
                                                 item_tooltip(overlay, item, lang).join("\n");
                                             let response = response.on_hover_text(tooltip);
                                             if response.clicked() {
+                                                controls.inv_picked = Some(item);
                                                 match slot {
                                                     Some(s) => controls
                                                         .inv_commands
@@ -452,6 +462,62 @@ fn draw_inventory(context: &egui::Context, overlay: &Overlay<'_>, controls: &mut
                                     }
                                 });
                             }
+                            // 格子の下 (仕様 28 §10): 選んだアイテムへの操作 (Use・お気に入り・ゴミ箱) とクイックスタック。
+                            ui.horizontal(|ui| {
+                                let picked = controls
+                                    .inv_picked
+                                    .filter(|&item| inventory.item_count(item) > 0);
+                                let favorite = picked.is_some_and(|i| inventory.is_favorite(i));
+                                ui.add_enabled_ui(picked.is_some(), |ui| {
+                                    if ui.button(strings.text(lang, "inventory.use")).clicked()
+                                        && let Some(item) = picked
+                                    {
+                                        let equippable = overlay
+                                            .defs
+                                            .and_then(|d| d.item_def(item))
+                                            .is_some_and(|d| d.equip_slot().is_some());
+                                        controls.inv_commands.push(if equippable {
+                                            InvCommand::Equip(item)
+                                        } else {
+                                            InvCommand::Pin(inventory.selected(), item)
+                                        });
+                                    }
+                                    let key = if favorite {
+                                        "inventory.unfavorite"
+                                    } else {
+                                        "inventory.favorite"
+                                    };
+                                    if ui.button(strings.text(lang, key)).clicked()
+                                        && let Some(item) = picked
+                                    {
+                                        controls.inv_commands.push(InvCommand::Favorite(item));
+                                    }
+                                    if ui.button(strings.text(lang, "inventory.trash")).clicked()
+                                        && let Some(item) = picked
+                                    {
+                                        controls.inv_commands.push(InvCommand::Trash(item));
+                                        controls.inv_picked = None;
+                                    }
+                                });
+                                if ui.button(strings.text(lang, "inventory.quick_stack")).clicked()
+                                {
+                                    controls
+                                        .inv_commands
+                                        .push(InvCommand::QuickStack(controls.open_chest));
+                                }
+                                // ゴミ箱 (最後に捨てたものだけ見える)。
+                                let trashed = overlay
+                                    .player
+                                    .and_then(|id| overlay.game.trash.get(&id))
+                                    .map_or_else(
+                                        || "-".to_owned(),
+                                        |&(item, count)| format!("{} x{count}", name_of(item)),
+                                    );
+                                ui.label(format!(
+                                    "{}: {trashed}",
+                                    strings.text(lang, "inventory.trash")
+                                ));
+                            });
                             // 格子の下: 絞り込みと装備。
                             ui.horizontal(|ui| {
                                 if ui
@@ -2884,6 +2950,99 @@ mod tests {
             let repeated = vec![events[0].clone(); 20];
             feedback.record(&repeated, &entities, tick + 46);
             assert_eq!(feedback.entries.len(), 16);
+        }
+    }
+
+    /// 仕様 28 §10: 持ち物の画面の下に、Use・お気に入り・ゴミ箱・クイックスタックのボタンが出る。お気に入りには印、
+    /// ゴミ箱には最後に捨てたものの名前が出る。選んでいるものがないときは、アイテム用のボタンは押せない。
+    #[test]
+    fn inventory_bottom_buttons_draw() {
+        use charon_core::material::MaterialTable;
+        use charon_game::defs::Definitions;
+        use charon_game::game::GameState;
+        use charon_game::items::ItemId;
+        use charon_game::vitals::{MAX_HP, Vitals};
+        use std::sync::Arc;
+        let materials = Arc::new(MaterialTable::builtin().unwrap());
+        let defs = Definitions::engine_defaults(&materials).unwrap();
+        let world = world_from_ascii(&box_art(64, 64), 1);
+        let mut entities = EntityWorld::new();
+        let player = entities.spawn_player(10 * 16, 20 * 16, &world).unwrap();
+        let mut game = GameState::from_definitions(&defs);
+        game.add_character(player, Vitals::new(MAX_HP).unwrap(), defs.wand("basic").unwrap());
+        game.give_inventory(player).unwrap();
+        let sword = defs.item_id("wood_sword", world.materials()).unwrap();
+        let sand = ItemId::cells(material_of(&world, 's'));
+        let inventory = game.inventories.get_mut(&player).unwrap();
+        inventory.add_item(sword, 1);
+        inventory.add_item(sand, 3);
+        inventory.set_favorite(sand, true);
+        game.trash.insert(player, (sword, 2));
+        let physics = PhysicsEngine::new();
+        let overlay = Overlay {
+            world: &world,
+            physics: &physics,
+            entities: &entities,
+            game: &game,
+            player: Some(player),
+            pad: None,
+            defs: Some(&defs),
+        };
+        let texts = |picked: Option<ItemId>, language| -> Vec<String> {
+            let mut demo = DemoUi::new(world.materials());
+            let mut controls = Controls::new(material_of(&world, 's'));
+            controls.inventory_open = true;
+            controls.inv_picked = picked;
+            controls.language = language;
+            let context = egui::Context::default();
+            let mut found = Vec::new();
+            for frame in 0..3u32 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 900.0),
+                    )),
+                    time: Some(f64::from(frame) / 60.0),
+                    ..Default::default()
+                };
+                let mut output = context.run_pass(input, |context| {
+                    demo.draw(
+                        context,
+                        &mut controls,
+                        &overlay,
+                        FrameStats { frame_ms: 2.0, tick_ms: 1.0, phys_ms: 0.1 },
+                        0,
+                    );
+                });
+                found.clear();
+                fn collect(shape: &egui::Shape, found: &mut Vec<String>) {
+                    match shape {
+                        egui::Shape::Text(text) => found.push(text.galley.text().to_owned()),
+                        egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, found)),
+                        _ => {}
+                    }
+                }
+                for clipped in &output.shapes {
+                    collect(&clipped.shape, &mut found);
+                }
+                output.textures_delta.clear();
+            }
+            found
+        };
+        let has = |found: &[String], text: &str| found.iter().any(|t| t.contains(text));
+        let english = texts(None, crate::settings::Language::English);
+        for label in ["Use", "Favorite", "Quick stack", "Trash"] {
+            assert!(has(&english, label), "ボタン {label}: {english:?}");
+        }
+        assert!(has(&english, "wood_sword x2"), "ゴミ箱に最後に捨てたもの: {english:?}");
+        assert!(has(&english, "*"), "お気に入りの印: {english:?}");
+        assert!(!has(&english, "Unfavorite"), "選んでいないときは、外すボタンではない");
+        // お気に入りを選んでいると、外すボタンになる。日本語でも出る。
+        let picked = texts(Some(sand), crate::settings::Language::English);
+        assert!(has(&picked, "Unfavorite"), "{picked:?}");
+        let japanese = texts(None, crate::settings::Language::Japanese);
+        for label in ["使う", "お気に入り", "箱へ整理", "ゴミ箱"] {
+            assert!(has(&japanese, label), "ボタン {label}: {japanese:?}");
         }
     }
 

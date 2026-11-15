@@ -450,7 +450,7 @@ Android 実機での再確認はこれから (T18.2 の修正は実機で確か�
 | **T34.3 ジャンプ方式・クイック回復/マナ** | [28 §7](spec/28-terraria-android-controls.md) | 仕様 28 §7 の 8 テスト (+ `quick_buttons_fire_once`、`quick_buttons_drink_only_when_useful`) | 🟡 実装・自動テスト済み (指で触れた実機は未検証) |
 | **T34.4 オートセレクト・インタラクト・ロックオン** | [28 §8](spec/28-terraria-android-controls.md) | 仕様 28 §8 の 9 テスト (+ `auto_select_swaps_the_tool_while_pointing`、`auto_select_modes_and_one_shot_buttons`) | 🟡 実装・自動テスト済み (指で触れた実機は未検証) |
 | **T34.5 ホットバー・体力マナ・ツールチップ** | [28 §9](spec/28-terraria-android-controls.md) | 仕様 28 §9 の 5 テスト (+ `throw_command_drops_cell_stacks`) | 🟡 実装・自動テスト済み (投げられるのは材質のセルだけ。指で触れた実機は未検証) |
-| **T34.6 インベントリの下のボタン** | [28 §10](spec/28-terraria-android-controls.md) | 仕様 28 §10 の 6 テスト | 未着手 |
+| **T34.6 インベントリの下のボタン** | [28 §10](spec/28-terraria-android-controls.md) | 仕様 28 §10 の 6 テスト | 🟡 実装・自動テスト済み (Split・Sort は持ち物が種類別の個数のため作らない。指で触れた実機は未検証) |
 | **T34.7 通しと v0.1.0** | [28 §11](spec/28-terraria-android-controls.md)、[RELEASE_CHECK](RELEASE_CHECK.md) | `terraria_android_controls_chain`、`scripts/check-release-version.py v0.1.0`、`scripts/check.sh`、公開した Release の確認 | 未着手 |
 
 ---

@@ -6,7 +6,7 @@
 //! `block_iter`・`craft_block`) は、そのまま使える (`ItemId` に写して動く)。アイテム全般は `add_item`・`take_item`・
 //! `item_count`・`item_iter`。**ホットバー**は 10 枠の「アイテムを指すだけの印」と、選んでいる枠。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use charon_core::cell::MaterialId;
 
@@ -27,6 +27,8 @@ pub struct Inventory {
     selected: u8,
     /// オートセレクトで一時的に選ばれたアイテム (仕様 28 §8)。保存しない。ホットバーの選択は変えない。
     auto: Option<ItemId>,
+    /// お気に入りのアイテム (仕様 28 §10)。投げる・ゴミ箱・クイックスタックの対象外。
+    favorites: BTreeSet<u32>,
 }
 
 /// セルのアイテムにも、ブロックのアイテムにもできない材質 (空・境界)。
@@ -228,6 +230,32 @@ impl Inventory {
         self.auto_item().or_else(|| self.hotbar_active(self.selected()))
     }
 
+    /// お気に入りか。
+    pub fn is_favorite(&self, item: ItemId) -> bool {
+        self.favorites.contains(&item.0)
+    }
+
+    /// お気に入りにする・外す。持っていなくても、印は付けられる。
+    pub fn set_favorite(&mut self, item: ItemId, on: bool) {
+        if on {
+            self.favorites.insert(item.0);
+        } else {
+            self.favorites.remove(&item.0);
+        }
+    }
+
+    /// お気に入りを切り替える。切り替えたあとの状態を返す。
+    pub fn toggle_favorite(&mut self, item: ItemId) -> bool {
+        let on = !self.is_favorite(item);
+        self.set_favorite(item, on);
+        on
+    }
+
+    /// お気に入りのアイテム (`ItemId` の昇順)。
+    pub fn favorites(&self) -> impl Iterator<Item = ItemId> + '_ {
+        self.favorites.iter().map(|&id| ItemId(id))
+    }
+
     /// オートセレクトで一時的に選ぶアイテムを決める (`None` で解除)。持っていないアイテムは選べない。
     pub fn set_auto_item(&mut self, item: Option<ItemId>) {
         self.auto = item.filter(|&item| self.item_count(item) > 0);
@@ -271,6 +299,13 @@ impl Inventory {
                 feed(&slot.map_or(u32::MAX, |item| item.0).to_le_bytes());
             }
             feed(&[self.selected]);
+        }
+        // お気に入りがあるときだけ流す。なければこれまでと同じ値。
+        if !self.favorites.is_empty() {
+            feed(&[0xFA, 0x70]);
+            for &id in &self.favorites {
+                feed(&id.to_le_bytes());
+            }
         }
         // オートセレクト中だけ、選んでいるアイテムが変わるので流す。なければこれまでと同じ値。
         if let Some(item) = self.auto_item() {

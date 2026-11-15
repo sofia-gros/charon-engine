@@ -17,6 +17,7 @@ use crate::defs::{Definitions, EnemyDef, HookDef};
 use crate::dig::{Beam, Dig, Dug};
 use crate::drops::{Drops, MAX_DROPS, Pickup};
 use crate::inventory::Inventory;
+use crate::items::ItemId;
 use crate::levitation::{Levitation, LevitationDef};
 use crate::projectile::{Hit, ProjectileWorld};
 use crate::status::{SLOW_TICKS, StatusKind, StatusTable};
@@ -154,6 +155,8 @@ pub struct GameState {
     pub levitation: BTreeMap<EntityId, Levitation>,
     /// 落ちているもの (仕様 10 §19)。
     pub drops: Drops,
+    /// ゴミ箱 (仕様 28 §10): 最後に捨てたアイテムと数。表示用で、戻せない。保存しない。
+    pub trash: BTreeMap<EntityId, (ItemId, u32)>,
     /// 真なら、掘ったセルは持ち物に直接ではなく、材質ごとのドロップとして落ちる (仕様 10 §19)。
     pub dig_to_drops: bool,
     /// アイテムの定義の写し (防具の軽減・武器の種類を引く、仕様 20)。
@@ -301,6 +304,7 @@ impl GameState {
             statuses: StatusTable::new(),
             levitation: BTreeMap::new(),
             drops: Drops::new(),
+            trash: BTreeMap::new(),
             dig_to_drops: false,
             item_defs: Vec::new(),
             weapon_cooldown: BTreeMap::new(),

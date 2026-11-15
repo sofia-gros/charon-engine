@@ -23,6 +23,7 @@ pub mod quick;
 pub mod respawn;
 pub mod save;
 pub mod spawner;
+pub mod stash;
 pub mod status;
 pub mod targeting;
 pub mod vitals;

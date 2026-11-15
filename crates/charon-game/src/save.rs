@@ -75,6 +75,9 @@ pub struct PlayerSave {
     /// 装備 5 枠 (`EquipSlot::ALL` の順) のアイテムの名前。
     #[serde(default)]
     pub equipment: Vec<Option<String>>,
+    /// お気に入りのアイテムの名前 (仕様 28 §10)。古い保存にはなく、なければ空。
+    #[serde(default)]
+    pub favorites: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +146,7 @@ impl GameSave {
                 hotbar: Vec::new(),
                 selected: 0,
                 equipment: Vec::new(),
+                favorites: Vec::new(),
             }
         });
         Self { version: GAME_SAVE_VERSION, tick, player, progress: game.progress.capture() }
@@ -234,6 +238,7 @@ impl GameSave {
                 (0..HOTBAR_SLOTS).map(|slot| inventory.hotbar(slot).and_then(name)).collect();
             // 選んでいる枠は 0..10 に収まる。
             player.selected = inventory.selected() as u8;
+            player.favorites = inventory.favorites().filter_map(name).collect();
         }
         if let Some(equipment) = game.equipment.get(&id) {
             player.equipment =
@@ -265,6 +270,11 @@ impl GameSave {
                 }
             }
             inventory.select(usize::from(saved.selected));
+            for name in &saved.favorites {
+                if let Some(item) = lookup(name) {
+                    inventory.set_favorite(item, true);
+                }
+            }
         }
         let mut restored = 0;
         if !saved.equipment.is_empty() {

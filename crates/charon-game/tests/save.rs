@@ -112,6 +112,7 @@ fn apply_is_careful_with_dead_players_solid_positions_and_limits() {
             hotbar: vec![],
             selected: 0,
             equipment: vec![],
+            favorites: vec![],
         }),
         progress: ProgressSave::default(),
     };
@@ -166,6 +167,7 @@ fn bad_game_saves_are_rejected() {
             hotbar: vec![],
             selected: 0,
             equipment: vec![],
+            favorites: vec![],
         }),
         progress: ProgressSave::default(),
     };

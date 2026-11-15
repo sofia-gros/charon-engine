@@ -421,9 +421,21 @@ pub(super) fn apply_inventory_commands(
                     eprintln!("外せません: {err}");
                 }
             }
+            InvCommand::Favorite(item) => {
+                if let Some(inv) = game.inventories.get_mut(&id) {
+                    inv.toggle_favorite(item);
+                }
+            }
+            InvCommand::Trash(item) => {
+                game.trash_item(id, item);
+            }
+            InvCommand::QuickStack(only) => {
+                game.quick_stack(world, entities, id, defs, only);
+            }
             InvCommand::Throw(item) => {
-                // 落ちているものは材質のセルだけ (仕様 10 §19)。道具・ブロックは、まだ投げられない。
-                if let ItemClass::Cells(material) = item.class() {
+                // 落ちているものは材質のセルだけ (仕様 10 §19)。道具・ブロックは、まだ投げられない。お気に入りは投げない。
+                let favorite = game.inventories.get(&id).is_some_and(|inv| inv.is_favorite(item));
+                if !favorite && let ItemClass::Cells(material) = item.class() {
                     let count = game.inventories.get(&id).map_or(0, |inv| inv.count(material));
                     game.drop_item(entities, id, material, count);
                 }
@@ -1501,6 +1513,26 @@ mod tests {
         let before = rig.game.state_hash();
         throw(&mut rig, sword);
         assert_eq!(rig.game.state_hash(), before, "道具は投げられない: 何も変えない");
+        // お気に入りは投げない。外すと投げられる。
+        let favorite = |rig: &mut Rig| {
+            apply_inventory_commands(
+                &mut rig.game,
+                &rig.world,
+                &rig.entities,
+                rig.id,
+                &rig.defs,
+                vec![InvCommand::Favorite(ItemId::cells(sand))],
+            );
+        };
+        favorite(&mut rig);
+        assert!(rig.game.inventories[&rig.id].is_favorite(ItemId::cells(sand)));
+        let before = rig.game.state_hash();
+        throw(&mut rig, ItemId::cells(sand));
+        assert_eq!(rig.game.inventories[&rig.id].count(sand), 5, "お気に入りは投げない");
+        assert!(rig.game.drops.is_empty());
+        favorite(&mut rig);
+        assert!(!rig.game.inventories[&rig.id].is_favorite(ItemId::cells(sand)));
+        assert_ne!(rig.game.state_hash(), before + 1, "印は外れた");
         throw(&mut rig, ItemId::cells(sand));
         assert_eq!(rig.game.inventories[&rig.id].count(sand), 0, "全部出た");
         assert_eq!(
